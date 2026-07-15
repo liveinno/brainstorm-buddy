@@ -1,0 +1,17 @@
+<Window x:Class="BrainstormBuddy.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="BrainstormBuddy"
+        Width="320" Height="200"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource BgBrush}"
+        Foreground="{DynamicResource TextBrush}"
+        FontFamily="Segoe UI"
+        ShowInTaskbar="False">
+    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="20">
+        <TextBlock Text="BrainstormBuddy" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+        <TextBlock x:Name="StatusText" Text="Запуск..." Margin="0,8,0,16" HorizontalAlignment="Center" Foreground="{DynamicResource TextDimBrush}"/>
+        <Button Content="Открыть оверлей" Width="160" Click="OnOpenOverlay" HorizontalAlignment="Center"/>
+        <Button Content="Настройки" Width="160" Margin="0,8,0,0" Click="OnOpenSettings" HorizontalAlignment="Center"/>
+    </StackPanel>
+</Window>

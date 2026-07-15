@@ -1,0 +1,272 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Набор иконок для ТЁМНОЙ темы — координаты 1:1 из newdesign/Overlay Final.dc.html (6a).
+         Каждый SVG-элемент отображён в WPF-примитив с теми же числами (viewBox 0 0 24 24):
+         <rect x y w h rx> → Rectangle Canvas.Left=x Canvas.Top=y Width=w Height=h RadiusX=rx;
+         <circle cx cy r> → Ellipse Canvas.Left=cx-r Canvas.Top=cy-r Width=2r Height=2r.
+         Цвета: нейтраль → IconBrush; «вырез»/фон → BgBrush; семантика — фикс из макета. -->
+
+    <!-- Логотип: 3 бара голосовой волны (титлбар 6a: fill #fff, viewBox24) -->
+    <Viewbox x:Key="IconAppLogo" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Rectangle Canvas.Left="7" Canvas.Top="8" Width="2.4" Height="8" RadiusX="1.2" RadiusY="1.2" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="10.8" Canvas.Top="5" Width="2.4" Height="14" RadiusX="1.2" RadiusY="1.2" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="14.6" Canvas.Top="9" Width="2.4" Height="6" RadiusX="1.2" RadiusY="1.2" Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Шеврон вниз (селектор промпта): stroke 2, #7f8ea8 -->
+    <Viewbox x:Key="IconChevronDown" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M7 10l5 5 5-5" Stroke="{DynamicResource TextDimBrush}" StrokeThickness="2"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Робот (пауза LLM): тело + рот(фон) + 2 глаза + антенна -->
+    <Viewbox x:Key="IconLlm" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Rectangle Canvas.Left="4.5" Canvas.Top="7" Width="15" Height="11.5" RadiusX="4" RadiusY="4" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="7.4" Canvas.Top="10.2" Width="9.2" Height="4.4" RadiusX="2.2" RadiusY="2.2" Fill="{DynamicResource BgBrush}"/>
+            <Ellipse Canvas.Left="9.4" Canvas.Top="11.4" Width="2" Height="2" Fill="{DynamicResource IconBrush}"/>
+            <Ellipse Canvas.Left="12.6" Canvas.Top="11.4" Width="2" Height="2" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="11.2" Canvas.Top="4.4" Width="1.6" Height="2.8" RadiusX="0.8" RadiusY="0.8" Fill="{DynamicResource IconBrush}"/>
+            <Ellipse Canvas.Left="10.75" Canvas.Top="2.55" Width="2.5" Height="2.5" Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Пауза аудио: 2 бара #9fb0cc -->
+    <Viewbox x:Key="IconPause" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Rectangle Canvas.Left="7.6" Canvas.Top="5.5" Width="3.2" Height="13" RadiusX="1.6" RadiusY="1.6" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="13.2" Canvas.Top="5.5" Width="3.2" Height="13" RadiusX="1.6" RadiusY="1.6" Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Продолжить (пауза активна): треугольник #f0a860 -->
+    <Viewbox x:Key="IconPlay" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M8 5.5l11 6.5-11 6.5z" Fill="{DynamicResource WarnBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Автоскролл: стрелка вниз + линия -->
+    <Viewbox x:Key="IconAutoScroll" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M10.8 4h2.4v7.5h3.4L12 17l-4.6-5.5h3.4z" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="6" Canvas.Top="18.6" Width="12" Height="2.2" RadiusX="1.1" RadiusY="1.1" Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Настройки: шестерёнка + вырез #0a0e17 -->
+    <Viewbox x:Key="IconSettings" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M10.3 2.9a2 2 0 0 1 3.4 0l.8 1.3 1.5-.2a2 2 0 0 1 2.4 2.4l-.2 1.5 1.3.8a2 2 0 0 1 0 3.4l-1.3.8.2 1.5a2 2 0 0 1-2.4 2.4l-1.5-.2-.8 1.3a2 2 0 0 1-3.4 0l-.8-1.3-1.5.2a2 2 0 0 1-2.4-2.4l.2-1.5-1.3-.8a2 2 0 0 1 0-3.4l1.3-.8-.2-1.5a2 2 0 0 1 2.4-2.4l1.5.2z"
+                  Fill="{DynamicResource IconBrush}"/>
+            <Ellipse Canvas.Left="9" Canvas.Top="8.2" Width="6" Height="6" Fill="{DynamicResource BgBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Свернуть окно: линия #8494ad -->
+    <Viewbox x:Key="IconMinimize" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Rectangle Canvas.Left="6" Canvas.Top="11" Width="12" Height="2.2" RadiusX="1.1" RadiusY="1.1" Fill="{DynamicResource IconDimBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Развернуть окно: квадрат-контур #8494ad -->
+    <Viewbox x:Key="IconMaximize" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Rectangle Canvas.Left="4" Canvas.Top="4" Width="16" Height="16" RadiusX="2.5" RadiusY="2.5"
+                       Stroke="{DynamicResource IconDimBrush}" StrokeThickness="2"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Закрыть/скрыть: крест #e88a95 stroke 2.4 -->
+    <Viewbox x:Key="IconClose" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M6.5 6.5l11 11M17.5 6.5l-11 11" Stroke="{DynamicResource CloseIconBrush}" StrokeThickness="2.4"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Молния (отправить): fill #ffd769 -->
+    <Viewbox x:Key="IconSendNow" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M15 2.4L6.9 12.3a.5.5 0 0 0 .4.8h3.8l-1.6 8.1a.3.3 0 0 0 .55.25l8.1-9.9a.5.5 0 0 0-.4-.8h-3.8l1.6-8.1A.3.3 0 0 0 15 2.4z"
+                  Fill="{DynamicResource BoltBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Экспорт: стрелка вниз + лоток #9fb0cc -->
+    <Viewbox x:Key="IconExport" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M10.8 3.5h2.4V10h3.4L12 15.5 7.4 10h3.4z M4.5 16.5h2.2V19a.3.3 0 0 0 .3.3h10a.3.3 0 0 0 .3-.3v-2.5h2.2V19a2.5 2.5 0 0 1-2.5 2.5H7A2.5 2.5 0 0 1 4.5 19z"
+                  Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Экспорт выполнен: галочка #7fe0ae -->
+    <Viewbox x:Key="IconExportDone" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M5 12.5l4.5 4.5L19 7.5" Stroke="{DynamicResource SuccessIconBrush}" StrokeThickness="2.4"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- AI-протокол: документ + звезда(фон) + строка(фон) -->
+    <Viewbox x:Key="IconAiProtocol" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M6.5 3h7.2L18 7.3V20a1 1 0 0 1-1 1H6.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" Fill="{DynamicResource IconBrush}"/>
+            <Path Data="M11.7 9.6l.95 2.15 2.15.95-2.15.95-.95 2.15-.95-2.15-2.15-.95 2.15-.95z" Fill="{DynamicResource BgBrush}"/>
+            <Rectangle Canvas.Left="8.5" Canvas.Top="17" Width="7" Height="1.6" RadiusX="0.8" RadiusY="0.8" Fill="{DynamicResource BgBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Камера: корпус + объектив(фон) + линза -->
+    <Viewbox x:Key="IconScreenshot" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M9.2 4.5h5.6L16.2 7H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2.8z" Fill="{DynamicResource IconBrush}"/>
+            <Ellipse Canvas.Left="8.4" Canvas.Top="9.8" Width="7.2" Height="7.2" Fill="{DynamicResource BgBrush}"/>
+            <Ellipse Canvas.Left="10" Canvas.Top="11.4" Width="4" Height="4" Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Медленнее: спидометр 6.5, стрелка влево-вниз, центр r1.4 -->
+    <Viewbox x:Key="IconSlowSpeech" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M5.5 15.5a6.5 6.5 0 0 1 13 0" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.1" StrokeStartLineCap="Round"/>
+            <Path Data="M12 15.5l-3.4-2.9" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.1" StrokeStartLineCap="Round"/>
+            <Ellipse Canvas.Left="10.6" Canvas.Top="14.1" Width="2.8" Height="2.8" Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Сброс темпа: спидометр, стрелка вверх, метка сверху -->
+    <Viewbox x:Key="IconResetSpeed" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M5.5 15.5a6.5 6.5 0 0 1 13 0" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.1" StrokeStartLineCap="Round"/>
+            <Path Data="M12 15.5v-4.4" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.1" StrokeStartLineCap="Round"/>
+            <Ellipse Canvas.Left="10.6" Canvas.Top="14.1" Width="2.8" Height="2.8" Fill="{DynamicResource IconBrush}"/>
+            <Path Data="M10.2 5.6L12 4l1.8 1.6" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.1"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Быстрее: спидометр, стрелка вправо-вниз -->
+    <Viewbox x:Key="IconFastSpeech" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M5.5 15.5a6.5 6.5 0 0 1 13 0" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.1" StrokeStartLineCap="Round"/>
+            <Path Data="M12 15.5l3.4-2.9" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.1" StrokeStartLineCap="Round"/>
+            <Ellipse Canvas.Left="10.6" Canvas.Top="14.1" Width="2.8" Height="2.8" Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Глаз «призрак» (сквозной): пунктирный контур + зрачок -->
+    <Viewbox x:Key="IconCloak" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M3.5 12S6.5 6.5 12 6.5 20.5 12 20.5 12 17.5 17.5 12 17.5 3.5 12 3.5 12z"
+                  Stroke="{DynamicResource IconBrush}" StrokeThickness="1.9" StrokeStartLineCap="Round"
+                  StrokeDashArray="1.68 1.37"/>
+            <Ellipse Canvas.Left="9.6" Canvas.Top="9.6" Width="4.8" Height="4.8" Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Корзина: крышка + бак + прорезь(фон) #e07a8a -->
+    <Viewbox x:Key="IconErase" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M10.2 3.4h3.6A1.8 1.8 0 0 1 15.6 5.2v.6h3.2a.9.9 0 0 1 0 1.8H5.2a.9.9 0 0 1 0-1.8h3.2v-.6A1.8 1.8 0 0 1 10.2 3.4zm.2 2.4h3.2v-.4a.4.4 0 0 0-.4-.4h-2.4a.4.4 0 0 0-.4.4z"
+                  Fill="{DynamicResource ErrorBrush}"/>
+            <Path Data="M6.3 9.2h11.4l-1 9.7a2.3 2.3 0 0 1-2.3 2.1H9.6a2.3 2.3 0 0 1-2.3-2.1z" Fill="{DynamicResource ErrorBrush}"/>
+            <Rectangle Canvas.Left="11.2" Canvas.Top="11.6" Width="1.6" Height="6" RadiusX="0.8" RadiusY="0.8" Fill="{DynamicResource BgBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Микрофон (нижняя пилюля): капсула + подставка #9fb0cc -->
+    <Viewbox x:Key="IconMic" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Rectangle Canvas.Left="9.2" Canvas.Top="3" Width="5.6" Height="11" RadiusX="2.8" RadiusY="2.8" Fill="{DynamicResource IconBrush}"/>
+            <Path Data="M6.5 11.5a5.5 5.5 0 0 0 11 0h2a7.5 7.5 0 0 1-6.5 7.4V21h3v2H8v-2h3v-2.1a7.5 7.5 0 0 1-6.5-7.4z" Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- «LLM выкл» (нижняя пилюля): перечёркнутый чат-пузырь с точками. Под чертой — широкий
+         под-штрих BgBrush (та же техника «выреза», что у шестерёнки/камеры), иначе черта
+         сливалась бы с заливкой пузыря. -->
+    <Viewbox x:Key="IconLlmOff" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Rectangle Canvas.Left="3" Canvas.Top="4.5" Width="18" Height="12" RadiusX="3.5" RadiusY="3.5" Fill="{DynamicResource IconBrush}"/>
+            <Path Data="M7 16v4.5l5-4.5z" Fill="{DynamicResource IconBrush}"/>
+            <Ellipse Canvas.Left="6.9" Canvas.Top="9.5" Width="2" Height="2" Fill="{DynamicResource BgBrush}"/>
+            <Ellipse Canvas.Left="11" Canvas.Top="9.5" Width="2" Height="2" Fill="{DynamicResource BgBrush}"/>
+            <Ellipse Canvas.Left="15.1" Canvas.Top="9.5" Width="2" Height="2" Fill="{DynamicResource BgBrush}"/>
+            <Path Data="M4.5 20.5L19.5 3.5" Stroke="{DynamicResource BgBrush}" StrokeThickness="4.4"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+            <Path Data="M4.5 20.5L19.5 3.5" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.2"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- «Динамик выкл» (нижняя пилюля): перечёркнутый динамик с волнами (тот же приём с просветом) -->
+    <Viewbox x:Key="IconSpeakerOff" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M4 9.5h3.2L12.5 5v14l-5.3-4.5H4z" Fill="{DynamicResource IconBrush}"/>
+            <Path Data="M15.5 9.2a4 4 0 0 1 0 5.6" Stroke="{DynamicResource IconBrush}" StrokeThickness="2"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+            <Path Data="M18 6.8a7.6 7.6 0 0 1 0 10.4" Stroke="{DynamicResource IconBrush}" StrokeThickness="2"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+            <Path Data="M4.5 20.5L19.5 3.5" Stroke="{DynamicResource BgBrush}" StrokeThickness="4.4"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+            <Path Data="M4.5 20.5L19.5 3.5" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.2"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Отправка секретного (белый самолётик на градиенте): fill #fff -->
+    <Viewbox x:Key="IconChatSend" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M2.8 20.6L22 12 2.8 3.4l.6 6.8L16 12 3.4 13.8z" Fill="#ffffff"/>
+        </Canvas>
+    </Viewbox>
+
+    <!-- Дополнительные (задел) -->
+    <Viewbox x:Key="IconHome" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M12 3.5l8.5 7.8h-2v8.2a1 1 0 0 1-1 1h-4v-5.5h-3v5.5h-4a1 1 0 0 1-1-1v-8.2h-2z" Fill="{DynamicResource IconBrush}"/>
+        </Canvas>
+    </Viewbox>
+    <Viewbox x:Key="IconInfo" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Ellipse Canvas.Left="3" Canvas.Top="3" Width="18" Height="18" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="11" Canvas.Top="10.5" Width="2" Height="6" RadiusX="1" RadiusY="1" Fill="{DynamicResource BgBrush}"/>
+            <Ellipse Canvas.Left="10.7" Canvas.Top="6.5" Width="2.6" Height="2.6" Fill="{DynamicResource BgBrush}"/>
+        </Canvas>
+    </Viewbox>
+    <Viewbox x:Key="IconHelp" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Ellipse Canvas.Left="3" Canvas.Top="3" Width="18" Height="18" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="11" Canvas.Top="10.5" Width="2" Height="6" RadiusX="1" RadiusY="1" Fill="{DynamicResource BgBrush}"/>
+            <Ellipse Canvas.Left="10.7" Canvas.Top="6.5" Width="2.6" Height="2.6" Fill="{DynamicResource BgBrush}"/>
+        </Canvas>
+    </Viewbox>
+    <Viewbox x:Key="IconCalendar" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M6 4.5h12A2.5 2.5 0 0 1 20.5 7v11A2.5 2.5 0 0 1 18 20.5H6A2.5 2.5 0 0 1 3.5 18V7A2.5 2.5 0 0 1 6 4.5z" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="7" Canvas.Top="2.6" Width="2" Height="4" RadiusX="1" RadiusY="1" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="15" Canvas.Top="2.6" Width="2" Height="4" RadiusX="1" RadiusY="1" Fill="{DynamicResource IconBrush}"/>
+            <Rectangle Canvas.Left="3.5" Canvas.Top="9.2" Width="17" Height="1.6" Fill="{DynamicResource BgBrush}"/>
+        </Canvas>
+    </Viewbox>
+    <Viewbox x:Key="IconStop" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Rectangle Canvas.Left="6" Canvas.Top="6" Width="12" Height="12" RadiusX="2.5" RadiusY="2.5" Fill="{DynamicResource ErrorBrush}"/>
+        </Canvas>
+    </Viewbox>
+    <Viewbox x:Key="IconChevronRight" x:Shared="False" Stretch="Uniform">
+        <Canvas Width="24" Height="24">
+            <Path Data="M10 7l5 5-5 5" Stroke="{DynamicResource IconBrush}" StrokeThickness="1.8"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+        </Canvas>
+    </Viewbox>
+
+</ResourceDictionary>

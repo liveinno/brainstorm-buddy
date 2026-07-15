@@ -1,0 +1,1124 @@
+﻿<Window x:Class="BrainstormBuddy.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="BrainstormBuddy — Настройки"
+        Icon="pack://application:,,,/Resources/Icons/app.ico"
+        Width="720" Height="600"
+        MinWidth="560" MinHeight="460"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource BgBrush}"
+        Foreground="{DynamicResource TextBrush}"
+        FontFamily="Segoe UI"
+        FontSize="13"
+        ShowInTaskbar="True"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType">
+    <Window.Resources>
+
+        <!-- ========================================================== -->
+        <!-- GLOBAL STYLES — dark theme, видимый текст                  -->
+        <!-- ========================================================== -->
+
+        <!-- TabItem: пункт сайдбара (навигация слева, как в дизайн-референсе).
+             Активный пункт: подсветка + зелёная полоса слева + зелёный текст. -->
+        <Style TargetType="TabItem">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Padding" Value="14,9"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Margin" Value="0,1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="3,0,0,0"
+                                CornerRadius="0,6,6,0"
+                                Padding="{TemplateBinding Padding}" MinWidth="150">
+                            <ContentPresenter ContentSource="Header"
+                                              HorizontalAlignment="Left" VerticalAlignment="Center"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}"
+                                              TextBlock.FontSize="13"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BgMediumBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BgMediumBrush}"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- TextBox: тёмный фон, светлый текст, скруглённые углы (rounded-md) -->
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource AccentBrush}"/>
+            <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsFocused" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource TextDimBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- TextBox многострочный (для системного промпта) -->
+        <Style x:Key="MultilineTextBox" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="AcceptsReturn" Value="True"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="FontFamily" Value="Cascadia Mono, Consolas, Courier New"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="MinHeight" Value="120"/>
+        </Style>
+
+        <!-- ComboBoxItem: яркий белый текст на тёмном, зелёный selected. ControlTemplate override
+             чтобы Aero popup background не просвечивал. -->
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BorderBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BorderBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ComboBox: кастомный ControlTemplate с тёмным popup.
+             Без x:Key → применяется глобально ко всем ComboBox. -->
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="MinHeight" Value="28"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid x:Name="TemplateRoot" SnapsToDevicePixels="True">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="22"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="Bd" Grid.ColumnSpan="2"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="3">
+                                <Grid>
+                                    <ContentPresenter x:Name="ContentSite"
+                                                      Content="{TemplateBinding SelectionBoxItem}"
+                                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                      Margin="{TemplateBinding Padding}"
+                                                      VerticalAlignment="Center"
+                                                      TextBlock.Foreground="{TemplateBinding Foreground}"
+                                                      IsHitTestVisible="False"/>
+                                    <TextBlock x:Name="PlaceholderText"
+                                               Text="{TemplateBinding Tag}"
+                                               Margin="{TemplateBinding Padding}"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextDimBrush}"
+                                               Visibility="Collapsed"/>
+                                </Grid>
+                            </Border>
+                            <!-- Тогл на ВСЮ ширину поля (оба столбца), «голый» шаблон без chrome:
+                                 клик по любому месту поля раскрывает список. Прозрачный, поэтому
+                                 значение (ContentSite) под ним видно; стрелка справа. -->
+                            <ToggleButton x:Name="ToggleButton"
+                                          Grid.Column="0" Grid.ColumnSpan="2"
+                                          Focusable="False"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="Transparent">
+                                            <Path x:Name="Arrow" Data="M0,0 L4,4 L8,0 Z"
+                                                  Fill="{DynamicResource TextMutedBrush}"
+                                                  HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,9,0"/>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <Popup x:Name="PART_Popup"
+                                   IsOpen="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                   Placement="Bottom"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   PopupAnimation="Fade"
+                                   VerticalOffset="2">
+                                <Border x:Name="DropDownBorder"
+                                        Background="{DynamicResource PanelBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="3"
+                                        MinWidth="{TemplateBinding ActualWidth}"
+                                        MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <ScrollViewer x:Name="DropDownScrollViewer" Margin="2">
+                                        <ItemsPresenter x:Name="ItemsPresenter" KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Button: тёмный, видимый -->
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="{DynamicResource BgMediumBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BorderBrush}"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BgBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Primary Button (зелёный) -->
+        <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="{DynamicResource AccentDimBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentDimBrush}"/>
+        </Style>
+
+        <!-- CheckBox: видимый -->
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+
+        <!-- ToolTip: тёмный, светлый текст -->
+        <Style TargetType="ToolTip">
+            <Setter Property="Background" Value="{DynamicResource AccentTextBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+
+        <!-- bool → Visibility (для скрытия ручных настроек в авто-режиме) -->
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+        <!-- Slider: видимый трек и thumb -->
+        <Style TargetType="Slider">
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <!-- Клик по треку ставит бегунок в точку клика (а не листает шагами) -->
+            <Setter Property="IsMoveToPointEnabled" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <!-- Высота с запасом, чтобы кругляшок-thumb (16px + обводка) не срезался -->
+                        <Grid MinHeight="30">
+                            <Border x:Name="TrackBackground" Height="4" CornerRadius="2"
+                                    Background="{DynamicResource BorderBrush}" VerticalAlignment="Center" Margin="6,0"/>
+                            <Track x:Name="PART_Track" Height="22" VerticalAlignment="Center">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="Slider.DecreaseLarge"
+                                                  Background="{DynamicResource AccentBrush}" BorderThickness="0" Height="4">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Background="{TemplateBinding Background}" Height="4"/>
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="Slider.IncreaseLarge"
+                                                  Background="Transparent" BorderThickness="0" Height="4">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Background="Transparent" Height="4"/>
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Width="16" Height="16" OverridesDefaultStyle="True">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Ellipse Width="16" Height="16" Fill="{DynamicResource AccentBrush}"
+                                                         Stroke="{DynamicResource AccentTextBrush}" StrokeThickness="2"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Label-style TextBlock -->
+        <Style TargetType="TextBlock" x:Key="Label">
+            <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,8,0,2"/>
+        </Style>
+
+        <!-- TabControl (фон) -->
+        <Style TargetType="TabControl">
+            <Setter Property="Background" Value="{DynamicResource BgBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        </Style>
+
+        <!-- ListBox: тёмный фон, светлый текст. Без x:Key — глобально. -->
+        <Style TargetType="ListBox">
+            <Setter Property="Background" Value="{DynamicResource BgBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+        </Style>
+
+        <!-- ListBoxItem: светлый текст на тёмном; selected = зелёный фон + ЧЁРНЫЙ текст.
+             ControlTemplate override нужен иначе Aero-style рисует серое на голубом (BUG #24). -->
+        <Style TargetType="ListBoxItem">
+            <Setter Property="Background" Value="{DynamicResource BgBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BgMediumBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TabControl Grid.Row="0" TabStripPlacement="Left"
+                    Background="{DynamicResource BgBrush}" BorderBrush="{DynamicResource BorderBrush}">
+
+            <!-- ====================== API ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_Api}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12">
+                        <TextBlock Text="LLM-провайдер (подставит BaseUrl):" Style="{StaticResource Label}"/>
+                        <ComboBox x:Name="LlmProviderCombo" SelectedValuePath="Tag" Margin="0,2,0,4"
+                                  SelectionChanged="OnLlmProviderChanged">
+                            <ComboBoxItem Content="Ollama — локально (приватно, рекомендуется)" Tag="http://127.0.0.1:11434/v1"/>
+                            <ComboBoxItem Content="LM Studio — локально" Tag="http://localhost:1234/v1"/>
+                            <ComboBoxItem Content="OpenRouter (облако)" Tag="https://openrouter.ai/api/v1"/>
+                            <ComboBoxItem Content="Groq (облако)" Tag="https://api.groq.com/openai/v1"/>
+                            <ComboBoxItem Content="OpenAI (облако)" Tag="https://api.openai.com/v1"/>
+                            <ComboBoxItem Content="Свой endpoint (не менять)" Tag=""/>
+                        </ComboBox>
+                        <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}" FontSize="11" Margin="0,0,0,10"
+                                   Text="Облачные провайдеры отправляют текст на сторонний сервер — это ломает приватность/стелс. Для приватного ассистента используйте локальный Ollama. Для облака впишите ключ и нажмите «Проверить связь». Модель задайте вручную (у провайдеров разные имена)."/>
+
+                        <TextBlock Text="BaseUrl:" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding BaseUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,2"/>
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}" Margin="0,0,0,8"
+                                   Text="Пример: https://openrouter.ai/api/v1 · https://api.groq.com/openai/v1 · http://127.0.0.1:11434/v1 (Ollama)"/>
+
+                        <Grid Margin="0,0,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="ApiKeyBox" Grid.Column="0"
+                                     Text="{Binding ApiKey, UpdateSourceTrigger=PropertyChanged}"/>
+                            <Button Grid.Column="1" Width="36" Height="28" Margin="4,0,0,0"
+                                    Click="OnToggleApiKeyVisibility" ToolTip="Скрыть/показать ключ" Padding="6,2">
+                                <ContentPresenter Content="{DynamicResource IconCloak}" Width="16" Height="16"/>
+                            </Button>
+                        </Grid>
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}" Margin="0,0,0,8"
+                                   Text="Ключ провайдера (для облака). Для локального Ollama/LM Studio ключ не нужен."/>
+
+                        <TextBlock Text="Chat Model:" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding ChatModel, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,2"/>
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}" Margin="0,0,0,8"
+                                   Text="Пример: tencent/hy3:free (OpenRouter) · llama-3.3-70b-versatile (Groq) · qwen2.5vl:7b (Ollama). ID модели — со страницы модели у провайдера."/>
+
+                        <!-- Настройки распознавания речи (STT) переехали в раздел «Распознавание речи (STT)».
+                             Здесь остаётся только LLM (чат), чтобы не путать два разных сервера. -->
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}" Margin="0,2,0,8"
+                                   Text="Адрес и модель распознавания речи (STT) настраиваются в разделе «Распознавание речи (STT)» слева. Здесь — только параметры LLM (чата)."/>
+
+                        <TextBlock Text="RateLimit между LLM-запросами (сек):" Style="{StaticResource Label}"/>
+                        <TextBox x:Name="RateLimitBox" Text="{Binding RateLimitSeconds, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,12"/>
+
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="{DynamicResource L_CheckConnection}" Click="OnCheckConnection" Width="180"/>
+                            <TextBlock x:Name="ConnectionStatusText" Margin="12,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextMutedBrush}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ====================== LLM (промпты) ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_Llm}">
+                <Grid Margin="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="240"/>
+                        <ColumnDefinition Width="6"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Список пресетов -->
+                    <Border Grid.Row="0" Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Text="Пресеты промптов" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource AccentBrush}" Margin="8,6"/>
+                            <ListBox x:Name="PresetsList" ItemsSource="{Binding SystemPromptPresets}"
+                                     SelectedItem="{Binding SelectedSystemPromptPreset}"
+                                     DisplayMemberPath="Name"
+                                     Background="{DynamicResource BgBrush}" Foreground="{DynamicResource TextBrightBrush}"
+                                     BorderThickness="0"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- Редактор промпта -->
+                    <Grid Grid.Row="0" Grid.Column="2">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="Имя пресета:" Style="{StaticResource Label}"/>
+                        <TextBox Grid.Row="1" x:Name="PresetNameBox" Margin="0,2,0,8"
+                                 Text="{Binding SelectedSystemPromptPreset.Name, UpdateSourceTrigger=PropertyChanged, FallbackValue=''}"/>
+                        <TextBox Grid.Row="2" x:Name="PromptEditor"
+                                 Style="{StaticResource MultilineTextBox}"
+                                 Text="{Binding CurrentSystemPrompt, UpdateSourceTrigger=PropertyChanged}"/>
+                    </Grid>
+
+                    <!-- Кнопки управления пресетами -->
+                    <StackPanel Grid.Row="1" Grid.ColumnSpan="3" Orientation="Horizontal"
+                                HorizontalAlignment="Right" Margin="0,10,0,0">
+                        <Button Content="Сохранить как новый" Click="OnSaveAsNewPrompt" Margin="0,0,6,0" Padding="10,5"/>
+                        <Button Content="Удалить пресет" Click="OnDeletePrompt" Margin="0,0,6,0" Padding="10,5"/>
+                        <Button Content="+ Новый пустой" Click="OnNewEmptyPrompt" Padding="10,5"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="2" Grid.ColumnSpan="3" Margin="0,12,0,0">
+                        <CheckBox Content="Объединять [Динамик] и [Микрофон] в один запрос к LLM"
+                                  IsChecked="{Binding MergeMicLoopback}" Margin="0,0,0,4"/>
+                        <TextBlock Text="Размер истории чата (сообщений):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="HistorySizeSlider" Minimum="2" Maximum="20"
+                                Value="{Binding HistorySize, Mode=TwoWay}"
+                                TickFrequency="2" IsSnapToTickEnabled="True" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущее:"/>
+                            <Run Text="{Binding Value, ElementName=HistorySizeSlider, StringFormat=F0}" Foreground="{DynamicResource AccentBrush}"/>
+                            <Run Text="(сообщения не удаляются — это лишь размер контекста для LLM; в протокол и экспорт идёт вся история)" Foreground="{DynamicResource TextMutedBrush}"/>
+                        </TextBlock>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- ====================== Аудио ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_Audio}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12">
+                        <TextBlock Text="Режим нарезки речи:" Style="{StaticResource Label}"/>
+                        <ComboBox x:Name="EndpointModeCombo" SelectedItem="{Binding SelectedEndpointMode}" Margin="0,2,0,2"
+                                  ToolTip="Как ПО решает, что реплика закончилась и пора отправлять её в распознавание."/>
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}" Margin="0,4,0,10">
+                            <Run Text="• Ручной" FontWeight="Bold"/><Run Text=" — вы сами задаёте паузу и пороги ниже (пресетом или слайдерами)."/><LineBreak/>
+                            <Run Text="• Авто — по паузам" FontWeight="Bold"/><Run Text=" — ПО измеряет ритм речи и подстраивает порог под темп говорящего: быстрая речь → пауза короче, медленная → длиннее."/><LineBreak/>
+                            <Run Text="• Авто — умная склейка" FontWeight="Bold"/><Run Text=" — вдобавок склеивает оборванные мысли: реплика на союзе/предлоге не режется, ПО ждёт продолжения. Лучший вариант для живого диалога."/><LineBreak/>
+                            <Run Text="В авто-режимах ПО подбирает только порог паузы (тишины) — его слайдер скрыт. Остальные настройки ниже работают всегда." Foreground="{DynamicResource TextMutedBrush}"/>
+                        </TextBlock>
+
+                        <!-- Живое значение авто-паузы (только в авто-режимах; обновляется таймером) -->
+                        <TextBlock x:Name="AutoPauseLive" Visibility="Collapsed" FontSize="11.5" Margin="0,0,0,10">
+                            <Run Text="Текущий порог паузы (авто):" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <Run x:Name="AutoPauseLoopRun" Text="—" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+                            <Run Text="динамик ·" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <Run x:Name="AutoPauseMicRun" Text="—" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+                            <Run Text="микрофон" Foreground="{DynamicResource TextMutedBrush}"/>
+                        </TextBlock>
+
+                        <!-- Пресет аудио — только в ручном режиме (в авто ПО подбирает пороги само) -->
+                        <StackPanel Visibility="{Binding IsManualEndpoint, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Пресет аудио:" Style="{StaticResource Label}"/>
+                            <ComboBox x:Name="AudioPresetCombo" SelectedItem="{Binding SelectedAudioPreset}" Margin="0,2,0,12"/>
+                        </StackPanel>
+
+                        <TextBlock Text="Микрофон (вход):" Style="{StaticResource Label}"/>
+                        <ComboBox x:Name="MicDeviceCombo" Margin="0,2,0,8"/>
+
+                        <!-- Тест микрофона: кнопка + 6 вертикальных полосок-индикаторов уровня -->
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,0,0,12">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button x:Name="MicTestButton" Content="Проверить микрофон" Click="OnMicTestToggle"
+                                            Padding="12,6" Cursor="Hand"/>
+                                    <!-- 6 полосок уровня -->
+                                    <StackPanel x:Name="MicLevelBars" Orientation="Horizontal" VerticalAlignment="Bottom"
+                                                Height="34" Margin="16,0,0,0">
+                                        <Border Width="7" Height="8"  CornerRadius="2" Background="{DynamicResource BorderBrush}" VerticalAlignment="Bottom" Margin="0,0,4,0"/>
+                                        <Border Width="7" Height="13" CornerRadius="2" Background="{DynamicResource BorderBrush}" VerticalAlignment="Bottom" Margin="0,0,4,0"/>
+                                        <Border Width="7" Height="19" CornerRadius="2" Background="{DynamicResource BorderBrush}" VerticalAlignment="Bottom" Margin="0,0,4,0"/>
+                                        <Border Width="7" Height="24" CornerRadius="2" Background="{DynamicResource BorderBrush}" VerticalAlignment="Bottom" Margin="0,0,4,0"/>
+                                        <Border Width="7" Height="29" CornerRadius="2" Background="{DynamicResource BorderBrush}" VerticalAlignment="Bottom" Margin="0,0,4,0"/>
+                                        <Border Width="7" Height="34" CornerRadius="2" Background="{DynamicResource BorderBrush}" VerticalAlignment="Bottom"/>
+                                    </StackPanel>
+                                </StackPanel>
+                                <TextBlock x:Name="MicTestHint" Text="Нажмите «Проверить» и скажите что-нибудь — полоски должны мерцать."
+                                           Foreground="{DynamicResource TextMutedBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                <CheckBox Content="Слушать микрофон в реальном времени (распознавать вашу речь)"
+                                          IsChecked="{Binding CaptureMic, Mode=TwoWay}" Margin="0,10,0,0"
+                                          Foreground="{DynamicResource TextBrush}"/>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="Динамик (loopback):" Style="{StaticResource Label}"/>
+                        <ComboBox x:Name="SpeakerDeviceCombo" Margin="0,2,0,12"/>
+
+                        <!-- Порог тишины — только в ручном режиме (в авто его ведёт контроллер пауз).
+                             Остальные параметры ниже НЕ управляются автоматикой и видны всегда. -->
+                        <StackPanel Visibility="{Binding IsManualEndpoint, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Порог тишины (мс, голос → тишина):" Style="{StaticResource Label}"/>
+                        <Slider Minimum="500" Maximum="2500"
+                                Value="{Binding SilenceThresholdMs, Mode=TwoWay}"
+                                TickFrequency="100" IsSnapToTickEnabled="True"
+                                Margin="0,4,0,4"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                                <Run Text="Текущее:"/>
+                                <Run x:Name="SilenceMsRun" Text="1200" Foreground="{DynamicResource AccentBrush}"/>
+                                <Run Text="мс"/>
+                            </TextBlock>
+                        </StackPanel>
+                        </StackPanel>
+                        <!-- /скрыто в авто -->
+
+                        <TextBlock Text="Минимальная длительность речи (мс):" Style="{StaticResource Label}"/>
+                        <Slider Minimum="200" Maximum="1500"
+                                Value="{Binding MinSpeechMsUi, Mode=TwoWay}"
+                                TickFrequency="100" IsSnapToTickEnabled="True"
+                                Margin="0,4,0,4"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                                <Run Text="Текущее:"/>
+                                <Run x:Name="MinSpeechMsRun" Text="1500" Foreground="{DynamicResource AccentBrush}"/>
+                                <Run Text="мс"/>
+                            </TextBlock>
+                        </StackPanel>
+
+                        <TextBlock Text="Pre-roll (мс, запоминание до начала речи):" Style="{StaticResource Label}"/>
+                        <Slider Minimum="100" Maximum="500"
+                                Value="{Binding PreRollMsUi, Mode=TwoWay}"
+                                TickFrequency="50" IsSnapToTickEnabled="True"
+                                Margin="0,4,0,4"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                                <Run Text="Текущее:"/>
+                                <Run x:Name="PreRollMsRun" Text="300" Foreground="{DynamicResource AccentBrush}"/>
+                                <Run Text="мс"/>
+                            </TextBlock>
+                        </StackPanel>
+
+                        <TextBlock Text="Post-roll (мс, запоминание после конца речи):" Style="{StaticResource Label}"/>
+                        <Slider Minimum="100" Maximum="500"
+                                Value="{Binding PostRollMsUi, Mode=TwoWay}"
+                                TickFrequency="50" IsSnapToTickEnabled="True"
+                                Margin="0,4,0,4"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                                <Run Text="Текущее:"/>
+                                <Run x:Name="PostRollMsRun" Text="300" Foreground="{DynamicResource AccentBrush}"/>
+                                <Run Text="мс"/>
+                            </TextBlock>
+                        </StackPanel>
+
+                        <CheckBox Content="Авто-калибровка порога (сама подстраивается под уровень звука)"
+                                  IsChecked="{Binding AutoCalibrateThreshold, Mode=TwoWay}"
+                                  Margin="0,4,0,2"
+                                  ToolTip="По умолчанию ВЫКЛ: ручной порог 0.001 ловит даже тихую речь, а шум обычного микрофона до него не дотягивает. Включай, если фон реально шумный (ложные срабатывания) — порог будет держаться чуть выше шума автоматически."/>
+
+                        <TextBlock Text="RMS-порог (чувствительность микрофона):" Style="{StaticResource Label}"
+                                   ToolTip="Звук тише порога считается тишиной. 0.001 — максимум чувствительности; если пошли ложные срабатывания от шума — поднимай порог или включи авто-калибровку."/>
+                        <Slider x:Name="RmsSlider" Minimum="0.001" Maximum="0.1"
+                                Value="{Binding RmsThreshold, Mode=TwoWay}"
+                                IsEnabled="{Binding ManualThreshold}"
+                                TickFrequency="0.005" IsSnapToTickEnabled="False"
+                                Margin="0,4,0,4"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,2,0,8">
+                            <Ellipse x:Name="RmsLiveIndicator" Width="10" Height="10" Margin="0,0,6,0"
+                                     VerticalAlignment="Center" Fill="{DynamicResource TextMutedBrush}"/>
+                            <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                                <Run Text="Live RMS:"/>
+                                <Run x:Name="CurrentRmsRun" Text="0.000" Foreground="{DynamicResource TextBrightBrush}"/>
+                                <Run Text="• порог:"/>
+                                <Run x:Name="RmsThresholdRun" Text="0.015" Foreground="{DynamicResource AccentBrush}"/>
+                                <Run Text="(обновляется ~7 раз/сек из аудиопотока)"/>
+                            </TextBlock>
+                        </StackPanel>
+
+                        <CheckBox Content="Только микрофон (без loopback)"
+                                  IsChecked="{Binding MicOnly}"
+                                  Margin="0,16,0,4"/>
+                        <TextBlock Text="Чувствительность детекции речи (в авто-калибровке):" Style="{StaticResource Label}" Margin="0,12,0,2"/>
+                        <ComboBox x:Name="VadModeCombo" SelectedIndex="{Binding VadModeUi}" Margin="0,2,0,4"
+                                  ToolTip="Запас порога над фоновым шумом при включённой авто-калибровке. При ручном пороге влияет только режим 3 (добавляет ZCR-фильтр шума).">
+                            <ComboBoxItem Content="0 — Консервативный (минимум ложных срабатываний)"/>
+                            <ComboBoxItem Content="1 — Умеренный"/>
+                            <ComboBoxItem Content="2 — Стандарт"/>
+                            <ComboBoxItem Content="3 — Чувствительный + фильтр шума (ZCR)"/>
+                        </ComboBox>
+                        <CheckBox Content="Отладочные логи аудио (RMS каждую секунду)"
+                                  IsChecked="{Binding EnableDebugLogs}"
+                                  Margin="0,8,0,4"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ====================== Транскрибация файла ====================== -->
+            <TabItem Header="Транскрибация файла">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12">
+                        <TextBlock Text="Транскрибация аудио/видео" FontSize="16" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentBrush}" Margin="0,0,0,4"/>
+                        <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}" FontSize="13" Margin="0,0,0,14"
+                                   Text="Распознавание готовых записей встроенным движком GigaAM — локально, без интернета. Поддержка mp4, webm, mp3, m4a, wav и др."/>
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="10" Padding="16">
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextBrush}" FontSize="13" Margin="0,0,0,12"
+                                           Text="В отдельном окне: транскрипт с тайм-кодами, AI-саммари (протокол встречи), история распознаваний и экспорт в .txt."/>
+                                <Button x:Name="OpenFileTranscriptionBtn" Content="Открыть транскрибацию файла →"
+                                        Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left"
+                                        Padding="16,8" FontSize="13.5" Cursor="Hand" Click="OnOpenFileTranscription"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ====================== Локальный STT (Docker) ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_LocalStt}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12">
+                        <!-- Экспресс-проверка оборудования -->
+                        <TextBlock Text="ПРОВЕРКА ОБОРУДОВАНИЯ" FontFamily="Cascadia Mono, Consolas"
+                                   FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,8"/>
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,0,0,14">
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" Margin="0,0,0,10"
+                                           Text="Мгновенно оценит CPU/ОЗУ/видеокарту и подскажет, какой движок STT потянет ваше железо."/>
+                                <Button x:Name="HwCheckBtn" Content="Проверить оборудование" Click="OnHwCheck"
+                                        HorizontalAlignment="Left" Padding="12,6" Cursor="Hand"/>
+                                <TextBlock x:Name="HwVerdict" Text="" TextWrapping="Wrap" FontWeight="SemiBold" FontSize="13"
+                                           Margin="0,12,0,0" Visibility="Collapsed"/>
+                                <TextBlock x:Name="HwSpecs" Text="" TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}"
+                                           FontFamily="Cascadia Mono, Consolas" FontSize="11.5" Margin="0,6,0,0" Visibility="Collapsed"/>
+                                <TextBlock x:Name="HwRec" Text="" TextWrapping="Wrap" Foreground="{DynamicResource TextBrush}"
+                                           FontSize="12.5" Margin="0,6,0,0" Visibility="Collapsed"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Встроенный движок (GigaAM ONNX) — без Docker -->
+                        <TextBlock Text="ДВИЖОК РАСПОЗНАВАНИЯ" FontFamily="Cascadia Mono, Consolas"
+                                   FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,8"/>
+                        <TextBlock Text="Движок STT:" Style="{StaticResource Label}"/>
+                        <ComboBox x:Name="SttEngineCombo" SelectedValuePath="Tag" Margin="0,2,0,8"
+                                  SelectionChanged="OnSttEngineChanged">
+                            <ComboBoxItem Content="Встроенный GigaAM (быстрый, без Docker)" Tag="native"/>
+                            <ComboBoxItem Content="Whisper large-v3-turbo (качество, пунктуация)" Tag="whisper"/>
+                            <ComboBoxItem Content="Локальный сервер в Docker (GigaAM)" Tag="docker"/>
+                            <ComboBoxItem Content="Внешний сервер (свой адрес)" Tag="remote"/>
+                        </ComboBox>
+                        <TextBlock Text="⟳ Смена движка применяется сразу после «Сохранить» (модель загрузится за пару секунд, перезапуск не нужен)."
+                                   Foreground="{DynamicResource TextMutedBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,10"/>
+
+                        <!-- Настройки GigaAM — видны ТОЛЬКО когда движок = GigaAM -->
+                        <StackPanel x:Name="GigaamSettingsPanel" Visibility="Collapsed">
+                            <TextBlock Text="GIGAAM (БЫСТРЫЙ)" FontFamily="Cascadia Mono, Consolas"
+                                       FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextDimBrush}" Margin="0,4,0,8"/>
+                            <TextBlock Text="Ускорение GigaAM:" Style="{StaticResource Label}"/>
+                            <ComboBox x:Name="SttAccelCombo" SelectedValuePath="Tag" Margin="0,2,0,8"
+                                      SelectionChanged="OnSttAccelChanged">
+                                <ComboBoxItem Content="CPU — работает везде (рекомендуется)" Tag="cpu"/>
+                                <ComboBoxItem Content="GPU · DirectML (выберите видеокарту ниже)" Tag="directml"/>
+                                <ComboBoxItem Content="Авто (дискретный GPU при наличии, иначе CPU)" Tag="auto"/>
+                            </ComboBox>
+
+                            <StackPanel x:Name="SttGpuPanel">
+                                <TextBlock Text="Видеокарта (для GPU-режима):" Style="{StaticResource Label}"/>
+                                <ComboBox x:Name="SttGpuCombo" Margin="0,2,0,4" SelectionChanged="OnSttGpuChanged"/>
+                            </StackPanel>
+                            <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}" FontSize="11" Margin="0,0,0,8"
+                                       Text="На слабой встроенной графике (Intel UHD) GPU часто медленнее CPU — оставьте CPU. Смена применяется после перезапуска."/>
+
+                            <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,0,0,10">
+                                <StackPanel>
+                                    <TextBlock x:Name="GigaamModelStatus" TextWrapping="Wrap" FontWeight="SemiBold"
+                                               FontSize="12.5" Margin="0,0,0,8" Text=""/>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Button x:Name="SttDownloadBtn" Content="Скачать модель GigaAM (~930 МБ)" Click="OnSttDownloadModel"
+                                                Style="{StaticResource PrimaryButton}" Padding="12,6" Cursor="Hand" Visibility="Collapsed"/>
+                                        <Button x:Name="GigaamDeleteBtn" Content="Удалить модель" Click="OnGigaamDeleteModel"
+                                                Padding="12,6" Cursor="Hand" Visibility="Collapsed"/>
+                                        <TextBlock x:Name="SttDownloadStatus" Text="" VerticalAlignment="Center" Margin="14,0,0,0"
+                                                   FontFamily="Cascadia Mono, Consolas" FontSize="12"/>
+                                    </StackPanel>
+                                    <ProgressBar x:Name="SttDownloadBar" Height="6" Minimum="0" Maximum="1" Value="0"
+                                                 Margin="0,8,0,0" Visibility="Collapsed"/>
+                                    <TextBlock Text="~930 МБ, в %APPDATA%\BrainstormBuddy\models. Применяется после перезапуска."
+                                               Foreground="{DynamicResource TextMutedBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- Whisper: настройки видны ТОЛЬКО когда движок = Whisper (не путаем юзера) -->
+                        <StackPanel x:Name="WhisperSettingsPanel" Visibility="Collapsed">
+                            <TextBlock Text="WHISPER (КАЧЕСТВО)" FontFamily="Cascadia Mono, Consolas"
+                                       FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextDimBrush}" Margin="0,4,0,8"/>
+                            <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,0,0,14">
+                                <StackPanel>
+                                    <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" Margin="0,0,0,10"
+                                               Text="Whisper large-v3-turbo: пунктуация, заглавные, английский, честные тайм-коды. Качественнее GigaAM, но тяжелее (для живого ассистента медленнее — лучше на GPU). Модель качается один раз."/>
+                                    <!-- Один статус: скачана ↔ не скачана (взаимоисключающе) -->
+                                    <TextBlock x:Name="WhisperModelStatus" TextWrapping="Wrap" FontWeight="SemiBold"
+                                               FontSize="12.5" Margin="0,0,0,8" Text=""/>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Button x:Name="WhisperDownloadBtn" Content="Скачать модель (~547 МБ)" Click="OnWhisperDownloadModel"
+                                                Style="{StaticResource PrimaryButton}" Padding="12,6" Cursor="Hand" Visibility="Collapsed"/>
+                                        <Button x:Name="WhisperDeleteBtn" Content="Удалить модель" Click="OnWhisperDeleteModel"
+                                                Padding="12,6" Cursor="Hand" Margin="0,0,0,0" Visibility="Collapsed"/>
+                                        <TextBlock x:Name="WhisperDownloadStatus" Text="" VerticalAlignment="Center" Margin="14,0,0,0"
+                                                   FontFamily="Cascadia Mono, Consolas" FontSize="12"/>
+                                    </StackPanel>
+                                    <ProgressBar x:Name="WhisperDownloadBar" Height="6" Minimum="0" Maximum="1" Value="0"
+                                                 Margin="0,8,0,0" Visibility="Collapsed"/>
+                                    <StackPanel x:Name="WhisperAccelPanel" Margin="0,10,0,0" Visibility="Collapsed">
+                                        <TextBlock Text="Ускорение Whisper:" Style="{StaticResource Label}"/>
+                                        <ComboBox x:Name="WhisperAccelCombo" SelectedValuePath="Tag" Margin="0,2,0,4"
+                                                  SelectionChanged="OnWhisperAccelChanged">
+                                            <ComboBoxItem Content="Авто — GPU (Vulkan), иначе CPU" Tag="auto"/>
+                                            <ComboBoxItem Content="Только CPU" Tag="cpu"/>
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <TextBlock Text="~547 МБ (q5_0), в %APPDATA%\BrainstormBuddy\models. Смена применяется после перезапуска."
+                                               Foreground="{DynamicResource TextMutedBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,0,0,14">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button x:Name="SttSpeedTestBtn" Content="Замерить скорость" Click="OnSttSpeedTest"
+                                            Padding="12,6" Cursor="Hand"/>
+                                    <TextBlock x:Name="SttSpeedResult" Text="—" VerticalAlignment="Center" Margin="14,0,0,0"
+                                               FontFamily="Cascadia Mono, Consolas" FontSize="12"/>
+                                </StackPanel>
+                                <TextBlock Text="Прогоняет 3-сек эталон через активный движок → показывает мс и RTF (доля реального времени; меньше = быстрее)."
+                                           Foreground="{DynamicResource TextMutedBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Docker-сервер — виден ТОЛЬКО когда движок = Внешний сервер / Docker -->
+                        <StackPanel x:Name="DockerSettingsPanel" Visibility="Collapsed">
+                        <TextBlock Text="STT-СЕРВЕР В DOCKER (GIGAAM)" FontFamily="Cascadia Mono, Consolas"
+                                   FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextDimBrush}"
+                                   Margin="0,0,0,8"/>
+                        <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" Margin="0,0,0,10"
+                                   Text="Распознавание русской речи локально, без внешних серверов. Требуется Docker Desktop. Первый запуск скачивает модель (~450 МБ) — до 5 минут."/>
+
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}" Margin="0,0,0,10"
+                                   Text="Приложение само поднимает контейнер на localhost:8765 и распознаёт через него — адрес указывать не нужно. Управление контейнером ниже."/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <Ellipse x:Name="LocalSttStatusDot" Width="10" Height="10" Fill="{DynamicResource TextMutedBrush}" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="LocalSttStatusText" Text="Остановлен" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextBrush}" FontWeight="SemiBold"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                            <Button x:Name="LocalSttStartBtn" Content="Запустить" Style="{StaticResource PrimaryButton}" Width="110" Click="OnLocalSttStart" Margin="0,0,6,0"/>
+                            <Button x:Name="LocalSttStopBtn" Content="Остановить" Width="110" Click="OnLocalSttStop" Margin="0,0,6,0"/>
+                            <Button x:Name="LocalSttRemoveBtn" Content="Удалить" Width="100" Click="OnLocalSttRemove" Margin="0,0,6,0"/>
+                            <Button x:Name="LocalSttPingBtn" Content="Пинг" Width="80" Click="OnLocalSttPing"/>
+                        </StackPanel>
+
+                        <TextBlock Text="МЕТРИКИ КОНТЕЙНЕРА" FontFamily="Cascadia Mono, Consolas"
+                                   FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextDimBrush}"
+                                   Margin="0,4,0,6"/>
+                        <TextBlock x:Name="LocalSttStatsText" FontFamily="Cascadia Mono, Consolas" FontSize="12"
+                                   Foreground="{DynamicResource TextBrush}" Text="CPU: -   RAM: -   ping: -   uptime: -"/>
+
+                        <TextBlock Text="ЛОГ СБОРКИ / ЗАПУСКА" FontFamily="Cascadia Mono, Consolas"
+                                   FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextDimBrush}"
+                                   Margin="0,14,0,6"/>
+                        <TextBox x:Name="LocalSttLogBox" IsReadOnly="True" Height="180"
+                                 FontFamily="Cascadia Mono, Consolas" FontSize="11"
+                                 Background="{DynamicResource BgDarkerBrush}" Foreground="{DynamicResource TextBrush}"
+                                 VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap"
+                                 HorizontalScrollBarVisibility="Auto"/>
+                        </StackPanel>
+
+                        <!-- Внешний сервер — виден ТОЛЬКО когда движок = Внешний сервер (свой адрес) -->
+                        <StackPanel x:Name="RemoteUrlPanel" Visibility="Collapsed">
+                            <TextBlock Text="ВНЕШНИЙ STT-СЕРВЕР" FontFamily="Cascadia Mono, Consolas"
+                                       FontSize="11" FontWeight="Bold" Foreground="{DynamicResource TextDimBrush}" Margin="0,4,0,8"/>
+                            <TextBlock Text="Адрес сервера (OpenAI-совместимый, .../audio/transcriptions):" Style="{StaticResource Label}"/>
+                            <TextBox Text="{Binding SttBaseUrl, UpdateSourceTrigger=PropertyChanged, TargetNullValue=''}" Margin="0,2,0,6"
+                                     ToolTip="Напр. http://192.168.1.50:8000/v1 или адрес вашего сервера. Пусто = адрес LLM."/>
+                            <TextBlock Text="Имя модели на сервере:" Style="{StaticResource Label}"/>
+                            <TextBox Text="{Binding SttModel, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6"
+                                     ToolTip="Модель, которую ждёт сервер (напр. gigaam-v2, whisper-1)."/>
+                            <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}" Margin="0,0,0,12"
+                                       Text="Распознавание идёт на вашем сервере в сети. Встроенные GigaAM/Whisper и локальный Docker работают без этого адреса."/>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ====================== Оверлей ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_Overlay}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12">
+                        <TextBlock Text="Прозрачность (0.2 — почти прозрачный, 1.0 — непрозрачный):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="OpacitySlider" Minimum="0.2" Maximum="1.0"
+                                Value="{Binding WindowOpacity, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                TickFrequency="0.05" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run x:Name="CurrentOpacityRun"
+                                 Text="{Binding Value, ElementName=OpacitySlider, StringFormat=F2}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Позиция на экране:" Style="{StaticResource Label}"/>
+                        <ComboBox x:Name="PositionCombo" SelectedValue="{Binding WindowPosition}" SelectedValuePath="Content" Margin="0,2,0,12">
+                            <ComboBoxItem Content="TopRight"/>
+                            <ComboBoxItem Content="TopLeft"/>
+                            <ComboBoxItem Content="BottomRight"/>
+                            <ComboBoxItem Content="BottomLeft"/>
+                            <ComboBoxItem Content="Center"/>
+                        </ComboBox>
+
+                        <CheckBox Content="Показывать рамку (режим совместимости)"
+                                  IsChecked="{Binding ShowCompatibilityBorder}"
+                                  Margin="0,4,0,4"/>
+
+                        <CheckBox Content="Сквозной режим (клики проходят через оверлей)"
+                                  IsChecked="{Binding ClickThrough}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox Content="Показывать техническую строку (rec / STT / LLM) у ответа"
+                                  IsChecked="{Binding ShowTimingLine}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox x:Name="EngineerModeCheck" Content="Инженерный режим (тонкие настройки на главном экране)"
+                                  IsChecked="{Binding EngineerMode}"
+                                  Margin="0,0,0,2"/>
+                        <TextBlock Text="Показывает на оверлее ползунки паузы/чанка, пресеты скорости речи и эквалайзер. Выключено — главный экран чистый. Применяется по «Сохранить»."
+                                   TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}"
+                                   Margin="0,0,0,6"/>
+
+                        <TextBlock Text="Размер шрифта в оверлее (pt):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="FontSizeSlider" Minimum="10" Maximum="22"
+                                Value="{Binding FontSize, Mode=TwoWay}"
+                                TickFrequency="1" IsSnapToTickEnabled="True"
+                                Margin="0,4,0,4"/>
+
+                        <TextBlock Text="{DynamicResource L_Theme}" Style="{DynamicResource Label}" Margin="0,8,0,2"/>
+                        <ComboBox x:Name="ThemeCombo" SelectedValue="{Binding Theme}" SelectedValuePath="Content" Margin="0,2,0,12">
+                            <ComboBoxItem Content="HackerTheme"/>
+                            <ComboBoxItem Content="LightTheme"/>
+                        </ComboBox>
+
+                        <TextBlock Text="{DynamicResource L_Language}" Style="{StaticResource Label}" Margin="0,8,0,2"/>
+                        <ComboBox x:Name="LanguageCombo" SelectedValuePath="Tag" Margin="0,2,0,12" SelectionChanged="OnLanguageChanged">
+                            <ComboBoxItem Content="Русский" Tag="ru"/>
+                            <ComboBoxItem Content="English" Tag="en"/>
+                        </ComboBox>
+
+                        <TextBlock Text="Папка для экспорта (пусто = Документы\BrainstormBuddy):" Style="{StaticResource Label}" Margin="0,12,0,2"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0" Text="{Binding SavePath, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Оставьте пустым — экспорт пойдёт в Документы\BrainstormBuddy"/>
+                            <Button Grid.Column="1" Content="…" Width="32" Margin="4,0,0,0" Click="OnBrowseSavePath"
+                                    ToolTip="Выбрать папку..."/>
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ====================== Горячие клавиши ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_Hotkeys}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12">
+                        <TextBlock Text="Показать/скрыть оверлей:" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding ToggleVisibilityHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+
+                        <TextBlock Text="Изменить прозрачность:" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding ChangeOpacityHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+
+                        <TextBlock Text="Открыть настройки:" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding OpenSettingsHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+
+                        <TextBlock Text="Пауза аудио:" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding TogglePauseHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+
+                        <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextDimBrush}" FontSize="11" Margin="0,8,0,0"
+                                   Text="Поддерживаемые модификаторы: Ctrl, Shift, Alt, Win + клавиша A–Z, 0–9, F1–F12, Space, Tab, Esc."/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ====================== О приложении ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_About}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12">
+                        <TextBlock Text="BrainstormBuddy v2.5.2" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
+                        <TextBlock Text="Текстовый AI-помощник для совещаний и интервью." Margin="0,4,0,12" Foreground="{DynamicResource TextMutedBrush}"/>
+                        <TextBlock><Run Text="Автор:" Foreground="{DynamicResource TextMutedBrush}"/><Run Text=" liveinno" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/></TextBlock>
+                        <TextBlock><Run Text="Версия:" Foreground="{DynamicResource TextMutedBrush}"/><Run Text=" 2.5.2" Foreground="{DynamicResource TextBrightBrush}"/></TextBlock>
+                        <TextBlock><Run Text="Логи:" Foreground="{DynamicResource TextMutedBrush}"/><Run x:Name="LogPathRun" Text="" Foreground="{DynamicResource TextBrightBrush}"/></TextBlock>
+                        <Button Content="Открыть папку с логами" Width="220" Margin="0,10,0,0" Click="OnOpenLogs" HorizontalAlignment="Left"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ====================== Профиль ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_Profile}">
+                <!-- Grid, чтобы поле резюме тянулось на всю доступную высоту (резина), а не жило в 3 строки -->
+                <Grid Margin="12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Text="Краткое резюме (факты, числа, проекты — ассистент берёт данные строго отсюда):" Style="{StaticResource Label}"/>
+                    <TextBox Grid.Row="1" x:Name="ResumeSummaryBox" Text="{Binding UserProfileSummary, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource MultilineTextBox}" MinHeight="200"
+                             VerticalAlignment="Stretch" VerticalContentAlignment="Top"
+                             VerticalScrollBarVisibility="Auto" Margin="0,2,0,8"/>
+                    <Button Grid.Row="2" Content="Сохранить резюме" Click="OnSaveProfile" Width="160" HorizontalAlignment="Left" Margin="0,0,0,12"/>
+                    <TextBlock Grid.Row="3" Text="Не умею / избегать:" Style="{StaticResource Label}"/>
+                    <TextBox Grid.Row="4" Text="{Binding UserProfileCannotDo, UpdateSourceTrigger=PropertyChanged}"
+                             Margin="0,2,0,12" MinHeight="70" TextWrapping="Wrap"
+                             AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+                </Grid>
+            </TabItem>
+
+            <!-- ====================== Агенты ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_Agents}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12">
+                        <CheckBox Content="Включить мульти-агенты" IsChecked="{Binding IsMultiAgentEnabled}" Margin="0,0,0,8"/>
+                        <TextBlock Text="Сценарий:" Style="{StaticResource Label}"/>
+                        <ComboBox x:Name="ScenarioCombo" ItemsSource="{Binding Scenarios}" DisplayMemberPath="Name" SelectedValuePath="Id" SelectedValue="{Binding ActiveScenarioId}" Margin="0,2,0,12"/>
+                        <ItemsControl ItemsSource="{Binding ActiveScenarioAgents}" Margin="0,8,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,8">
+                                        <StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox IsChecked="{Binding Enabled}" VerticalAlignment="Center"/>
+                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Margin="6,0,0,0" Foreground="{DynamicResource AccentBrush}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ====================== Диагностика ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_LlmLogs}">
+                <Grid Margin="6">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Сбор логов для поддержки -->
+                    <Border Grid.Row="0" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,10">
+                        <StackPanel>
+                            <TextBlock Text="Логи для поддержки" FontWeight="SemiBold" Foreground="{DynamicResource TextBrightBrush}" Margin="0,0,0,4"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" Margin="0,0,0,8"
+                                       Text="Соберёт обезличенный архив (логи, настройки без токенов, сведения о системе) в папку Документы\BrainstormBuddy. История вопросов/ответов и транскрибации в архив НЕ попадают."/>
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="CollectLogsBtn" Content="Собрать логи для поддержки" Style="{StaticResource PrimaryButton}"
+                                        Padding="12,6" Click="OnCollectSupportLogs" Cursor="Hand"/>
+                                <Button Content="Открыть папку логов" Margin="8,0,0,0" Padding="10,6" Click="OnOpenLogsFolder" Cursor="Hand"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Настройки логирования -->
+                    <StackPanel Grid.Row="1" Margin="2,0,0,10">
+                        <CheckBox Content="Вести лог-файл (нужно для диагностики)" IsChecked="{Binding EnableFileLogging}" Margin="0,0,0,6"
+                                  ToolTip="Выключите, чтобы приложение не писало app.log на диск"/>
+                        <CheckBox Content="Подробный лог (verbose, для отладки)" IsChecked="{Binding VerboseLogging}" Margin="0,0,0,6"
+                                  ToolTip="Включает уровень Debug. Может содержать больше деталей — держите выключенным в обычной работе"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Хранить файлов (ротация):" VerticalAlignment="Center" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <TextBox Width="44" Margin="8,0,0,0" Text="{Binding LogMaxFiles, UpdateSourceTrigger=PropertyChanged}"
+                                     VerticalContentAlignment="Center" ToolTip="Сколько файлов app.log хранить (1 = без архивов). Размер одного ≈ 1 МБ"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- LLM-лог (сессионный) -->
+                    <Grid Grid.Row="2" Margin="0,0,0,4">
+                        <TextBlock Text="LLM-лог текущей сессии" FontWeight="SemiBold" Foreground="{DynamicResource TextBrightBrush}" VerticalAlignment="Center"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="Очистить" Width="90" Click="OnClearLlmLogs" Margin="0,0,4,0"/>
+                            <Button Content="Копировать" Width="100" Click="OnCopyLlmLogs"/>
+                        </StackPanel>
+                    </Grid>
+                    <TextBox Grid.Row="3" Text="{Binding LlmLogText, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" FontSize="11"
+                             Background="{DynamicResource BgBrush}" Foreground="{DynamicResource TextBrightBrush}"
+                             VerticalScrollBarVisibility="Auto" BorderThickness="1" BorderBrush="{DynamicResource BorderBrush}"/>
+                </Grid>
+            </TabItem>
+        </TabControl>
+
+        <DockPanel Grid.Row="1" Margin="0,12,0,0" LastChildFill="False">
+            <!-- Кнопка обучения — в самом низу слева (по фидбеку) -->
+            <Button DockPanel.Dock="Left" Content="Запустить обучение" Click="OnShowOnboarding"
+                    Width="170" Margin="4" Padding="10,5" Cursor="Hand"
+                    ToolTip="Интерактивный тур по настройкам и главному экрану"/>
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="{DynamicResource L_OpenFolder}" Width="130" Margin="4" Click="OnOpenConfigFolder"/>
+                <Button x:Name="SaveBtn" Content="{DynamicResource L_Save}" Style="{StaticResource PrimaryButton}" Width="120" Margin="4" Click="OnSave"/>
+                <Button Content="{DynamicResource L_CloseBtn}" Width="100" Margin="4" Click="OnClose"/>
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

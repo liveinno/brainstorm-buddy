@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Resources\Icons\app.ico</ApplicationIcon>
+    <AssemblyName>BrainstormBuddy</AssemblyName>
+    <RootNamespace>BrainstormBuddy</RootNamespace>
+    <Version>2.5.3</Version>
+    <Company>BrainstormBuddy</Company>
+    <Product>BrainstormBuddy</Product>
+    <LangVersion>12</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="System.Management" Version="10.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BrainstormBuddy.Core\BrainstormBuddy.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Resources\Icons\tray.ico" />
+    <Resource Include="Resources\Icons\app.ico" />
+    <Resource Include="Resources\Fonts\*.ttf" />
+    <None Update="Resources\test_audio_short.flac">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\LocalSttBridge\**\*">
+      <Link>LocalSttBridge\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="System.Windows.Media.Brush" Alias="Brush" />
+    <Using Include="System.Windows.Media.Brushes" Alias="Brushes" />
+    <Using Include="System.Windows.Media.Color" Alias="Color" />
+    <Using Include="System.Windows.Clipboard" Alias="Clipboard" />
+    <Using Include="System.Windows.MessageBox" Alias="MessageBox" />
+    <Using Include="System.Windows.Input.MouseEventArgs" Alias="MouseEventArgs" />
+    <Using Include="System.Net.Http.HttpRequestException" Alias="HttpRequestException" />
+    <Using Include="System.Windows.Threading.DispatcherTimer" Alias="DispatcherTimer" />
+  </ItemGroup>
+
+</Project>

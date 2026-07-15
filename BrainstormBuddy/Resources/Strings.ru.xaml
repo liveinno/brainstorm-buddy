@@ -1,0 +1,98 @@
+﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <!-- Локализация: русский. Парный файл — Strings.en.xaml (ключи ДОЛЖНЫ совпадать).
+         Переключение: App.ApplyLanguage(), настройка Config.Ui.Language. -->
+
+    <!-- Оверлей: зоны -->
+    <sys:String x:Key="L_Listening">Слушаю…</sys:String>
+    <sys:String x:Key="L_ColdStartTitle">Готовлю распознавание речи</sys:String>
+    <sys:String x:Key="L_ColdStartBody">Первый запуск прогревается — ответы появятся через несколько секунд после начала речи.</sys:String>
+    <sys:String x:Key="L_Question">ВОПРОС</sys:String>
+    <sys:String x:Key="L_Answer">ОТВЕТ</sys:String>
+    <sys:String x:Key="L_HrdAdvice">HRD СОВЕТ</sys:String>
+    <sys:String x:Key="L_Defense">ЗАЩИТА</sys:String>
+    <sys:String x:Key="L_Expanded">РАСШИРЕННЫЙ ОТВЕТ</sys:String>
+    <sys:String x:Key="L_Silence">ТИШИНА</sys:String>
+    <sys:String x:Key="L_ChunkMax">ЧАНК МАКС</sys:String>
+    <sys:String x:Key="L_Audio">АУДИО</sys:String>
+    <sys:String x:Key="L_TokensFmt">Токены: {0:N0}  (in {1:N0} / out {2:N0})</sys:String>
+    <sys:String x:Key="L_SecretHint">Секретное сообщение в LLM…</sys:String>
+    <sys:String x:Key="L_WaitingLlm">(ожидание ответа LLM…)</sys:String>
+    <sys:String x:Key="L_AgentsSilent">(агенты промолчали)</sys:String>
+    <sys:String x:Key="L_MicNoted">🎧 ваша реплика — учтена в контексте</sys:String>
+
+    <!-- Оверлей: тултипы -->
+    <sys:String x:Key="L_TT_Preset">Активный системный промпт для LLM</sys:String>
+    <sys:String x:Key="L_TT_Rec">Запись аудио</sys:String>
+    <sys:String x:Key="L_TT_Llm">Отправка в LLM</sys:String>
+    <sys:String x:Key="L_TT_LlmPause">Пауза LLM (Ctrl+Shift+Y)</sys:String>
+    <sys:String x:Key="L_TT_AudioPause">Пауза аудио (Ctrl+Shift+P)</sys:String>
+    <sys:String x:Key="L_TT_Settings">Настройки (Ctrl+Shift+S)</sys:String>
+    <sys:String x:Key="L_TT_AutoScroll">Автоскролл</sys:String>
+    <sys:String x:Key="L_TT_SendNow">Отправить сейчас (не ждать паузу)</sys:String>
+    <sys:String x:Key="L_TT_Export">Экспорт транскрипта</sys:String>
+    <sys:String x:Key="L_TT_Protocol">AI-протокол встречи</sys:String>
+    <sys:String x:Key="L_TT_Screenshot">Режим скриншота (Ctrl+Shift+C)</sys:String>
+    <sys:String x:Key="L_TT_SlowSpeech">Медленная речь (пауза длиннее)</sys:String>
+    <sys:String x:Key="L_TT_ResetSpeed">Обычная речь (сбросить)</sys:String>
+    <sys:String x:Key="L_TT_FastSpeech">Быстрая речь (пауза короче)</sys:String>
+    <sys:String x:Key="L_TT_Cloak">Сквозной режим (клики насквозь)</sys:String>
+    <sys:String x:Key="L_TT_Erase">Очистить историю (новый чат)</sys:String>
+    <sys:String x:Key="L_TT_Hide">Скрыть оверлей (Ctrl+Shift+H)</sys:String>
+    <sys:String x:Key="L_TT_NoticeHide">Скрыть уведомление</sys:String>
+    <sys:String x:Key="L_TT_ChatSend">Отправить сообщение в LLM</sys:String>
+    <sys:String x:Key="L_TT_ChatInput">Введите текст и нажмите Enter для отправки в LLM как [secret]</sys:String>
+    <sys:String x:Key="L_TT_SilenceSlider">Пауза (сек), после которой реплика уходит в STT (0.4–10)</sys:String>
+    <sys:String x:Key="L_TT_ChunkSlider">Максимальная длина аудио-чанка (сек, 8–120)</sys:String>
+    <sys:String x:Key="L_TT_Timeline">Розовый = звук • Синий = STT • Зелёный = ответ</sys:String>
+    <sys:String x:Key="L_TT_TimelineHeader">Свернуть/развернуть эквалайзер</sys:String>
+    <sys:String x:Key="L_TT_LlmOff">Выключить LLM — чистый транскрибатор (только распознавание речи)</sys:String>
+    <sys:String x:Key="L_TT_SpeakerMute">Выключить динамик — не распознавать звук системы</sys:String>
+    <sys:String x:Key="L_TT_SttQueue">Очередь STT: чанков ждёт распознавания · секунд аудио ещё в буферах</sys:String>
+
+    <!-- Оверлей: контекст-меню -->
+    <sys:String x:Key="L_CM_CopyAll">Копировать всё на экране</sys:String>
+    <sys:String x:Key="L_CM_CopyHistory">Копировать всю историю (за сессию)</sys:String>
+    <sys:String x:Key="L_CM_CopyQuestion">Копировать вопрос</sys:String>
+    <sys:String x:Key="L_CM_CopyAnswer">Копировать ответ</sys:String>
+    <sys:String x:Key="L_CM_Expand">Ответить расширенно</sys:String>
+    <sys:String x:Key="L_CM_ClearExpanded">Сбросить расширенный ответ</sys:String>
+    <sys:String x:Key="L_CM_Focus">Фокус на этой паре</sys:String>
+    <sys:String x:Key="L_CM_ClearFocus">Снять фокус со всех</sys:String>
+
+    <!-- Статусы (из кода) -->
+    <sys:String x:Key="L_St_AudioPaused">Аудио на паузе</sys:String>
+    <sys:String x:Key="L_St_LlmPaused">LLM на паузе — аудио записывается</sys:String>
+    <sys:String x:Key="L_St_Thinking">Думаю…</sys:String>
+    <sys:String x:Key="L_St_NoConnection">Нет соединения с сервером</sys:String>
+    <sys:String x:Key="L_SttQueueFmt">STT: {0} в очереди · {1:F1}с в буфере</sys:String>
+
+    <!-- Настройки: сайдбар -->
+    <sys:String x:Key="L_Tab_Api">API</sys:String>
+    <sys:String x:Key="L_Tab_Llm">LLM</sys:String>
+    <sys:String x:Key="L_Tab_Audio">Аудио</sys:String>
+    <sys:String x:Key="L_Tab_LocalStt">Распознавание речи (STT)</sys:String>
+    <sys:String x:Key="L_Tab_Overlay">Оверлей</sys:String>
+    <sys:String x:Key="L_Tab_Hotkeys">Горячие клавиши</sys:String>
+    <sys:String x:Key="L_Tab_About">О приложении</sys:String>
+    <sys:String x:Key="L_Tab_Profile">Резюме</sys:String>
+    <sys:String x:Key="L_Tab_Agents">Агенты</sys:String>
+    <sys:String x:Key="L_Tab_LlmLogs">Диагностика</sys:String>
+
+    <!-- Настройки: футер и общее -->
+    <sys:String x:Key="L_Save">Сохранить</sys:String>
+    <sys:String x:Key="L_CloseBtn">Закрыть</sys:String>
+    <sys:String x:Key="L_OpenFolder">Открыть папку</sys:String>
+    <sys:String x:Key="L_CheckConnection">Проверить подключение</sys:String>
+    <sys:String x:Key="L_Language">Язык интерфейса / Language:</sys:String>
+    <sys:String x:Key="L_Theme">Тема оформления:</sys:String>
+
+    <sys:String x:Key="L_SendBtn">Отправить</sys:String>
+    <sys:String x:Key="L_Last2Min">последние 2 мин</sys:String>
+
+    <sys:String x:Key="L_TT_Minimize">Свернуть</sys:String>
+    <sys:String x:Key="L_TT_Maximize">Развернуть</sys:String>
+
+</ResourceDictionary>

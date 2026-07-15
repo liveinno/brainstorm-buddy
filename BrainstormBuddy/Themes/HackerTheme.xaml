@@ -1,0 +1,69 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ТЁМНАЯ ТЕМА — токены 1:1 из newdesign/Overlay Final.dc.html (вариант 6a).
+         Имя файла оставлено HackerTheme для совместимости (конфиги/тестер),
+         содержимое — «Тёмный премиум» дизайнера: индиго-акцент, глубокий сине-чёрный фон. -->
+
+    <ResourceDictionary.MergedDictionaries>
+        <ResourceDictionary Source="../Resources/IconsDark.xaml"/>
+    </ResourceDictionary.MergedDictionaries>
+
+    <!-- Шрифт данных (тайминги, mono-подписи): вложенный JetBrains Mono -->
+    <FontFamily x:Key="MonoFont">pack://application:,,,/Resources/Fonts/#JetBrains Mono</FontFamily>
+
+    <!-- Фоны -->
+    <SolidColorBrush x:Key="BgBrush" Color="#0a0e17"/>
+    <SolidColorBrush x:Key="BgDarkerBrush" Color="#070a11"/>
+    <SolidColorBrush x:Key="PanelBrush" Color="#141b2c"/>
+    <SolidColorBrush x:Key="BgMediumBrush" Color="#141c2e"/>
+    <SolidColorBrush x:Key="BgLightBrush" Color="#1e2740"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="#26314a"/>
+    <SolidColorBrush x:Key="HoverBrush" Color="#1c2540"/>
+
+    <!-- Фон окна: radial-gradient(130% 90% at 50% 0%, #141c2e 0%, #0a0e17 55%, #070a11 100%) -->
+    <RadialGradientBrush x:Key="WindowBgBrush" Center="0.5,0" GradientOrigin="0.5,0" RadiusX="1.3" RadiusY="0.9">
+        <GradientStop Color="#141c2e" Offset="0"/>
+        <GradientStop Color="#0a0e17" Offset="0.55"/>
+        <GradientStop Color="#070a11" Offset="1"/>
+    </RadialGradientBrush>
+
+    <!-- Текст -->
+    <SolidColorBrush x:Key="TextBrush" Color="#c8d3e6"/>
+    <SolidColorBrush x:Key="TextBrightBrush" Color="#eef3fb"/>
+    <SolidColorBrush x:Key="TextMutedBrush" Color="#9fb0cc"/>
+    <SolidColorBrush x:Key="TextDimBrush" Color="#7f8ea8"/>
+    <SolidColorBrush x:Key="TextFaintBrush" Color="#6d7f9e"/>
+
+    <!-- Акцент: индиго linear-gradient(135deg, #6f8cff, #5563e6) -->
+    <SolidColorBrush x:Key="AccentBrush" Color="#6f8cff"/>
+    <SolidColorBrush x:Key="AccentDimBrush" Color="#5563e6"/>
+    <SolidColorBrush x:Key="AccentTextBrush" Color="#ffffff"/>
+    <SolidColorBrush x:Key="AccentSoftBrush" Color="#8fa8ff"/>
+    <LinearGradientBrush x:Key="AccentGradientBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#6f8cff" Offset="0"/>
+        <GradientStop Color="#5563e6" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="SliderFillBrush" StartPoint="0,0.5" EndPoint="1,0.5">
+        <GradientStop Color="#5b63e6" Offset="0"/>
+        <GradientStop Color="#8fa8ff" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- Семантика (по макету 6a) -->
+    <SolidColorBrush x:Key="SuccessBrush" Color="#68d6a4"/>
+    <SolidColorBrush x:Key="SuccessIconBrush" Color="#7fe0ae"/>
+    <SolidColorBrush x:Key="WarnBrush" Color="#f0a860"/>
+    <SolidColorBrush x:Key="ErrorBrush" Color="#e07a8a"/>
+    <SolidColorBrush x:Key="CloseIconBrush" Color="#e88a95"/>
+    <SolidColorBrush x:Key="BoltBrush" Color="#ffd769"/>
+    <SolidColorBrush x:Key="IconBrush" Color="#9fb0cc"/>
+    <SolidColorBrush x:Key="IconDimBrush" Color="#8494ad"/>
+
+    <!-- История: бабл вопроса и карточка ответа -->
+    <SolidColorBrush x:Key="QuestionBubbleBrush" Color="#1a2233"/>
+    <LinearGradientBrush x:Key="AnswerCardBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#161f30" Offset="0"/>
+        <GradientStop Color="#131b2a" Offset="1"/>
+    </LinearGradientBrush>
+</ResourceDictionary>

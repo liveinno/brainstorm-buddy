@@ -1,0 +1,16 @@
+{
+  "sample_rate": 16000,
+  "n_fft": 400,
+  "win_length": 400,
+  "hop_length": 160,
+  "n_mels": 64,
+  "window": "hann",
+  "power": 2.0,
+  "log": "ln(clamp(x,1e-9,1e9))",
+  "mel_scale": "htk",
+  "f_min": 0.0,
+  "f_max": 8000.0,
+  "norm": null,
+  "labels_count": 33,
+  "blank": "last_or_extra"
+}

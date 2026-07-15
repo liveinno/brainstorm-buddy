@@ -1,0 +1,97 @@
+﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <!-- Localization: English. Keys MUST match Strings.ru.xaml. -->
+
+    <!-- Overlay: zones -->
+    <sys:String x:Key="L_Listening">Listening…</sys:String>
+    <sys:String x:Key="L_ColdStartTitle">Warming up speech recognition</sys:String>
+    <sys:String x:Key="L_ColdStartBody">First launch is warming up — answers will appear a few seconds after speech begins.</sys:String>
+    <sys:String x:Key="L_Question">QUESTION</sys:String>
+    <sys:String x:Key="L_Answer">ANSWER</sys:String>
+    <sys:String x:Key="L_HrdAdvice">HR ADVICE</sys:String>
+    <sys:String x:Key="L_Defense">DEFENSE</sys:String>
+    <sys:String x:Key="L_Expanded">EXPANDED ANSWER</sys:String>
+    <sys:String x:Key="L_Silence">SILENCE</sys:String>
+    <sys:String x:Key="L_ChunkMax">CHUNK MAX</sys:String>
+    <sys:String x:Key="L_Audio">AUDIO</sys:String>
+    <sys:String x:Key="L_TokensFmt">Tokens: {0:N0}  (in {1:N0} / out {2:N0})</sys:String>
+    <sys:String x:Key="L_SecretHint">Send secret message to LLM…</sys:String>
+    <sys:String x:Key="L_WaitingLlm">(waiting for LLM response…)</sys:String>
+    <sys:String x:Key="L_AgentsSilent">(agents stayed silent)</sys:String>
+    <sys:String x:Key="L_MicNoted">🎧 your line — added to context</sys:String>
+
+    <!-- Overlay: tooltips -->
+    <sys:String x:Key="L_TT_Preset">Active system prompt for the LLM</sys:String>
+    <sys:String x:Key="L_TT_Rec">Audio recording</sys:String>
+    <sys:String x:Key="L_TT_Llm">Sending to LLM</sys:String>
+    <sys:String x:Key="L_TT_LlmPause">Pause LLM (Ctrl+Shift+Y)</sys:String>
+    <sys:String x:Key="L_TT_AudioPause">Pause audio (Ctrl+Shift+P)</sys:String>
+    <sys:String x:Key="L_TT_Settings">Settings (Ctrl+Shift+S)</sys:String>
+    <sys:String x:Key="L_TT_AutoScroll">Auto-scroll</sys:String>
+    <sys:String x:Key="L_TT_SendNow">Send now (don't wait for the pause)</sys:String>
+    <sys:String x:Key="L_TT_Export">Export transcript</sys:String>
+    <sys:String x:Key="L_TT_Protocol">AI meeting summary</sys:String>
+    <sys:String x:Key="L_TT_Screenshot">Screenshot mode (Ctrl+Shift+C)</sys:String>
+    <sys:String x:Key="L_TT_SlowSpeech">Slow speech (longer pause)</sys:String>
+    <sys:String x:Key="L_TT_ResetSpeed">Normal speech (reset)</sys:String>
+    <sys:String x:Key="L_TT_FastSpeech">Fast speech (shorter pause)</sys:String>
+    <sys:String x:Key="L_TT_Cloak">Click-through mode</sys:String>
+    <sys:String x:Key="L_TT_Erase">Clear history (new chat)</sys:String>
+    <sys:String x:Key="L_TT_Hide">Hide overlay (Ctrl+Shift+H)</sys:String>
+    <sys:String x:Key="L_TT_NoticeHide">Dismiss notification</sys:String>
+    <sys:String x:Key="L_TT_ChatSend">Send message to LLM</sys:String>
+    <sys:String x:Key="L_TT_ChatInput">Type text and press Enter to send to the LLM as [secret]</sys:String>
+    <sys:String x:Key="L_TT_SilenceSlider">Pause (sec) after which the utterance goes to STT (0.4–10)</sys:String>
+    <sys:String x:Key="L_TT_ChunkSlider">Maximum audio chunk length (sec, 8–120)</sys:String>
+    <sys:String x:Key="L_TT_Timeline">Pink = sound • Blue = STT • Green = answer</sys:String>
+    <sys:String x:Key="L_TT_TimelineHeader">Collapse/expand the equalizer</sys:String>
+    <sys:String x:Key="L_TT_LlmOff">Turn LLM off — pure transcriber (speech recognition only)</sys:String>
+    <sys:String x:Key="L_TT_SpeakerMute">Turn speaker off — don't transcribe system audio</sys:String>
+    <sys:String x:Key="L_TT_SttQueue">STT queue: chunks awaiting recognition · seconds of audio still buffered</sys:String>
+
+    <!-- Overlay: context menu -->
+    <sys:String x:Key="L_CM_CopyAll">Copy all on screen</sys:String>
+    <sys:String x:Key="L_CM_CopyHistory">Copy full session history</sys:String>
+    <sys:String x:Key="L_CM_CopyQuestion">Copy question</sys:String>
+    <sys:String x:Key="L_CM_CopyAnswer">Copy answer</sys:String>
+    <sys:String x:Key="L_CM_Expand">Answer in detail</sys:String>
+    <sys:String x:Key="L_CM_ClearExpanded">Clear expanded answer</sys:String>
+    <sys:String x:Key="L_CM_Focus">Focus on this pair</sys:String>
+    <sys:String x:Key="L_CM_ClearFocus">Clear focus from all</sys:String>
+
+    <!-- Statuses (from code) -->
+    <sys:String x:Key="L_St_AudioPaused">Audio paused</sys:String>
+    <sys:String x:Key="L_St_LlmPaused">LLM paused — audio still recording</sys:String>
+    <sys:String x:Key="L_St_Thinking">Thinking…</sys:String>
+    <sys:String x:Key="L_St_NoConnection">No connection to server</sys:String>
+    <sys:String x:Key="L_SttQueueFmt">STT: {0} queued · {1:F1}s buffered</sys:String>
+
+    <!-- Settings: sidebar -->
+    <sys:String x:Key="L_Tab_Api">API</sys:String>
+    <sys:String x:Key="L_Tab_Llm">LLM</sys:String>
+    <sys:String x:Key="L_Tab_Audio">Audio</sys:String>
+    <sys:String x:Key="L_Tab_LocalStt">Speech recognition (STT)</sys:String>
+    <sys:String x:Key="L_Tab_Overlay">Overlay</sys:String>
+    <sys:String x:Key="L_Tab_Hotkeys">Hotkeys</sys:String>
+    <sys:String x:Key="L_Tab_About">About</sys:String>
+    <sys:String x:Key="L_Tab_Profile">Resume</sys:String>
+    <sys:String x:Key="L_Tab_Agents">Agents</sys:String>
+    <sys:String x:Key="L_Tab_LlmLogs">Diagnostics</sys:String>
+
+    <!-- Settings: footer and misc -->
+    <sys:String x:Key="L_Save">Save</sys:String>
+    <sys:String x:Key="L_CloseBtn">Close</sys:String>
+    <sys:String x:Key="L_OpenFolder">Open folder</sys:String>
+    <sys:String x:Key="L_CheckConnection">Check connection</sys:String>
+    <sys:String x:Key="L_Language">Язык интерфейса / Language:</sys:String>
+    <sys:String x:Key="L_Theme">Theme:</sys:String>
+
+    <sys:String x:Key="L_SendBtn">Send</sys:String>
+    <sys:String x:Key="L_Last2Min">last 2 min</sys:String>
+
+    <sys:String x:Key="L_TT_Minimize">Minimize</sys:String>
+    <sys:String x:Key="L_TT_Maximize">Maximize / restore</sys:String>
+
+</ResourceDictionary>

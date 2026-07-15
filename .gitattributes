@@ -1,0 +1,11 @@
+# GitHub linguist: корректировка языковой статистики.
+# Основной язык проекта — C#; HTML здесь только референсы и авто-отчёты.
+
+# Референс-макеты дизайна (не отгружаемый код)
+newdesign/** linguist-vendored
+
+# Авто-отчёты UI-тестера (генерируемые)
+BrainstormBuddy.UITests/report_*.html linguist-generated
+
+# Подстраховка: случайный HTML не должен доминировать в панели языков
+*.html linguist-documentation

@@ -1,0 +1,448 @@
+<Window x:Class="BrainstormBuddy.FileTranscriptionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Транскрибация файла" Height="700" Width="1020" MinHeight="520" MinWidth="820"
+        Background="{DynamicResource BgBrush}" Foreground="{DynamicResource TextBrush}"
+        FontFamily="Segoe UI" FontSize="13"
+        TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType"
+        WindowStartupLocation="CenterScreen">
+
+    <Window.Resources>
+        <!-- ===== Скопированные стили дизайн-системы (в проекте они локальны в Settings/Overlay) ===== -->
+
+        <!-- Кнопка (скруглённая r8) -->
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="{DynamicResource BgMediumBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BorderBrush}"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BgBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Primary Button (сплошной индиго) -->
+        <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="{DynamicResource AccentDimBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentDimBrush}"/>
+        </Style>
+
+        <!-- Primary ACTION Button (градиент индиго r10) -->
+        <Style x:Key="PrimaryActionButton" TargetType="Button">
+            <Setter Property="Foreground" Value="#ffffff"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{DynamicResource AccentGradientBrush}"
+                                CornerRadius="10" Padding="14,7" RenderTransformOrigin="0.5,0.5">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <ScaleTransform ScaleX="0.95" ScaleY="0.95"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ListBox (тёмный, свой шаблон — иначе ПУСТОЙ список рисуется белым дефолтным шаблоном) -->
+        <Style TargetType="ListBox">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBox">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+                            <ScrollViewer Focusable="False" Padding="{TemplateBinding Padding}"
+                                          HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                                <ItemsPresenter/>
+                            </ScrollViewer>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ListBoxItem (hover/selected как в Settings) -->
+        <Style TargetType="ListBoxItem">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6" Margin="0,1" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BgMediumBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ComboBoxItem (тёмный, скопирован из Settings) -->
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BorderBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BorderBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ComboBox (тёмный popup, скопирован из Settings) -->
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="MinHeight" Value="28"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid SnapsToDevicePixels="True">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="22"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="Bd" Grid.ColumnSpan="2"
+                                    Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+                                <ContentPresenter Content="{TemplateBinding SelectionBoxItem}"
+                                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                  Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
+                                                  TextBlock.Foreground="{TemplateBinding Foreground}" IsHitTestVisible="False"/>
+                            </Border>
+                            <ToggleButton Grid.Column="0" Grid.ColumnSpan="2" Focusable="False" ClickMode="Press"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="Transparent">
+                                            <Path Data="M0,0 L4,4 L8,0 Z" Fill="{DynamicResource TextMutedBrush}"
+                                                  HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,9,0"/>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True" Focusable="False"
+                                   PopupAnimation="Fade" VerticalOffset="2"
+                                   IsOpen="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                                <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="1" CornerRadius="6"
+                                        MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <ScrollViewer Margin="2"><ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/></ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Контекстное меню (тёмное). Свой шаблон + HasDropShadow=False — иначе дефолтная
+             системная тень/подложка рисует белый артефакт при ПКМ. -->
+        <Style TargetType="ContextMenu">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="HasDropShadow" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ContextMenu">
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="8" Padding="4" SnapsToDevicePixels="True">
+                            <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="MenuItem">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="5"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter ContentSource="Header" TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="270"/>
+            <ColumnDefinition Width="14"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- ===== Сайдбар: история ===== -->
+        <Grid Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="ИСТОРИЯ" FontSize="12"
+                       FontWeight="SemiBold" Foreground="{DynamicResource TextDimBrush}" Margin="2,0,0,8"/>
+            <Border Grid.Row="1" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1" CornerRadius="10" Padding="4">
+                <ListBox x:Name="HistoryList" Background="Transparent" BorderThickness="0"
+                         SelectionChanged="OnHistorySelect">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel>
+                                <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock FontSize="10.5" Foreground="{DynamicResource TextDimBrush}" Margin="0,1,0,0"
+                                           Text="{Binding CreatedAt, StringFormat='dd.MM.yyyy HH:mm', Mode=OneWay}"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                    <ListBox.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Удалить из истории" Click="OnDeleteHistory"/>
+                        </ContextMenu>
+                    </ListBox.ContextMenu>
+                </ListBox>
+            </Border>
+        </Grid>
+
+        <!-- ===== ГЛАВНАЯ ЗОНА ===== -->
+        <Grid Grid.Column="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Заголовок + выбор движка -->
+            <DockPanel Grid.Row="0" Margin="0,0,0,12">
+                <StackPanel DockPanel.Dock="Right" VerticalAlignment="Center" Width="240">
+                    <TextBlock Text="Движок распознавания:" FontSize="11" Foreground="{DynamicResource TextDimBrush}" Margin="0,0,0,3"/>
+                    <ComboBox x:Name="EngineCombo" SelectedValuePath="Tag" SelectionChanged="OnEngineChanged">
+                        <ComboBoxItem Content="GigaAM · быстрый (русский)" Tag="gigaam"/>
+                        <ComboBoxItem Content="Whisper turbo · качество, пунктуация" Tag="whisper"/>
+                    </ComboBox>
+                    <!-- Оборудование именно ФАЙЛОВОЙ транскрибации (живой STT не трогает):
+                         Авто / CPU / конкретный GPU. Заполняется из GpuEnumerator в code-behind. -->
+                    <TextBlock Text="Оборудование:" FontSize="11" Foreground="{DynamicResource TextDimBrush}" Margin="0,8,0,3"/>
+                    <ComboBox x:Name="HardwareCombo" SelectedValuePath="Tag" SelectionChanged="OnHardwareChanged"
+                              ToolTip="На чём распознавать файл. GPU обычно быстрее на длинных записях; живое распознавание эта настройка не затрагивает."/>
+                    <TextBlock x:Name="EngineText" FontSize="10.5" Foreground="{DynamicResource TextMutedBrush}"
+                               Margin="0,3,0,0" TextWrapping="Wrap" Text=""/>
+                </StackPanel>
+                <StackPanel>
+                    <TextBlock Text="Транскрибация файла" FontSize="18" FontWeight="SemiBold"
+                               Foreground="{DynamicResource AccentBrush}"/>
+                    <TextBlock Text="Локальное распознавание аудио/видео — без интернета."
+                               FontSize="12" Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,0"/>
+                </StackPanel>
+            </DockPanel>
+
+            <!-- Карточка выбора файла -->
+            <Border Grid.Row="1" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1" CornerRadius="12" Padding="12" Margin="0,0,0,12">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="0" Content="Выбрать файл" Style="{StaticResource PrimaryActionButton}"
+                            Click="OnSelectFile"/>
+                    <TextBlock Grid.Column="1" x:Name="FileNameText" Text="Файл не выбран (mp4, webm, mp3, m4a, wav…)"
+                               VerticalAlignment="Center" Margin="12,0" TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource TextMutedBrush}"/>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                        <Button x:Name="TranscribeBtn" Content="Транскрибировать" Style="{StaticResource PrimaryButton}"
+                                Click="OnTranscribe" IsEnabled="False"/>
+                        <Button x:Name="CancelBtn" Content="Отмена" Click="OnCancel" Margin="8,0,0,0" Visibility="Collapsed"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ffmpeg-баннер: показывается, если для webm/mkv нет ffmpeg -->
+            <Border Grid.Row="2" x:Name="FfmpegBanner" Visibility="Collapsed" Margin="0,0,0,12"
+                    Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource WarnBrush}"
+                    BorderThickness="1" CornerRadius="10" Padding="12,10">
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" x:Name="FfmpegDownloadBtn" Content="Скачать ffmpeg (~80 МБ)"
+                            Style="{StaticResource PrimaryButton}" Click="OnDownloadFfmpeg" VerticalAlignment="Center"/>
+                    <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                        <TextBlock Text="⚠ Для webm / mkv / opus нужен ffmpeg — на этом ПК не найден."
+                                   FontWeight="SemiBold" Foreground="{DynamicResource WarnBrush}"/>
+                        <TextBlock x:Name="FfmpegHint" TextWrapping="Wrap" FontSize="11.5" Margin="0,2,0,0"
+                                   Foreground="{DynamicResource TextMutedBrush}"
+                                   Text="Скачать автоматически из официального источника (нужен интернет). mp4/mp3/m4a/wav работают и без него."/>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- Прогресс -->
+            <StackPanel Grid.Row="3" x:Name="ProgressPanel" Margin="0,0,0,12" Visibility="Collapsed">
+                <ProgressBar x:Name="Progress" Minimum="0" Maximum="1" Height="8"/>
+                <TextBlock x:Name="StatusText" FontSize="11.5" Foreground="{DynamicResource TextMutedBrush}"
+                           Margin="2,6,0,0" Text=""/>
+            </StackPanel>
+
+            <!-- Результаты: транскрипт над саммари, между ними сплиттер -->
+            <Grid Grid.Row="4">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="2*" MinHeight="140"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="1*" MinHeight="90"/>
+                </Grid.RowDefinitions>
+
+                <!-- Транскрипт -->
+                <DockPanel Grid.Row="0">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Content="Копировать всё" Click="OnCopyTranscript"/>
+                            <Button Content="Скачать .txt" Click="OnDownloadTranscript" Margin="8,0,0,0"/>
+                        </StackPanel>
+                        <TextBlock Text="ТРАНСКРИПТ (с тайм-кодами)" FontSize="12"
+                                   FontWeight="SemiBold" Foreground="{DynamicResource TextDimBrush}" VerticalAlignment="Center"/>
+                    </DockPanel>
+                    <TextBox x:Name="TranscriptBox" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
+                             VerticalScrollBarVisibility="Auto" IsInactiveSelectionHighlightEnabled="True"
+                             Background="{DynamicResource BgDarkerBrush}" Foreground="{DynamicResource TextBrush}"
+                             FontFamily="Cascadia Mono, Consolas, Courier New" FontSize="12.5" Padding="10">
+                        <TextBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Выделить всё" Command="SelectAll"/>
+                                <MenuItem Header="Копировать" Command="Copy"/>
+                            </ContextMenu>
+                        </TextBox.ContextMenu>
+                    </TextBox>
+                </DockPanel>
+
+                <GridSplitter Grid.Row="1" Height="4" HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                              Margin="0,4" Background="{DynamicResource BorderBrush}" ResizeBehavior="PreviousAndNext"/>
+
+                <!-- Саммари -->
+                <DockPanel Grid.Row="2">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,2,0,6">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button x:Name="SummaryBtn" Content="Сгенерировать саммари" Style="{StaticResource PrimaryButton}"
+                                    Click="OnGenerateSummary" IsEnabled="False"/>
+                            <Button Content="Копировать всё" Click="OnCopySummary" Margin="8,0,0,0"/>
+                            <Button Content="Скачать .txt" Click="OnDownloadSummary" Margin="8,0,0,0"/>
+                        </StackPanel>
+                        <TextBlock Text="AI-САММАРИ" FontSize="12"
+                                   FontWeight="SemiBold" Foreground="{DynamicResource TextDimBrush}" VerticalAlignment="Center"/>
+                    </DockPanel>
+                    <TextBox x:Name="SummaryBox" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
+                             VerticalScrollBarVisibility="Auto" IsInactiveSelectionHighlightEnabled="True"
+                             Background="{DynamicResource BgDarkerBrush}" Foreground="{DynamicResource TextBrush}"
+                             FontFamily="Segoe UI" FontSize="13" Padding="10">
+                        <TextBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Выделить всё" Command="SelectAll"/>
+                                <MenuItem Header="Копировать" Command="Copy"/>
+                            </ContextMenu>
+                        </TextBox.ContextMenu>
+                    </TextBox>
+                </DockPanel>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

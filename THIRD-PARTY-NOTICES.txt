@@ -1,0 +1,84 @@
+BrainstormBuddy — уведомления о стороннем ПО и моделях
+=======================================================
+
+BrainstormBuddy распространяется под лицензией MIT (см. файл LICENSE).
+Программа включает или использует перечисленные ниже компоненты. Все они
+распространяются на разрешительных лицензиях, совместимых с MIT, и допускают
+коммерческое использование. Ниже приведены их правообладатели и лицензии.
+
+Стандартный текст лицензии MIT (применяется к компонентам, отмеченным «MIT»):
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+
+МОДЕЛИ РАСПОЗНАВАНИЯ РЕЧИ
+------------------------
+
+1) GigaAM v2 (CTC) — встроенная офлайн-модель распознавания речи
+   Copyright (c) 2024 GigaChat Team (Sber / SberDevices)
+   Лицензия: MIT
+   Источник: https://github.com/salute-developers/GigaAM
+   Примечание: используется версия v2 (v2_ctc), распространяемая под MIT
+   (перелицензирование декабря 2024, коммерческое использование разрешено).
+
+2) OpenAI Whisper (large-v3-turbo, ggml) — модель для транскрибации файлов
+   Copyright (c) 2022 OpenAI
+   Лицензия: MIT
+   Источник: https://github.com/openai/whisper
+   Примечание: веса модели скачиваются пользователем при первом использовании,
+   в дистрибутив не входят.
+
+
+БИБЛИОТЕКИ И КОМПОНЕНТЫ
+-----------------------
+
+3) whisper.cpp / ggml — нативный движок распознавания речи Whisper
+   Copyright (c) 2023-2024 The ggml authors (Georgi Gerganov)
+   Лицензия: MIT
+   Источник: https://github.com/ggml-org/whisper.cpp
+
+4) Whisper.net — управляемая обёртка whisper.cpp для .NET
+   Copyright (c) Sandro Hanea
+   Лицензия: MIT
+   Источник: https://github.com/sandrohanea/whisper.net
+
+5) NAudio — работа со звуком (захват/воспроизведение)
+   Copyright (c) Mark Heath and contributors
+   Лицензия: MIT
+   Источник: https://github.com/naudio/NAudio
+
+6) ONNX Runtime (Microsoft.ML.OnnxRuntime) — исполнение ONNX-моделей
+   Copyright (c) Microsoft Corporation
+   Лицензия: MIT
+   Источник: https://github.com/microsoft/onnxruntime
+
+
+ШРИФТЫ
+------
+
+7) JetBrains Mono — моноширинный шрифт интерфейса
+   Copyright (c) JetBrains s.r.o.
+   Лицензия: SIL Open Font License, Version 1.1
+   Источник: https://github.com/JetBrains/JetBrainsMono
+   Условие OFL: шрифт можно свободно использовать, встраивать и распространять;
+   нельзя продавать сам шрифт отдельно и использовать имя автора для продвижения
+   производных без разрешения.
+
+
+Полные тексты лицензий доступны по указанным ссылкам на исходники.

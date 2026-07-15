@@ -1,0 +1,85 @@
+﻿<Window x:Class="BrainstormBuddy.LogWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="BrainstormBuddy — Логи"
+        Width="640" Height="320"
+        WindowStartupLocation="Manual"
+        Background="{DynamicResource BgBrush}"
+        Foreground="{DynamicResource TextBrush}"
+        FontFamily="Consolas, Segoe UI"
+        FontSize="11"
+        ShowInTaskbar="True"
+        Topmost="False"
+        WindowStyle="SingleBorderWindow">
+    <Grid Margin="6">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+            <TextBlock Text="Уровень:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+            <ComboBox x:Name="LevelFilter" Width="100" SelectionChanged="OnLevelFilterChanged">
+                <ComboBoxItem Content="Все" Tag="All" IsSelected="True"/>
+                <ComboBoxItem Content="Info+" Tag="InfoPlus"/>
+                <ComboBoxItem Content="Warn+" Tag="WarnPlus"/>
+                <ComboBoxItem Content="Только Error" Tag="Error"/>
+            </ComboBox>
+            <CheckBox x:Name="AutoScrollCheck" IsChecked="True" Margin="12,0,0,0" VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="M15 16L11 20L7 16H10V8H7L11 4L15 8H12V16H15ZM22 5H18V19H22V5ZM2 5H6V19H2V5Z" Fill="#4ADE80" Width="14" Height="14" Stretch="Uniform" Margin="0,0,4,0"/>
+                    <TextBlock Text="Автопрокрутка" VerticalAlignment="Center"/>
+                </StackPanel>
+            </CheckBox>
+            <CheckBox x:Name="PauseCheck" Margin="12,0,0,0" VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="M6 19H10V5H6V19ZM14 5V19H18V5H14Z" Fill="#4ADE80" Width="14" Height="14" Stretch="Uniform" Margin="0,0,4,0"/>
+                    <TextBlock Text="Пауза" VerticalAlignment="Center"/>
+                </StackPanel>
+            </CheckBox>
+        </StackPanel>
+
+        <Border Grid.Row="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource BgDarkerBrush}">
+            <ListBox x:Name="LogList"
+                     Background="Transparent"
+                     Foreground="{DynamicResource TextBrush}"
+                     BorderThickness="0"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     VirtualizingStackPanel.IsVirtualizing="True"
+                     VirtualizingStackPanel.VirtualizationMode="Recycling"
+                     HorizontalContentAlignment="Stretch">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Padding" Value="0"/>
+                        <Setter Property="Margin" Value="0"/>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+            </ListBox>
+        </Border>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,6,0,0">
+            <Button Click="OnClear" Margin="0,0,4,0" Padding="8,4">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="M15 4V6H20V21H4V6H9V4H15ZM11 4H13V6H11V4ZM18 8H6V19H18V8ZM14 10H16V17H14V10ZM11 10H13V17H11V10ZM8 10H10V17H8V10Z" Fill="#EF4444" Width="14" Height="14" Stretch="Uniform" Margin="0,0,6,0"/>
+                    <TextBlock Text="Очистить" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
+            <Button Click="OnCopy" Margin="0,0,4,0" Padding="8,4">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="M15 3H6C4.89 3 4 3.89 4 5V19C4 20.11 4.89 21 6 21H18C19.11 21 20 20.11 20 19V8L15 3ZM18 19H6V5H14V9H18V19ZM8 12V14H16V12H8ZM8 16V18H13V16H8ZM8 8V10H12V8H8Z" Fill="{DynamicResource TextBrightBrush}" Width="14" Height="14" Stretch="Uniform" Margin="0,0,6,0"/>
+                    <TextBlock Text="Копировать" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
+            <Button Click="OnOpenFolder" Margin="0,0,4,0" Padding="8,4">
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="M15 4V11H22L15 4ZM14 3H5C3.89 3 3 3.89 3 5V19C3 20.11 3.89 21 5 21H19C20.11 21 21 20.11 21 19V10H14V3Z" Fill="{DynamicResource TextBrightBrush}" Width="14" Height="14" Stretch="Uniform" Margin="0,0,6,0"/>
+                    <TextBlock Text="Открыть папку" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
+            <TextBlock x:Name="CountText" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="{DynamicResource TextDimBrush}"/>
+        </StackPanel>
+    </Grid>
+</Window>
+

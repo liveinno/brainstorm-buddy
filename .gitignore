@@ -1,0 +1,49 @@
+# Ignore build outputs
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+*.user
+*.suo
+.vs/
+publish/
+
+# Test results
+TestResults/
+coverage/
+*.coverage
+report.html
+report_output.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+antigravity-proxy/
+
+# Большие ML-артефакты (модели ONNX и т.п.) — не в git
+artifacts/
+*.onnx
+installer/
+installer-inno/
+installer-full/
+
+# Локальные медиафайлы пользователя (личное, крупное) — не в git
+videos/
+*.mp4
+*.webm
+*.mkv
+
+# Бандл ffmpeg для инсталлятора (крупный бинарь, качается отдельно)
+packaging/inno/ffmpeg/
+
+# Отчёты UI-тестера установки (тестовый мусор)
+report_install.html
+report_install_keep.html
+report_uninstall.html
