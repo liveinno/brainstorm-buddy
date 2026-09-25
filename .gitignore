@@ -7,6 +7,12 @@
 .vs/
 publish/
 
+__pycache__/
+*.pyc
+
+# Generated manual outputs (rebuild via docs/manuals/build_manuals_bb.py)
+docs/manuals/*.docx
+docs/manuals/*.pdf
 # Test results
 TestResults/
 coverage/
@@ -25,14 +31,15 @@ Thumbs.db
 # Logs
 *.log
 
-antigravity-proxy/
-
 # Большие ML-артефакты (модели ONNX и т.п.) — не в git
 artifacts/
 *.onnx
 installer/
 installer-inno/
 installer-full/
+# Скриншоты пост-инсталляционного smoke — регенерируются каждым прогоном
+**/shots/
+tools/verify-shots/
 
 # Локальные медиафайлы пользователя (личное, крупное) — не в git
 videos/
@@ -42,8 +49,3 @@ videos/
 
 # Бандл ffmpeg для инсталлятора (крупный бинарь, качается отдельно)
 packaging/inno/ffmpeg/
-
-# Отчёты UI-тестера установки (тестовый мусор)
-report_install.html
-report_install_keep.html
-report_uninstall.html

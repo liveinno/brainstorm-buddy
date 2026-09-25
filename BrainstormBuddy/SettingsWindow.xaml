@@ -169,6 +169,15 @@
                                                Visibility="Collapsed"/>
                                 </Grid>
                             </Border>
+                            <!-- Editable-поле: WPF ищет PART_EditableTextBox по имени (контракт ComboBox).
+                                 Скрыт по умолчанию — показывается триггером IsEditable ниже. -->
+                            <TextBox x:Name="PART_EditableTextBox" Grid.Column="0"
+                                     Margin="{TemplateBinding Padding}" Padding="0"
+                                     BorderThickness="0" Background="Transparent"
+                                     Foreground="{TemplateBinding Foreground}"
+                                     CaretBrush="{DynamicResource AccentBrush}"
+                                     VerticalContentAlignment="Center"
+                                     Visibility="Hidden"/>
                             <!-- Тогл на ВСЮ ширину поля (оба столбца), «голый» шаблон без chrome:
                                  клик по любому месту поля раскрывает список. Прозрачный, поэтому
                                  значение (ContentSite) под ним видно; стрелка справа. -->
@@ -216,6 +225,14 @@
                             </Trigger>
                             <Trigger Property="IsKeyboardFocusWithin" Value="True">
                                 <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <!-- IsEditable (ChatModelCombo): показываем TextBox, прячем SelectionBoxItem,
+                                 а тогл сжимаем до колонки со стрелкой — текстовая зона свободна для ввода. -->
+                            <Trigger Property="IsEditable" Value="True">
+                                <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="ContentSite" Property="Visibility" Value="Collapsed"/>
+                                <Setter TargetName="ToggleButton" Property="Grid.Column" Value="1"/>
+                                <Setter TargetName="ToggleButton" Property="Grid.ColumnSpan" Value="1"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -409,20 +426,96 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="12">
                         <TextBlock Text="LLM-провайдер (подставит BaseUrl):" Style="{StaticResource Label}"/>
-                        <ComboBox x:Name="LlmProviderCombo" SelectedValuePath="Tag" Margin="0,2,0,4"
-                                  SelectionChanged="OnLlmProviderChanged">
-                            <ComboBoxItem Content="Ollama — локально (приватно, рекомендуется)" Tag="http://127.0.0.1:11434/v1"/>
-                            <ComboBoxItem Content="LM Studio — локально" Tag="http://localhost:1234/v1"/>
-                            <ComboBoxItem Content="OpenRouter (облако)" Tag="https://openrouter.ai/api/v1"/>
-                            <ComboBoxItem Content="Groq (облако)" Tag="https://api.groq.com/openai/v1"/>
-                            <ComboBoxItem Content="OpenAI (облако)" Tag="https://api.openai.com/v1"/>
-                            <ComboBoxItem Content="Свой endpoint (не менять)" Tag=""/>
-                        </ComboBox>
+                        <Grid Margin="0,2,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="LlmProviderCombo" Grid.Column="0"
+                                      ItemsSource="{Binding LlmProviders}" DisplayMemberPath="Name"
+                                      SelectedValuePath="Id" SelectedValue="{Binding ProviderId}"
+                                      SelectionChanged="OnLlmProviderChanged"/>
+                            <Button Grid.Column="1" Content="＋" Width="28" Height="28" Margin="4,0,0,0"
+                                    Click="OnAddProvider" ToolTip="Добавить своего провайдера"/>
+                            <Button Grid.Column="2" Content="⧉" Width="28" Height="28" Margin="4,0,0,0"
+                                    Click="OnDuplicateProvider" ToolTip="Дублировать выбранный профиль"/>
+                            <Button x:Name="LlmProviderDeleteBtn" Grid.Column="3" Content="✕" Width="28" Height="28" Margin="4,0,0,0"
+                                    Click="OnDeleteProvider" ToolTip="Удалить свой профиль" Visibility="Collapsed"/>
+                        </Grid>
+                        <TextBlock x:Name="LlmProviderPrivacyNote" TextWrapping="Wrap" FontSize="11"
+                                   Foreground="{DynamicResource WarnBrush}" Margin="0,0,0,4" Visibility="Collapsed"/>
                         <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}" FontSize="11" Margin="0,0,0,10"
                                    Text="Облачные провайдеры отправляют текст на сторонний сервер — это ломает приватность/стелс. Для приватного ассистента используйте локальный Ollama. Для облака впишите ключ и нажмите «Проверить связь». Модель задайте вручную (у провайдеров разные имена)."/>
 
+                        <!-- Редактор своего провайдера (custom-профиль): показывается при выборе/создании -->
+                        <Border x:Name="LlmProviderEditPanel" Visibility="Collapsed"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4"
+                                Padding="10" Margin="0,0,0,10" Background="{DynamicResource PanelBrush}">
+                            <StackPanel>
+                                <TextBlock Text="Свой провайдер" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}" Margin="0,0,0,6"/>
+                                <TextBlock Text="Название:" Style="{StaticResource Label}" Margin="0,0,0,2"/>
+                                <TextBox x:Name="ProviderNameBox" Margin="0,0,0,6"/>
+                                <TextBlock Text="BaseUrl (до /v1):" Style="{StaticResource Label}" Margin="0,0,0,2"/>
+                                <TextBox x:Name="ProviderBaseUrlBox" Margin="0,0,0,6"/>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="8"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="Протокол:" Style="{StaticResource Label}" Margin="0,0,0,2"/>
+                                        <ComboBox x:Name="ProviderProtocolCombo" SelectedValuePath="Tag">
+                                            <ComboBoxItem Content="OpenAI chat/completions" Tag="openai-chat"/>
+                                            <ComboBoxItem Content="OpenAI responses" Tag="openai-responses"/>
+                                            <ComboBoxItem Content="Anthropic messages" Tag="anthropic"/>
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="Авторизация:" Style="{StaticResource Label}" Margin="0,0,0,2"/>
+                                        <ComboBox x:Name="ProviderAuthCombo" SelectedValuePath="Tag">
+                                            <ComboBoxItem Content="Bearer (Authorization)" Tag="bearer"/>
+                                            <ComboBoxItem Content="x-api-key" Tag="x-api-key"/>
+                                            <ComboBoxItem Content="Без ключа" Tag="none"/>
+                                        </ComboBox>
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="Дополнительные заголовки (для gateways; {session} — автоподстановка):" Style="{StaticResource Label}" Margin="0,0,0,2"/>
+                                <ItemsControl x:Name="ProviderHeadersList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,0,0,4">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="2*"/>
+                                                    <ColumnDefinition Width="4"/>
+                                                    <ColumnDefinition Width="3*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox Grid.Column="0" Text="{Binding Key, UpdateSourceTrigger=PropertyChanged}"/>
+                                                <TextBox Grid.Column="2" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"/>
+                                                <Button Grid.Column="3" Content="✕" Width="24" Height="24" Margin="4,0,0,0" Padding="0"
+                                                        Click="OnRemoveProviderHeader" ToolTip="Убрать заголовок"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <Button Content="＋ заголовок" Width="110" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                        Click="OnAddProviderHeader"/>
+                                <TextBlock Text="Пресеты моделей (через запятую):" Style="{StaticResource Label}" Margin="0,0,0,2"/>
+                                <TextBox x:Name="ProviderPresetsBox" Margin="0,0,0,6"/>
+                                <TextBlock Text="Заметка о приватности:" Style="{StaticResource Label}" Margin="0,0,0,2"/>
+                                <TextBox x:Name="ProviderPrivacyBox" TextWrapping="Wrap" MinHeight="34" Margin="0,0,0,8"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="Сохранить" Width="130" Click="OnSaveProvider" Style="{StaticResource PrimaryButton}"/>
+                                    <Button Content="Отмена" Width="110" Margin="8,0,0,0" Click="OnCancelProviderEdit"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
                         <TextBlock Text="BaseUrl:" Style="{StaticResource Label}"/>
-                        <TextBox Text="{Binding BaseUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,2"/>
+                        <TextBox x:Name="ActiveBaseUrlBox" AutomationProperties.AutomationId="ActiveBaseUrlBox" Text="{Binding BaseUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,2"/>
                         <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}" Margin="0,0,0,8"
                                    Text="Пример: https://openrouter.ai/api/v1 · https://api.groq.com/openai/v1 · http://127.0.0.1:11434/v1 (Ollama)"/>
 
@@ -442,10 +535,21 @@
                                    Text="Ключ провайдера (для облака). Для локального Ollama/LM Studio ключ не нужен."/>
 
                         <TextBlock Text="Chat Model:" Style="{StaticResource Label}"/>
-                        <TextBox Text="{Binding ChatModel, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,2"/>
+                        <Grid Margin="0,2,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="ChatModelCombo" Grid.Column="0" IsEditable="True"
+                                      Text="{Binding ChatModel, UpdateSourceTrigger=LostFocus}"/>
+                            <Button x:Name="FetchModelsBtn" Grid.Column="1" Width="36" Height="28" Margin="4,0,0,0"
+                                    Click="OnFetchModels" ToolTip="Получить список моделей провайдера" Padding="6,2"
+                                    Content="↻"/>
+                        </Grid>
+                        <TextBlock x:Name="ModelsStatusText" TextWrapping="Wrap" FontSize="11"
+                                   Foreground="{DynamicResource WarnBrush}" Margin="0,0,0,2" Visibility="Collapsed"/>
                         <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}" Margin="0,0,0,8"
-                                   Text="Пример: tencent/hy3:free (OpenRouter) · llama-3.3-70b-versatile (Groq) · qwen2.5vl:7b (Ollama). ID модели — со страницы модели у провайдера."/>
-
+                                   Text="Пример: tencent/hy3:free (OpenRouter) · llama-3.3-70b-versatile (Groq) · qwen2.5vl:7b (Ollama). ID модели — со страницы модели у провайдера. Кнопка ↻ подгружает список моделей."/>
                         <!-- Настройки распознавания речи (STT) переехали в раздел «Распознавание речи (STT)».
                              Здесь остаётся только LLM (чат), чтобы не путать два разных сервера. -->
                         <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}" Margin="0,2,0,8"
@@ -455,8 +559,9 @@
                         <TextBox x:Name="RateLimitBox" Text="{Binding RateLimitSeconds, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,12"/>
 
                         <StackPanel Orientation="Horizontal">
-                            <Button Content="{DynamicResource L_CheckConnection}" Click="OnCheckConnection" Width="180"/>
-                            <TextBlock x:Name="ConnectionStatusText" Margin="12,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <Button x:Name="CheckConnectionBtn" Content="{DynamicResource L_CheckConnection}" Click="OnCheckConnection" Width="180"/>
+                            <TextBlock x:Name="ConnectionStatusText" Margin="12,0,0,0" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextMutedBrush}" TextWrapping="Wrap"/>
                         </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
@@ -816,7 +921,12 @@
                                                   SelectionChanged="OnWhisperAccelChanged">
                                             <ComboBoxItem Content="Авто — GPU (Vulkan), иначе CPU" Tag="auto"/>
                                             <ComboBoxItem Content="Только CPU" Tag="cpu"/>
+                                            <ComboBoxItem Content="GPU · Vulkan (выберите видеокарту ниже)" Tag="gpu"/>
                                         </ComboBox>
+                                        <StackPanel x:Name="WhisperGpuPanel">
+                                            <TextBlock Text="Видеокарта (для GPU-режима):" Style="{StaticResource Label}"/>
+                                            <ComboBox x:Name="WhisperGpuCombo" Margin="0,2,0,4" SelectionChanged="OnWhisperGpuChanged"/>
+                                        </StackPanel>
                                     </StackPanel>
                                     <TextBlock Text="~547 МБ (q5_0), в %APPDATA%\BrainstormBuddy\models. Смена применяется после перезапуска."
                                                Foreground="{DynamicResource TextMutedBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
@@ -997,10 +1107,11 @@
             <TabItem Header="{DynamicResource L_Tab_About}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="12">
-                        <TextBlock Text="BrainstormBuddy v2.5.2" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
+                        <TextBlock Text="BrainstormBuddy v2.5.13" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
                         <TextBlock Text="Текстовый AI-помощник для совещаний и интервью." Margin="0,4,0,12" Foreground="{DynamicResource TextMutedBrush}"/>
                         <TextBlock><Run Text="Автор:" Foreground="{DynamicResource TextMutedBrush}"/><Run Text=" liveinno" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/></TextBlock>
-                        <TextBlock><Run Text="Версия:" Foreground="{DynamicResource TextMutedBrush}"/><Run Text=" 2.5.2" Foreground="{DynamicResource TextBrightBrush}"/></TextBlock>
+                        <TextBlock><Run Text="{DynamicResource L_About_Site}" Foreground="{DynamicResource TextMutedBrush}"/><Hyperlink NavigateUri="https://aigens.ru" RequestNavigate="OnSiteLinkNavigate" Foreground="{DynamicResource AccentBrush}">https://aigens.ru</Hyperlink></TextBlock>
+                        <TextBlock><Run Text="Версия:" Foreground="{DynamicResource TextMutedBrush}"/><Run Text=" 2.5.13" Foreground="{DynamicResource TextBrightBrush}"/></TextBlock>
                         <TextBlock><Run Text="Логи:" Foreground="{DynamicResource TextMutedBrush}"/><Run x:Name="LogPathRun" Text="" Foreground="{DynamicResource TextBrightBrush}"/></TextBlock>
                         <Button Content="Открыть папку с логами" Width="220" Margin="0,10,0,0" Click="OnOpenLogs" HorizontalAlignment="Left"/>
                     </StackPanel>

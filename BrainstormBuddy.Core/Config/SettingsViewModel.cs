@@ -187,6 +187,68 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Api.ChatModel = value; OnPropertyChanged(); }
     }
 
+    /// <summary>Id выбранного LLM-профиля (встроенный или custom). Пусто → «не выбран».</summary>
+    public string ProviderId
+    {
+        get => _config.Api.ProviderId;
+        set { _config.Api.ProviderId = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Все профили для выпадающего списка: встроенные + пользовательские.</summary>
+    public IReadOnlyList<LlmProviderProfile> LlmProviders =>
+        LlmProviderRegistry.All(_config.Api.CustomProviders);
+
+    /// <summary>Профиль по Id среди всех (built-in + custom).</summary>
+    public LlmProviderProfile? FindLlmProvider(string? id) =>
+        string.IsNullOrEmpty(id) ? null : LlmProviderRegistry.FindById(id, _config.Api.CustomProviders);
+
+    /// <summary>Черновик нового custom-провайдера (ещё не сохранён).</summary>
+    public LlmProviderProfile NewCustomProvider() => new()
+    {
+        Id = "custom-" + Guid.NewGuid().ToString("N")[..8],
+        Name = "Мой провайдер",
+        IsBuiltIn = false
+    };
+
+    /// <summary>Копия профиля как черновик custom (для кнопки «дублировать»).</summary>
+    public LlmProviderProfile CloneProvider(LlmProviderProfile src) => new()
+    {
+        Id = "custom-" + Guid.NewGuid().ToString("N")[..8],
+        Name = src.Name + " (копия)",
+        Protocol = src.Protocol,
+        BaseUrl = src.BaseUrl,
+        AuthKind = src.AuthKind,
+        ExtraHeaders = src.ExtraHeaders.Select(h => new KeyValuePair<string, string>(h.Key, h.Value)).ToList(),
+        ModelsPath = src.ModelsPath,
+        ChatPath = src.ChatPath,
+        ContentPath = src.ContentPath,
+        UsagePath = src.UsagePath,
+        ModelPresets = new List<string>(src.ModelPresets),
+        PrivacyNote = src.PrivacyNote,
+        ReasoningEffort = src.ReasoningEffort,
+        IsBuiltIn = false
+    };
+
+    /// <summary>Сохранить custom-профиль в конфиг (новый → добавить, существующий → заменить).</summary>
+    public void SaveCustomProvider(LlmProviderProfile profile)
+    {
+        var list = _config.Api.CustomProviders;
+        int idx = list.FindIndex(p => p.Id == profile.Id);
+        if (idx >= 0) list[idx] = profile; else list.Add(profile);
+        OnPropertyChanged(nameof(LlmProviders));
+    }
+
+    /// <summary>Удалить custom-профиль; если он был выбран — сбросить выбор.</summary>
+    public void DeleteCustomProvider(string id)
+    {
+        _config.Api.CustomProviders.RemoveAll(p => p.Id == id);
+        if (ProviderId == id) ProviderId = string.Empty;
+        OnPropertyChanged(nameof(LlmProviders));
+    }
+
+    /// <summary>Перечитать список провайдеров (после правок custom-профилей).</summary>
+    public void RefreshLlmProviders() => OnPropertyChanged(nameof(LlmProviders));
+
     public string SttModel
     {
         get => _config.Api.SttModel;

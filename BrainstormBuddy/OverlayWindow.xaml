@@ -490,17 +490,20 @@
                 </StackPanel>
             </Grid>
 
-            <!-- Row 2: ряд действий (макет: primary «Отправить» + группы-пилюли, gap 7) + статус -->
+            <!-- Row 2: ряд действий + статус. Margin.Left=52 выравнивает первую видимую группу
+                 под левый край селектора промпта: 16 (margin шапки) + 28 (лого) + 8 (его margin).
+                 Межгрупповый gap 7 живёт в правом margin каждой группы: при Collapsed
+                 SpeedPresetGroup/CloakButton мёртвых отступов не остаётся. -->
             <StackPanel Grid.Row="2">
-                <DockPanel LastChildFill="False" Margin="18,0,18,10">
+                <DockPanel LastChildFill="False" Margin="52,0,18,10">
                     <!-- Кнопка «Отправить» перенесена вниз на молнию в мик-панель (по фидбеку).
                          Пресеты скорости речи — только в Инженерном режиме. -->
-                    <Border x:Name="SpeedPresetGroup" Style="{StaticResource ToolGroup}" Margin="0">
+                    <Border x:Name="SpeedPresetGroup" Style="{StaticResource ToolGroup}" Margin="0,0,7,0">
                         <StackPanel Orientation="Horizontal">
-                            <Button Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnSilenceSpeedDown" ToolTip="{DynamicResource L_TT_SlowSpeech}">
+                            <Button Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnSilenceSpeedDown" ToolTip="{DynamicResource L_TT_SlowSpeech}">
                                 <ContentPresenter Content="{DynamicResource IconSlowSpeech}" Width="15" Height="15"/>
                             </Button>
-                            <Button Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnResetSpeed" ToolTip="{DynamicResource L_TT_ResetSpeed}">
+                            <Button Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnResetSpeed" ToolTip="{DynamicResource L_TT_ResetSpeed}">
                                 <ContentPresenter Content="{DynamicResource IconResetSpeed}" Width="15" Height="15"/>
                             </Button>
                             <Button Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnSilenceSpeedUp" ToolTip="{DynamicResource L_TT_FastSpeech}">
@@ -508,12 +511,12 @@
                             </Button>
                         </StackPanel>
                     </Border>
-                    <Border Style="{StaticResource ToolGroup}" Margin="7,0,0,0">
+                    <Border Style="{StaticResource ToolGroup}" Margin="0,0,7,0">
                         <StackPanel Orientation="Horizontal">
-                            <Button x:Name="ExportTransBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnExportTranscript" ToolTip="{DynamicResource L_TT_Export}">
+                            <Button x:Name="ExportTransBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnExportTranscript" ToolTip="{DynamicResource L_TT_Export}">
                                 <ContentPresenter x:Name="ExportIconHost" Content="{DynamicResource IconExport}" Width="16" Height="16"/>
                             </Button>
-                            <Button x:Name="ExportSummaryBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnExportAiSummary" ToolTip="{DynamicResource L_TT_Protocol}">
+                            <Button x:Name="ExportSummaryBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnExportAiSummary" ToolTip="{DynamicResource L_TT_Protocol}">
                                 <ContentPresenter Content="{DynamicResource IconAiProtocol}" Width="16" Height="16"/>
                             </Button>
                             <Button x:Name="ScreenShotButton" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnScreenShotClick" ToolTip="{DynamicResource L_TT_Screenshot}">
@@ -521,10 +524,10 @@
                             </Button>
                         </StackPanel>
                     </Border>
-                    <Border Style="{StaticResource ToolGroup}" Margin="7,0,0,0" HorizontalAlignment="Right">
+                    <Border Style="{StaticResource ToolGroup}" Margin="0,0,7,0" HorizontalAlignment="Right">
                         <StackPanel Orientation="Horizontal">
                             <!-- Cloak (сквозной режим) временно скрыт: вешал главное окно. Вернуть после фикса. -->
-                            <Button x:Name="CloakButton" Visibility="Collapsed" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnCloakClick" ToolTip="{DynamicResource L_TT_Cloak}">
+                            <Button x:Name="CloakButton" Visibility="Collapsed" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnCloakClick" ToolTip="{DynamicResource L_TT_Cloak}">
                                 <ContentPresenter Content="{DynamicResource IconCloak}" Width="15" Height="15"/>
                             </Button>
                             <Button x:Name="EraseButton" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnEraseClick" ToolTip="{DynamicResource L_TT_Erase}">

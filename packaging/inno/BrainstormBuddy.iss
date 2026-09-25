@@ -7,7 +7,7 @@
 ; ============================================================================
 
 #define MyAppName "BrainstormBuddy"
-#define MyAppVersion "2.5.10"
+#define MyAppVersion "2.5.13"
 #define MyAppPublisher "BrainstormBuddy"
 #define MyAppExeName "BrainstormBuddy.exe"
 ; Стабильный AppId — НЕ менять между версиями (иначе апгрейд не найдёт прошлую установку).
@@ -64,6 +64,8 @@ UninstallDisplayName={#MyAppName} {#MyAppVersion}
 
 WizardStyle=modern
 ShowLanguageDialog=yes
+; yes (не auto): мануал и UX ждут явный выбор языка инсталлятора. На silent-установках
+; диалог не показывается в любом случае — /SILENT подавляет его сам, /LANG задаёт язык.
 ; Быстрая сборка: lzma2/normal вместо max + без solid → жмётся в несколько потоков (все ядра).
 ; Инсталлятор чуть больше (~+10-15%), но сборка в разы быстрее. Для финального релиза
 ; при желании вернуть max + solid ради минимального размера.
@@ -237,23 +239,29 @@ begin
   if PrevVersion = '' then Exit;   { чистая установка — обычный мастер }
 
   Cmp := CompareVer('{#MyAppVersion}', PrevVersion);
+  { Под /SILENT и /VERYSILENT MsgBox НЕ показываем — голый MsgBox игнорирует
+    /SUPPRESSMSGBOXES и вешал бы автодеплой навсегда. Тихие дефолты:
+    обновление и переустановка — да, даунгрейд — нет (как MB_DEFBUTTON2). }
   if Cmp > 0 then
   begin
     { Новее установленной — предлагаем обновить, дальше страницы папки/группы пропускаем }
     UpgradeMode := True;
-    if MsgBox(FmtMessage(CustomMessage('UpgradeConfirm'), [PrevVersion, '{#MyAppVersion}']), mbConfirmation, MB_YESNO) = IDNO then
+    if not WizardSilent() and
+       (MsgBox(FmtMessage(CustomMessage('UpgradeConfirm'), [PrevVersion, '{#MyAppVersion}']), mbConfirmation, MB_YESNO) = IDNO) then
       Result := False;
   end
   else if Cmp = 0 then
   begin
     UpgradeMode := True;
-    if MsgBox(FmtMessage(CustomMessage('ReinstallConfirm'), ['{#MyAppVersion}']), mbConfirmation, MB_YESNO) = IDNO then
+    if not WizardSilent() and
+       (MsgBox(FmtMessage(CustomMessage('ReinstallConfirm'), ['{#MyAppVersion}']), mbConfirmation, MB_YESNO) = IDNO) then
       Result := False;
   end
   else
   begin
     { Установлена более новая версия — по умолчанию НЕ ставим старую поверх }
-    if MsgBox(FmtMessage(CustomMessage('DowngradeConfirm'), [PrevVersion, '{#MyAppVersion}']), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+    if not WizardSilent() and
+       (MsgBox(FmtMessage(CustomMessage('DowngradeConfirm'), [PrevVersion, '{#MyAppVersion}']), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then
       UpgradeMode := True
     else
       Result := False;
@@ -335,8 +343,9 @@ begin
 
     { Сброс настроек по выбору пользователя: старый config.json → бэкап в «Документы»,
       оригинал удаляем, чтобы приложение создало свежие дефолты. Резюме/пресеты внутри
-      бэкапа сохранены — восстановимо. При «совместимости» конфиг не трогаем. }
-    if FileExists(OldConfigPath) and (ConfigResetPage.SelectedValueIndex = 0) then
+      бэкапа сохранены — восстановимо. При «совместимости» конфиг не трогаем.
+      Под /SILENT страница выбора не показывалась → конфиг юзера НЕ трогаем. }
+    if not WizardSilent() and FileExists(OldConfigPath) and (ConfigResetPage.SelectedValueIndex = 0) then
     begin
       BackupDir := ExpandConstant('{userdocs}\{#MyAppName}');
       ForceDirectories(BackupDir);

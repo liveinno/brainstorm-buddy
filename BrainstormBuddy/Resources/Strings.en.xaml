@@ -88,6 +88,8 @@
     <sys:String x:Key="L_Language">Язык интерфейса / Language:</sys:String>
     <sys:String x:Key="L_Theme">Theme:</sys:String>
 
+    <sys:String x:Key="L_About_Site">Program website:</sys:String>
+
     <sys:String x:Key="L_SendBtn">Send</sys:String>
     <sys:String x:Key="L_Last2Min">last 2 min</sys:String>
 

@@ -97,7 +97,7 @@ public static class AgentReplay
                     MaxWords = 120, Tone = "Деловой", Style = "Структурированный", Language = "ru",
                     SystemPrompt = SingleSuffleurPrompt } };
             }
-            var orch = new AgentOrchestrator(cfg, apiKey: "x", baseUrl: baseUrl)
+            var orch = new AgentOrchestrator(cfg, new ApiConfig { ApiKey = "x", BaseUrl = baseUrl })
             {
                 // Бережём прокси: агентов зовём ПОСЛЕДОВАТЕЛЬНО, с паузой и ретраями на пустой ответ.
                 Sequential = true,
@@ -191,7 +191,7 @@ public static class AgentReplay
             if (rq == 0) { Console.WriteLine("  нет вопросов рекрутера — пропуск"); continue; }
 
             var cfg = MultiAgentConfig.CreateDefaults(); cfg.Enabled = true; cfg.ActiveScenarioId = "interview";
-            var orch = new AgentOrchestrator(cfg, apiKey: apiKey, baseUrl: baseUrl)
+            var orch = new AgentOrchestrator(cfg, new ApiConfig { ApiKey = apiKey, BaseUrl = baseUrl })
             {
                 Sequential = true, InterRequestDelayMs = seqDelayMs, MaxRetries = retries, RetryDelayMs = 15000,
                 Log = s => { if (s.Contains("ERROR") || s.Contains("rate") || s.Contains("HTTP")) Console.WriteLine($"\n  [orch] {s}"); },

@@ -39,7 +39,7 @@ public class MultiAgentTests
     {
         var profile = UserProfile.CreateDefault();
         var text = profile.FormatForPrompt();
-        Assert.Contains("Профиль кандидата", text);
+        Assert.Contains("РЕЗЮМЕ КАНДИДАТА", text);
         Assert.Contains("Ключевые кейсы", text);
         Assert.Contains("Технические навыки", text);
         Assert.Contains("Soft skills", text);
@@ -68,7 +68,7 @@ public class MultiAgentTests
                 var systemPrompt = messages[0].GetProperty("content").GetString() ?? "";
 
                 string response;
-                if (systemPrompt.Contains("HRD-агент"))
+                if (systemPrompt.Contains("HR/поведенческим")) // HRD-агент
                     response = "[SILENT]";
                 else
                     response = "Гибридный Scrum с 2-недельными спринтами";
@@ -100,7 +100,7 @@ public class MultiAgentTests
     public void MultiAgentConfig_Defaults_Enabled()
     {
         var defaults = MultiAgentConfig.CreateDefaults();
-        Assert.True(defaults.Enabled);
+        Assert.False(defaults.Enabled); // мульти-агент выключен по умолчанию
         Assert.Equal("interview", defaults.ActiveScenarioId);
         Assert.Equal(5, defaults.Scenarios.Count);
         Assert.NotEmpty(defaults.UserProfile.Summary);
@@ -111,7 +111,7 @@ public class MultiAgentTests
 public class TestOrchestrator : AgentOrchestrator
 {
     public TestOrchestrator(MultiAgentConfig config, HttpMessageHandler handler)
-        : base(config, "test-key", "https://test.example.com/v1")
+        : base(config, new ApiConfig { ApiKey = "test-key", BaseUrl = "https://test.example.com/v1" })
     {
         _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
     }

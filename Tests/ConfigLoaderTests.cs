@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using BrainstormBuddy.Ai;
 using BrainstormBuddy.Config;
 using BrainstormBuddy.Services;
 using Xunit;
@@ -95,7 +96,7 @@ public class ConfigLoaderTests
         var json = """
         {
           "SchemaVersion": 0,
-          "Api": { "SttBaseUrl": "http://192.168.0.10:2701/v1", "SttModel": "t-one" },
+          "Api": { "SttBaseUrl": "http://127.0.0.1:2701/v1", "SttModel": "t-one" },
           "Advanced": {
             "ActiveSystemPromptName": "Несуществующий",
             "SystemPromptPresets": [
@@ -131,6 +132,83 @@ public class ConfigLoaderTests
         }
     }
 
+    [Fact]
+    public void Load_Migration_KeepsLegitLanSttUrl()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bsb_test_{Guid.NewGuid()}.json");
+        var json = """
+        {
+          "SchemaVersion": 0,
+          "Api": { "SttBaseUrl": "http://192.168.1.50:8001/v1", "SttModel": "whisper-1" }
+        }
+        """;
+        try
+        {
+            File.WriteAllText(path, json);
+            var logger = new LoggingService(Path.Combine(Path.GetTempPath(), "bsb_test"));
+            var config = new ConfigLoader(path, logger).Load();
+
+            // LAN-адрес без маркера dev-модели — легитимный, миграция его не трогает
+            Assert.Equal("http://192.168.1.50:8001/v1", config.Api.SttBaseUrl);
+            Assert.Equal("whisper-1", config.Api.SttModel);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+
+    [Theory]
+    [InlineData("https://opencode.ai/zen/go/v1", "opencode-go")]
+    [InlineData("https://api.openai.com/v1", "openai")]
+    [InlineData("https://openrouter.ai/api/v1", "openrouter")]
+    [InlineData("https://api.groq.com/openai/v1", "groq")]
+    [InlineData("https://integrate.api.nvidia.com/v1", "nvidia-nim")]
+    [InlineData("http://127.0.0.1:11434/v1", "ollama")]
+    [InlineData("http://localhost:1234/v1", "lmstudio")]
+    [InlineData("https://llm.example.org/v1", "custom")]
+    public void Load_BackfillsProviderId_FromBaseUrl(string baseUrl, string expectedProviderId)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bsb_test_{Guid.NewGuid()}.json");
+        var json = $$"""
+        {
+          "SchemaVersion": 5,
+          "Api": { "BaseUrl": "{{baseUrl}}", "ChatModel": "m" },
+          "MultiAgent": { "UserProfile": { "Summary": "тест" } }
+        }
+        """;
+        try
+        {
+            File.WriteAllText(path, json);
+            var logger = new LoggingService(Path.Combine(Path.GetTempPath(), "bsb_test"));
+            var config = new ConfigLoader(path, logger).Load();
+
+            Assert.Equal(expectedProviderId, config.Api.ProviderId);
+            Assert.Equal(ConfigLoader.CurrentSchemaVersion, config.SchemaVersion);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+            var bak = path + ".bak";
+            if (File.Exists(bak)) File.Delete(bak);
+        }
+    }
+
+    [Theory]
+    [InlineData("https://opencode.ai/zen/go/v1", "opencode-go", "x-opencode-session")]
+    [InlineData("https://api.openai.com/v1", "openai", null)]
+    [InlineData("http://127.0.0.1:11434/v1", "ollama", null)]
+    public void Resolve_InfersBuiltInProfile_WhenProviderIdEmpty(string baseUrl, string expectedId, string? expectedHeader)
+    {
+        var api = new ApiConfig { BaseUrl = baseUrl, ProviderId = "" };
+        var profile = LlmProviderRegistry.Resolve(api);
+
+        Assert.Equal(expectedId, profile.Id);
+        Assert.Equal(profile.IsBuiltIn, expectedId != "custom");
+        if (expectedHeader != null)
+            Assert.Contains(profile.ExtraHeaders, h => h.Key == expectedHeader);
+    }
     [Fact]
     public void Save_RoundTrips()
     {

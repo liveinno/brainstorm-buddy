@@ -3,9 +3,8 @@ using System.Security.Cryptography;
 namespace BrainstormBuddy.Stt;
 
 /// <summary>
-/// Докачка ONNX-модели GigaAM: из GitLab Release/Package (URL из конфига) в %APPDATA%\models.
+/// Докачка ONNX-модели GigaAM: с заданного в конфиге URL в %APPDATA%\models.
 /// Вариант C (запасной): модель, положенная рядом с exe инсталлятором — качать не нужно.
-/// Приватный репозиторий → скачивание требует токен (заголовок из конфига, НЕ хардкод в коде).
 /// </summary>
 public sealed class ModelDownloader
 {

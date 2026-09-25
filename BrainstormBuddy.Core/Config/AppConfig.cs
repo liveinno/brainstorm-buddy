@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using BrainstormBuddy.Ai;
 
 namespace BrainstormBuddy.Config;
 
@@ -78,6 +79,10 @@ public class MultiAgentConfig
 
 public class ApiConfig
 {
+    // Выбранный провайдер из реестра (LlmProviderRegistry): "" = старый конфиг до миграции,
+    // "custom" = ручной BaseUrl без профиля. Детали профиля (заголовки, пути) — в реестре.
+    public string ProviderId { get; set; } = "";
+    public List<LlmProviderProfile> CustomProviders { get; set; } = new();
     public string BaseUrl { get; set; } = "http://127.0.0.1:11434/v1";
     public string ApiKey { get; set; } = string.Empty;
     public string ChatModel { get; set; } = "qwen2.5vl:7b";
@@ -154,7 +159,7 @@ public class AudioConfig
     public int FileSttGpuDevice { get; set; } = -1;
     // Путь к ONNX-модели GigaAM (пусто → авто: %APPDATA%\models, рядом с exe, или artifacts для dev).
     public string SttModelPath { get; set; } = "";
-    // Докачка модели (Фаза 1.3): URL (GitLab Release/Package) + ожидаемый размер для проверки.
+    // Докачка модели (Фаза 1.3): URL + ожидаемый размер для проверки.
     public string SttModelUrl { get; set; } = "";
     public long SttModelBytes { get; set; } = 0;
     public string SttModelSha256 { get; set; } = "";
@@ -171,6 +176,9 @@ public class AudioConfig
     // Ускорение Whisper: "auto" (GPU через Vulkan, откат на CPU) | "gpu" | "cpu".
     // Vulkan работает на NVIDIA/AMD/Intel через драйвер (без CUDA). Применяется после перезапуска.
     public string WhisperAccel { get; set; } = "auto";
+    // GPU для Whisper (Vulkan): индекс DXGI/WMI-адаптера (тот же порядок, что SttGpuDevice и
+    // GpuEnumerator.List()); -1 = авто (дискретная/первая). Внутри маппится на Vulkan-индекс.
+    public int WhisperGpuDevice { get; set; } = -1;
     public bool EnableDebugLogs { get; set; } = false;
 }
 

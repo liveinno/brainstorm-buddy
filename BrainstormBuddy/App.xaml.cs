@@ -60,6 +60,7 @@ public partial class App : Application
     private SettingsWindow? _settingsWindow;
     private FileTranscriptionWindow? _fileTranscriptionWindow;
     private BrainstormBuddy.Stt.WhisperSttEngine? _whisperEngine; // ленивый кэш (модель ~600МБ)
+    private string _whisperEngineKey = "";  // сигнатура закэшированного движка (модель|accel|vkDev|lang)
     private CancellationTokenSource? _mainLoopCts;
     private Task? _mainLoopTask;
     private bool _shuttingDown;
@@ -260,7 +261,7 @@ public partial class App : Application
 
             // Уважаем LLM-настройки из конфига — без принудительного перетирания на локальный адрес.
             // Дефолт чистой установки: локальный Ollama (AppConfig: BaseUrl 127.0.0.1:11434, ChatModel qwen2.5vl:7b).
-            Orchestrator = new AgentOrchestrator(Config.MultiAgent, Config.Api.ApiKey, Config.Api.BaseUrl)
+            Orchestrator = new AgentOrchestrator(Config.MultiAgent, Config.Api)
             {
                 Log = s => Logger.Info(s, "Agent")
             };
@@ -670,29 +671,56 @@ public partial class App : Application
     }
 
     // Кэшированный движок Whisper (модель грузится один раз, переиспользуется).
+    // Ключ: модель+язык+accel+Vulkan-устройство — смена карты/режима пересоздаёт движок.
     public BrainstormBuddy.Stt.WhisperSttEngine? GetWhisperEngine(out string? error)
     {
         error = null;
-        if (_whisperEngine != null) return _whisperEngine;
         var model = ResolveWhisperModel();
         if (model == null)
         {
             error = "Модель Whisper (turbo) не скачана. Скачайте её в Настройки → Локальный STT.";
             return null;
         }
+        // auto: если в системе ЕСТЬ GPU (любой) → Vulkan; иначе CPU. Дискретную предпочитаем.
+        string accel = (Config.Audio.WhisperAccel ?? "auto").ToLowerInvariant();
+        var gpus = BrainstormBuddy.Native.GpuEnumerator.List();
+        if (accel == "auto") accel = gpus.Count > 0 ? "gpu" : "cpu";
+        // Выбор карты: явный WhisperGpuDevice (>=0) из настроек, иначе дискретная/первая (старое).
+        int wmiDev = -1;
+        if (accel == "gpu")
+        {
+            int disc = BrainstormBuddy.Native.GpuEnumerator.BestDiscreteIndex();
+            wmiDev = Config.Audio.WhisperGpuDevice >= 0
+                ? Config.Audio.WhisperGpuDevice
+                : (disc >= 0 ? disc : (gpus.Count > 0 ? gpus[0].Index : 0));
+        }
+        // WhisperFactoryOptions.GpuDevice ждёт Vulkan-индекс (vkEnumeratePhysicalDevices), а не DXGI/WMI.
+        int gpuDev = wmiDev >= 0 ? WmiGpuToVulkanIndex(wmiDev, gpus) : -1;
+        var key = $"{model}|{Config.Audio.WhisperLanguage}|{accel}|{gpuDev}";
+        if (_whisperEngine != null && _whisperEngineKey == key) return _whisperEngine;
         try
         {
-            // auto: если в системе ЕСТЬ GPU (любой) → Vulkan; иначе CPU. Дискретную предпочитаем.
-            string accel = (Config.Audio.WhisperAccel ?? "auto").ToLowerInvariant();
-            int disc = BrainstormBuddy.Native.GpuEnumerator.BestDiscreteIndex();
-            var gpus = BrainstormBuddy.Native.GpuEnumerator.List();
-            if (accel == "auto") accel = gpus.Count > 0 ? "gpu" : "cpu";
-            int gpuDev = accel == "gpu" ? (disc >= 0 ? disc : (gpus.Count > 0 ? gpus[0].Index : 0)) : -1;
-            _whisperEngine = new BrainstormBuddy.Stt.WhisperSttEngine(model, Config.Audio.WhisperLanguage, accel, gpuDev);
-            Logger.Info($"Whisper ready: {model} (accel={accel}, vkDevice={gpuDev})", "Ai");
+            var fresh = new BrainstormBuddy.Stt.WhisperSttEngine(model, Config.Audio.WhisperLanguage, accel, gpuDev);
+            try { _whisperEngine?.Dispose(); } catch { /* уже освобождён */ }
+            _whisperEngine = fresh;
+            _whisperEngineKey = key;
+            Logger.Info($"Whisper ready: {model} (accel={accel}, wmiDevice={wmiDev}, vkDevice={gpuDev})", "Ai");
             return _whisperEngine;
         }
         catch (Exception ex) { error = ex.Message; return null; }
+    }
+
+    // DXGI/WMI-индекс (GpuEnumerator) → Vulkan-индекс (vkEnumeratePhysicalDevices, whisper.cpp).
+    // Матч по имени адаптера; не сошлось — passthrough индекса (best-effort).
+    private static int WmiGpuToVulkanIndex(int wmiIndex, List<BrainstormBuddy.Native.GpuEnumerator.GpuInfo>? gpus = null)
+    {
+        try
+        {
+            gpus ??= BrainstormBuddy.Native.GpuEnumerator.List();
+            var name = wmiIndex >= 0 ? gpus.FirstOrDefault(g => g.Index == wmiIndex)?.Name : null;
+            return BrainstormBuddy.Stt.VulkanDeviceEnumerator.MapSystemIndex(wmiIndex, name);
+        }
+        catch { return wmiIndex; }
     }
 
     /// <summary>Путь к найденной модели GigaAM (или null) — для статуса/удаления в настройках.</summary>
@@ -707,6 +735,7 @@ public partial class App : Application
     {
         try { _whisperEngine?.Dispose(); } catch { /* уже освобождён */ }
         _whisperEngine = null;
+        _whisperEngineKey = "";
     }
 
     // Похоже ли на вопрос — для фолбэка, когда все агенты промолчали (нарратив пропускаем, вопрос отвечаем).
@@ -800,7 +829,8 @@ public partial class App : Application
                 if (wm == null) { error = "Модель Whisper (turbo) не скачана. Скачайте её в Настройки → Локальный STT."; return null; }
                 try
                 {
-                    int dev = fileAccel == "gpu" ? ResolveFileGpuIndex() : -1;
+                    // Whisper (Vulkan): DXGI-индекс из окна маппим на Vulkan-индекс.
+                    int dev = fileAccel == "gpu" ? WmiGpuToVulkanIndex(ResolveFileGpuIndex()) : -1;
                     var owned = new BrainstormBuddy.Stt.WhisperSttEngine(wm, Config.Audio.WhisperLanguage, fileAccel, dev);
                     Logger.Info($"File Whisper: явное железо accel={fileAccel}, vkDevice={dev}", "Ai");
                     return owned; // WhisperSttEngine сам IFileTranscriber; owns — окно диспозит
@@ -850,7 +880,7 @@ public partial class App : Application
     // Сигнатура текущего STT-движка — чтобы пересоздавать его только при реальной смене настроек.
     private string _sttEngineKey = "";
     private string ComputeSttEngineKey() =>
-        $"{Config.Audio.SttEngine}|{Config.Audio.SttAccel}|{Config.Audio.SttGpuDevice}|{Config.Audio.WhisperAccel}|{Config.LocalStt.Enabled}";
+        $"{Config.Audio.SttEngine}|{Config.Audio.SttAccel}|{Config.Audio.SttGpuDevice}|{Config.Audio.WhisperAccel}|{Config.Audio.WhisperGpuDevice}|{Config.Audio.WhisperLanguage}|{Config.LocalStt.Enabled}";
 
     // Горячая замена движка распознавания при смене настроек — БЕЗ перезапуска приложения.
     // Модель грузится в фоне; воркеры читают App.SttEngine на каждом чанке и подхватят новый.

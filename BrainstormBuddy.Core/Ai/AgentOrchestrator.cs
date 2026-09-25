@@ -18,17 +18,19 @@ public class AgentOrchestrator
     private const int MaxContext = 6;
     private const string SilentToken = "[SILENT]";
 
-    public AgentOrchestrator(MultiAgentConfig config, string? apiKey, string? baseUrl)
+    public AgentOrchestrator(MultiAgentConfig config, ApiConfig api)
     {
         _config = config;
         // Локальные модели (ollama) обрабатывают параллельные запросы последовательно —
         // двум агентам нужен запас по времени
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(90) };
-        if (!string.IsNullOrEmpty(apiKey))
-            _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
-        if (!string.IsNullOrEmpty(baseUrl) && !baseUrl.EndsWith('/'))
-            baseUrl += '/';
-        BaseUrl = (baseUrl ?? "https://api.openai.com/v1/") + "chat/completions";
+        // Заголовки по профилю провайдера (auth + ExtraHeaders вроде x-opencode-session).
+        // Здесь статично: ключ/провайдер задаются при создании оркестратора.
+        LlmRequestHeaders.Apply(_http, api, Guid.NewGuid().ToString("N"));
+        var profile = LlmProviderRegistry.Resolve(api);
+        var baseUrl = string.IsNullOrWhiteSpace(api.BaseUrl) ? profile.BaseUrl : api.BaseUrl;
+        if (string.IsNullOrWhiteSpace(baseUrl)) baseUrl = "https://api.openai.com/v1";
+        BaseUrl = baseUrl.TrimEnd('/') + "/" + profile.ChatPath.TrimStart('/');
     }
 
     /// <summary>Опциональный лог-хук: ошибки и вердикты агентов идут сюда (категория Agent).</summary>
@@ -147,7 +149,8 @@ public class AgentOrchestrator
                 var body = await response.Content.ReadAsStringAsync();
                 if (!response.IsSuccessStatusCode) { lastErr = $"HTTP {response.StatusCode}"; continue; }
                 using var doc = JsonDocument.Parse(body);
-                text = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "";
+                text = LlmAnswerSanitizer.Sanitize(
+                    doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()) ?? "";
                 if (doc.RootElement.TryGetProperty("usage", out var usage))
                 {
                     if (usage.TryGetProperty("prompt_tokens", out var pt)) promptTok = pt.GetInt32();

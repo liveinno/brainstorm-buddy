@@ -6,7 +6,7 @@
 
 **Подсказывает готовые ответы прямо во время собеседования, продажи или переговоров. Оверлей поверх экрана, который не видно ни в Zoom, ни в записи. Работает офлайн на вашем компьютере или с вашим сервером — как захотите.**
 
-<img src="docs/images/overlay_hero.png" alt="BrainstormBuddy в действии" width="720"/>
+<img src="rolic.gif" alt="BrainstormBuddy в действии" width="720"/>
 
 <sub>Справа реальные вопросы, распознанные из звонка. Слева готовые ответы от ИИ. Всё это видите только вы.</sub>
 
@@ -37,9 +37,7 @@ BrainstormBuddy работает в реальном времени и оста�
 
 ## Как это выглядит
 
-| Живой ассистент (тёмная тема) | Светлая тема |
-|:---:|:---:|
-| <img src="docs/images/overlay_hero.png" width="420"/> | <img src="docs/images/overlay_light.png" width="420"/> |
+<p align="center"><img src="docs/images/overlay_hero.png" width="420"/></p>
 
 ## Как это работает
 

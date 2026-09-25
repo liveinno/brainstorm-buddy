@@ -18,6 +18,9 @@ public enum ApiComponent { Stt, Llm }
 /// (доступен ↔ недоступен), чтобы UI не спамился на каждый чанк.
 /// </summary>
 public record ApiHealthEventArgs(ApiComponent Component, bool Healthy, string Message);
+/// <summary>Один шаг пошаговой проверки LLM («Проверить подключение»): имя шага
+/// (URL/Auth/Models/Chat), успех и человекочитаемая деталь/ошибка.</summary>
+public sealed record CheckStepResult(string Name, bool Ok, string Detail);
 
 public interface IApiClient
 {
@@ -34,6 +37,13 @@ public interface IApiClient
     /// что у реальных запросов) + контроль непустого content: reasoning-модель может отвечать
     /// на пинг (HTTP 200) и возвращать пустой ответ в бою — проверка обязана это ловить.</summary>
     Task<(bool ok, string detail)> CheckLlmConnectionAsync(int realMaxTokens, string? systemPrompt, CancellationToken ct = default);
+
+    /// <summary>Пошаговая проверка LLM для отчёта в настройках: URL → Auth → Models → Chat.
+    /// Models может отсутствовать у провайдера — шаг будет Ok=false, но это warn, не стоп.</summary>
+    Task<List<CheckStepResult>> CheckLlmConnectionDetailedAsync(CancellationToken ct = default);
+
+    /// <summary>GET {ModelsPath} провайдера → ID моделей для комбобокса; при ошибке — пусто.</summary>
+    Task<List<string>> GetModelsAsync(CancellationToken ct = default);
 
     /// <summary>Срабатывает при смене доступности STT или LLM (для уведомлений юзеру).</summary>
     event EventHandler<ApiHealthEventArgs>? HealthChanged;

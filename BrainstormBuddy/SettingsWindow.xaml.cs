@@ -1,6 +1,8 @@
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -8,8 +10,10 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Navigation;
 using NAudio.Wave;
 using NAudio.Utils;
+using BrainstormBuddy.Ai;
 using BrainstormBuddy.Config;
 using TabControl = System.Windows.Controls.TabControl;
 
@@ -119,18 +123,34 @@ public partial class SettingsWindow : Window
         WhisperAccelCombo.SelectedValue = string.IsNullOrWhiteSpace(App.Current.Config.Audio.WhisperAccel)
             ? "auto" : App.Current.Config.Audio.WhisperAccel.ToLowerInvariant();
 
-        // Пикер видеокарты (для GPU-режима)
+        // Пикеры видеокарты (для GPU-режимов GigaAM и Whisper)
         try
         {
             SttGpuCombo.Items.Clear();
+            WhisperGpuCombo.Items.Clear();
             foreach (var g in BrainstormBuddy.Native.GpuEnumerator.List())
-                SttGpuCombo.Items.Add($"#{g.Index}: {g.Name}");
+            {
+                var item = $"#{g.Index}: {g.Name}";
+                SttGpuCombo.Items.Add(item);
+                WhisperGpuCombo.Items.Add(item);
+            }
             if (SttGpuCombo.Items.Count == 0) SttGpuCombo.Items.Add("видеокарты не найдены");
+            if (WhisperGpuCombo.Items.Count == 0) WhisperGpuCombo.Items.Add("видеокарты не найдены");
             int dev = App.Current.Config.Audio.SttGpuDevice;
             SttGpuCombo.SelectedIndex = (dev >= 0 && dev < SttGpuCombo.Items.Count) ? dev : 0;
+            // -1 = авто → дискретная карта при наличии, иначе первый адаптер.
+            int wdev = App.Current.Config.Audio.WhisperGpuDevice;
+            int wdisc = BrainstormBuddy.Native.GpuEnumerator.BestDiscreteIndex();
+            int wsel = (wdev >= 0 && wdev < WhisperGpuCombo.Items.Count) ? wdev
+                : (wdisc >= 0 && wdisc < WhisperGpuCombo.Items.Count) ? wdisc : 0;
+            WhisperGpuCombo.SelectedIndex = WhisperGpuCombo.Items.Count > 0 ? wsel : -1;
         }
         catch { }
         UpdateGpuPanelVisibility();
+        UpdateWhisperGpuPanelVisibility();
+
+        // Провайдер LLM: профиль по сохранённому ProviderId (или угадывание по BaseUrl для старых конфигов).
+        InitProviderSelection();
 
         App.Current.Logger.Info($"SettingsWindow opened (ApiKey present: {!string.IsNullOrEmpty(vm.ApiKey)}, devices: {vm.AudioDevices.Count})", "UI");
     }
@@ -180,19 +200,41 @@ public partial class SettingsWindow : Window
 
     private async void OnCheckConnection(object sender, RoutedEventArgs e)
     {
+        if (_vm.ApiClient == null)
+        {
+            ConnectionStatusText.Text = "✗ LLM-клиент не инициализирован";
+            ConnectionStatusText.SetResourceReference(ForegroundProperty, "ErrorBrush");
+            return;
+        }
         ConnectionStatusText.Text = "Проверяю…";
+        ConnectionStatusText.SetResourceReference(ForegroundProperty, "TextMutedBrush");
         App.Current.Logger.Info($"Settings: CheckConnection started, url={_vm.BaseUrl}", "UI");
         try
         {
-            // Честная проверка: не только ключ/URL, но и реальный чат-пинг выбранной моделью.
-            // Боевые параметры: тот же лимит токенов и системный промпт, что у реальных запросов —
-            // иначе reasoning-модель проходит пинг и возвращает пустые ответы в главном окне.
-            var cfg = App.Current.Config;
-            var (ok, detail) = await _vm.ApiClient!.CheckLlmConnectionAsync(
-                cfg.Advanced.MaxResponseTokens, cfg.Advanced.SystemPrompt);
-            ConnectionStatusText.Text = ok ? $"✓ {detail}" : $"✗ {detail}";
-            ConnectionStatusText.SetResourceReference(ForegroundProperty, ok ? "AccentBrush" : "ErrorBrush");
-            App.Current.Logger.Info($"Settings: CheckConnection result = {ok} ({detail})", "UI");
+            // Пошаговая проверка (URL → заголовки → /models → чат-пинг): у каждого шага
+            // свой текст ошибки и подсказка, юзер видит, где именно отвалилось.
+            var steps = await _vm.ApiClient.CheckLlmConnectionDetailedAsync();
+            var sb = new StringBuilder();
+            for (int i = 0; i < steps.Count; i++)
+            {
+                if (i > 0) sb.AppendLine();
+                var s = steps[i];
+                sb.Append(s.Ok ? "✓" : "✗").Append($" Шаг {i + 1}/{steps.Count} — {s.Name}: {s.Detail}");
+            }
+            // Не-openai-chat протоколы могут не иметь чат-пинга — это информация, а не ошибка.
+            var prof = _vm.FindLlmProvider(_vm.ProviderId);
+            if (prof != null && prof.Protocol is "openai-responses" or "anthropic" &&
+                !steps.Any(s => s.Name == "Chat"))
+            {
+                sb.AppendLine();
+                sb.Append($"ℹ Шаг — Chat: пропущен (протокол {prof.Protocol})");
+            }
+            bool ok = steps.Count > 0 && steps.All(s => s.Ok);
+            bool anyOk = steps.Any(s => s.Ok);
+            ConnectionStatusText.Text = sb.Length > 0 ? sb.ToString() : "✗ проверка не выполнена";
+            ConnectionStatusText.SetResourceReference(ForegroundProperty,
+                ok ? "AccentBrush" : anyOk ? "WarnBrush" : "ErrorBrush");
+            App.Current.Logger.Info($"Settings: CheckConnection result = {ok} ({steps.Count} steps)", "UI");
         }
         catch (Exception ex)
         {
@@ -200,6 +242,40 @@ public partial class SettingsWindow : Window
             ConnectionStatusText.SetResourceReference(ForegroundProperty, "ErrorBrush");
             App.Current.Logger.Error("Settings: CheckConnection threw", ex, "UI");
         }
+    }
+
+    // «Получить модели»: GET {baseUrl}/models → выпадающий список у Chat Model.
+    private async void OnFetchModels(object sender, RoutedEventArgs e)
+    {
+        if (_vm.ApiClient == null) return;
+        FetchModelsBtn.IsEnabled = false;
+        ModelsStatusText.Text = "Загружаю список моделей…";
+        ModelsStatusText.SetResourceReference(ForegroundProperty, "TextMutedBrush");
+        ModelsStatusText.Visibility = Visibility.Visible;
+        try
+        {
+            var models = await _vm.ApiClient.GetModelsAsync();
+            if (models.Count == 0)
+            {
+                ModelsStatusText.Text = "Список моделей недоступен — введите ID модели вручную.";
+                ModelsStatusText.SetResourceReference(ForegroundProperty, "WarnBrush");
+                return;
+            }
+            var current = _vm.ChatModel;
+            ChatModelCombo.ItemsSource = models;
+            if (!string.IsNullOrWhiteSpace(current))
+                ChatModelCombo.SetCurrentValue(System.Windows.Controls.ComboBox.TextProperty, current); // ItemsSource не должен затирать введённый ID; SetCurrentValue сохраняет биндинг Text → ChatModel
+            ModelsStatusText.Text = $"✓ Моделей: {models.Count} — выберите из списка.";
+            ModelsStatusText.SetResourceReference(ForegroundProperty, "AccentBrush");
+            App.Current.Logger.Info($"Settings: fetched {models.Count} models", "UI");
+        }
+        catch (Exception ex)
+        {
+            ModelsStatusText.Text = "Список моделей недоступен — введите ID модели вручную.";
+            ModelsStatusText.SetResourceReference(ForegroundProperty, "WarnBrush");
+            App.Current.Logger.Error("Settings: GetModels failed", ex, "UI");
+        }
+        finally { FetchModelsBtn.IsEnabled = true; }
     }
 
     private void OnSave(object sender, RoutedEventArgs e)
@@ -247,6 +323,25 @@ public partial class SettingsWindow : Window
         {
             App.Current.Logger.Error("Settings: failed to open logs folder", ex, "UI");
         }
+    }
+
+    // «О приложении» → ссылка на сайт программы (открываем в системном браузере).
+    private void OnSiteLinkNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        try
+        {
+            var uri = (sender as Hyperlink)?.NavigateUri?.AbsoluteUri ?? e.Uri?.AbsoluteUri;
+            if (!string.IsNullOrWhiteSpace(uri))
+            {
+                Process.Start(new ProcessStartInfo { FileName = uri, UseShellExecute = true });
+                App.Current.Logger.Info($"Settings: opened site link {uri}", "UI");
+            }
+        }
+        catch (Exception ex)
+        {
+            App.Current.Logger.Error("Settings: failed to open site link", ex, "UI");
+        }
+        e.Handled = true;
     }
 
     private void OnOpenConfigFolder(object sender, RoutedEventArgs e)
@@ -619,6 +714,23 @@ public partial class SettingsWindow : Window
     private void OnWhisperAccelChanged(object sender, SelectionChangedEventArgs e)
     {
         if (WhisperAccelCombo.SelectedValue is string v && IsLoaded) App.Current.Config.Audio.WhisperAccel = v;
+        UpdateWhisperGpuPanelVisibility();
+    }
+
+    // Пикер видеокарты Whisper: показываем для всех режимов кроме CPU (auto и gpu).
+    private void UpdateWhisperGpuPanelVisibility()
+    {
+        if (WhisperGpuPanel == null || WhisperAccelCombo == null) return;
+        var accel = (WhisperAccelCombo.SelectedValue as string) ?? "auto";
+        WhisperGpuPanel.Visibility = accel == "cpu" ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void OnWhisperGpuChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        // элемент вида "#1: NVIDIA ..." → берём индекс из SelectedIndex (совпадает с DXGI-порядком)
+        if (WhisperGpuCombo.SelectedIndex >= 0)
+            App.Current.Config.Audio.WhisperGpuDevice = WhisperGpuCombo.SelectedIndex;
     }
 
     private void OnSttAccelChanged(object sender, SelectionChangedEventArgs e)
@@ -647,31 +759,232 @@ public partial class SettingsWindow : Window
 
     private void OnOpenFileTranscription(object sender, RoutedEventArgs e) => App.Current.ShowFileTranscription();
 
-    // Пресет LLM-провайдера → подставляет BaseUrl (ключ/модель юзер вписывает сам).
+    // ===================== LLM-провайдеры (профили) =====================
+    // Дропдаун хранит Id профиля (биндинг ProviderId → Config.Api.ProviderId).
+    // Встроенные — из LlmProviderRegistry, пользовательские — из Config.Api.CustomProviders.
+
+    // Строка редактируемой таблицы заголовков (KeyValuePair не редактируем → отдельная строка).
+    public sealed class ProviderHeaderRow
+    {
+        public string Key { get; set; } = "";
+        public string Value { get; set; } = "";
+    }
+
+    private LlmProviderProfile? _editingProvider;      // профиль в панели редактирования
+    private bool _providerEditIsNew;                    // черновик ещё не в CustomProviders
+    private ObservableCollection<ProviderHeaderRow>? _headerRows;
+    // SelectedValue-биндинг пишет _vm.ProviderId ДО SelectionChanged -> сравнение
+    // _vm.ProviderId != profile.Id даёт false и BaseUrl провайдера не подставляется.
+    // Ведём отдельный _appliedProviderId: «какой профиль реально применили к полям».
+    private string? _appliedProviderId;
+
+    // Выбор провайдера → подставить BaseUrl/модель-пресет, показать приватность/редактор.
     private void OnLlmProviderChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded) return;
-        if (LlmProviderCombo.SelectedValue is string url && !string.IsNullOrEmpty(url))
-        {
-            _vm.BaseUrl = url;
+        var profile = LlmProviderCombo.SelectedItem as LlmProviderProfile;
+        if (profile == null) return;
+        // Выбрали другого провайдера, пока открыт черновик/редактор → сбрасываем панель.
+        if (_editingProvider != null && profile.Id != _editingProvider.Id)
+            HideProviderEditor();
+        ApplyProviderSelection(profile);
+    }
 
-            // Модель провайдера ≠ модель другого провайдера. Не даём остаться «чужой» модели,
-            // иначе провайдер вернёт 400 «not a valid model ID» (реальный кейс с OpenRouter).
-            // Эвристика: у облачных ID есть «/» (tencent/hy3:free, meta/llama-3.3), у локального Ollama — нет.
-            bool isLocal = url.Contains("127.0.0.1") || url.Contains("localhost");
-            var m = _vm.ChatModel ?? "";
-            if (isLocal)
+    // Общая логика применения профиля (выбор из списка, создание, дублирование).
+    private void ApplyProviderSelection(LlmProviderProfile profile)
+    {
+        // Биндинг уже записал profile.Id в _vm.ProviderId -> источник истины по смене
+        // провайдера это _appliedProviderId, а не _vm.ProviderId (иначе изменение не видно).
+        bool providerChanged = _appliedProviderId != profile.Id;
+        _appliedProviderId = profile.Id;
+        if (providerChanged) _vm.ProviderId = profile.Id;
+        if (!string.IsNullOrWhiteSpace(profile.BaseUrl) &&
+            (providerChanged || string.IsNullOrWhiteSpace(_vm.BaseUrl)))
+            _vm.BaseUrl = profile.BaseUrl;
+
+        // Модель провайдера ≠ модель другого провайдера — при СМЕНЕ провайдера не оставляем
+        // «чужой» ID («not a valid model ID», реальный кейс с OpenRouter). Без смены провайдера
+        // (открыли настройки повторно) модель не трогаем — юзер мог вписать свой ID вручную.
+        var m = _vm.ChatModel ?? "";
+        if (profile.ModelPresets.Count > 0)
+        {
+            ChatModelCombo.ItemsSource = profile.ModelPresets;
+            if (providerChanged && (string.IsNullOrWhiteSpace(m) || !profile.ModelPresets.Contains(m)))
+                _vm.ChatModel = profile.ModelPresets[0];
+        }
+        else
+        {
+            ChatModelCombo.ItemsSource = null;
+            bool isLocal = profile.BaseUrl.Contains("127.0.0.1") || profile.BaseUrl.Contains("localhost")
+                           || profile.AuthKind == "none";
+            if (providerChanged && isLocal)
             {
                 if (string.IsNullOrWhiteSpace(m) || m.Contains("/"))
                     _vm.ChatModel = "qwen2.5vl:7b"; // рабочая модель по умолчанию для Ollama
             }
-            else if (!m.Contains("/"))
+            else if (providerChanged && !string.IsNullOrWhiteSpace(m) && !m.Contains("/") && !m.Contains(":"))
             {
                 // Локальная модель на облачном провайдере невалидна — очищаем, чтобы юзер вписал свою.
                 _vm.ChatModel = "";
                 ConnectionStatusText.Text = "↓ Впишите модель этого провайдера в «Chat Model» (пример под полем).";
+                ConnectionStatusText.SetResourceReference(ForegroundProperty, "WarnBrush");
             }
         }
+
+        // Заметка о приватности профиля (например, «запросы идут через шлюз opencode.ai»).
+        if (!string.IsNullOrWhiteSpace(profile.PrivacyNote))
+        {
+            LlmProviderPrivacyNote.Text = profile.PrivacyNote;
+            LlmProviderPrivacyNote.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            LlmProviderPrivacyNote.Text = "";
+            LlmProviderPrivacyNote.Visibility = Visibility.Collapsed;
+        }
+
+        // Псевдо-профиль реестра (Id="custom", не запись CustomProviders) удалять нельзя — прячем ✕.
+        LlmProviderDeleteBtn.Visibility = (profile.IsBuiltIn || IsPseudoCustomProvider(profile))
+            ? Visibility.Collapsed : Visibility.Visible;
+
+        // Custom-профиль → сразу режим редактирования (поля уже в конфиге, отмена просто скрывает).
+        if (!profile.IsBuiltIn && _editingProvider?.Id != profile.Id)
+            ShowProviderEditor(profile, isNew: false);
+        else if (profile.IsBuiltIn && !_providerEditIsNew)
+            HideProviderEditor();
+    }
+
+    // «＋» — новый custom-провайдер (черновик; в конфиг попадёт только по «Сохранить»).
+    private void OnAddProvider(object sender, RoutedEventArgs e)
+    {
+        var draft = _vm.NewCustomProvider();
+        ShowProviderEditor(draft, isNew: true);
+        App.Current.Logger.Info($"Settings: new custom provider draft {draft.Id}", "UI");
+    }
+
+    // «⧉» — копия выбранного профиля (built-in → тоже копируется как custom).
+    private void OnDuplicateProvider(object sender, RoutedEventArgs e)
+    {
+        var src = LlmProviderCombo.SelectedItem as LlmProviderProfile ?? _vm.FindLlmProvider(_vm.ProviderId);
+        if (src == null) return;
+        var copy = _vm.CloneProvider(src);
+        ShowProviderEditor(copy, isNew: true);
+        App.Current.Logger.Info($"Settings: duplicated provider '{src.Id}' → draft {copy.Id}", "UI");
+    }
+
+    // Реестровый псевдо-профиль "custom" (его ставит LlmProviderRegistry): совпадающая по Id
+    // запись в Config.Api.CustomProviders его затеняет и остаётся удаляемой.
+    private bool IsPseudoCustomProvider(LlmProviderProfile profile) =>
+        string.Equals(profile.Id, "custom", StringComparison.OrdinalIgnoreCase)
+        && !_vm.Config.Api.CustomProviders.Any(p =>
+            string.Equals(p.Id, "custom", StringComparison.OrdinalIgnoreCase));
+
+    // «✕» — удалить custom-профиль (встроенные и реестровый "custom" не удаляются — кнопка скрыта).
+    private void OnDeleteProvider(object sender, RoutedEventArgs e)
+    {
+        var profile = LlmProviderCombo.SelectedItem as LlmProviderProfile;
+        if (profile == null || profile.IsBuiltIn || IsPseudoCustomProvider(profile)) return;
+        _vm.DeleteCustomProvider(profile.Id);
+        HideProviderEditor();
+        LlmProviderCombo.SelectedIndex = 0;
+        App.Current.Logger.Info($"Settings: deleted custom provider '{profile.Id}'", "UI");
+    }
+
+    // Панель редактирования custom-профиля.
+    private void ShowProviderEditor(LlmProviderProfile profile, bool isNew)
+    {
+        _editingProvider = profile;
+        _providerEditIsNew = isNew;
+        ProviderNameBox.Text = profile.Name;
+        ProviderBaseUrlBox.Text = profile.BaseUrl;
+        ProviderProtocolCombo.SelectedValue = profile.Protocol;
+        ProviderAuthCombo.SelectedValue = profile.AuthKind;
+        _headerRows = new ObservableCollection<ProviderHeaderRow>(
+            profile.ExtraHeaders.Select(h => new ProviderHeaderRow { Key = h.Key, Value = h.Value }));
+        ProviderHeadersList.ItemsSource = _headerRows;
+        ProviderPresetsBox.Text = string.Join(", ", profile.ModelPresets);
+        ProviderPrivacyBox.Text = profile.PrivacyNote;
+        LlmProviderEditPanel.Visibility = Visibility.Visible;
+    }
+
+    private void HideProviderEditor()
+    {
+        _editingProvider = null;
+        _providerEditIsNew = false;
+        _headerRows = null;
+        ProviderHeadersList.ItemsSource = null;
+        LlmProviderEditPanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnAddProviderHeader(object sender, RoutedEventArgs e)
+    {
+        _headerRows ??= new ObservableCollection<ProviderHeaderRow>();
+        ProviderHeadersList.ItemsSource ??= _headerRows;
+        _headerRows.Add(new ProviderHeaderRow());
+    }
+
+    private void OnRemoveProviderHeader(object sender, RoutedEventArgs e)
+    {
+        if (_headerRows == null) return;
+        if ((sender as FrameworkElement)?.DataContext is ProviderHeaderRow row)
+            _headerRows.Remove(row);
+    }
+
+    // «Сохранить» в редакторе: поля панели → профиль → Config.Api.CustomProviders.
+    private void OnSaveProvider(object sender, RoutedEventArgs e)
+    {
+        var p = _editingProvider;
+        if (p == null) return;
+        if (string.IsNullOrWhiteSpace(ProviderNameBox.Text) || string.IsNullOrWhiteSpace(ProviderBaseUrlBox.Text))
+        {
+            App.Current.Notifier.ShowWarning("Провайдер", "Заполните название и BaseUrl");
+            return;
+        }
+        p.Name = ProviderNameBox.Text.Trim();
+        p.BaseUrl = ProviderBaseUrlBox.Text.Trim();
+        p.Protocol = ProviderProtocolCombo.SelectedValue as string ?? "openai-chat";
+        p.AuthKind = ProviderAuthCombo.SelectedValue as string ?? "bearer";
+        p.ExtraHeaders = _headerRows == null ? new List<KeyValuePair<string, string>>()
+            : _headerRows.Where(r => !string.IsNullOrWhiteSpace(r.Key))
+                .Select(r => new KeyValuePair<string, string>(r.Key.Trim(), r.Value.Trim()))
+                .ToList();
+        p.ModelPresets = (ProviderPresetsBox.Text ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        p.PrivacyNote = ProviderPrivacyBox.Text?.Trim() ?? "";
+        p.IsBuiltIn = false;
+
+        // Если правили тот провайдер, что сейчас выбран — синкнуть главное поле BaseUrl сразу.
+        if (_vm.ProviderId == p.Id && !string.IsNullOrWhiteSpace(p.BaseUrl))
+            _vm.BaseUrl = p.BaseUrl;
+        bool wasNew = _providerEditIsNew;
+        _vm.SaveCustomProvider(p);
+        _providerEditIsNew = false;
+        _vm.ProviderId = p.Id; // SelectedValue обновит комбо → ApplyProviderSelection откроет редактор заново
+        App.Current.Notifier.ShowInfo("Провайдер", $"«{p.Name}» сохранён");
+        App.Current.Logger.Info($"Settings: saved custom provider '{p.Id}' (new={wasNew})", "UI");
+    }
+
+    // «Отмена»: черновик выбрасываем (ничего не сохранено), сохранённый профиль просто прячет панель.
+    private void OnCancelProviderEdit(object sender, RoutedEventArgs e)
+    {
+        HideProviderEditor();
+    }
+
+    // Первичная инициализация вкладки API: если ProviderId пуст/битый — угадываем профиль по BaseUrl.
+    private void InitProviderSelection()
+    {
+        var profile = _vm.FindLlmProvider(_vm.ProviderId);
+        if (profile == null && !string.IsNullOrWhiteSpace(_vm.BaseUrl))
+            profile = _vm.LlmProviders.FirstOrDefault(p =>
+                string.Equals(p.BaseUrl?.TrimEnd('/'), _vm.BaseUrl.TrimEnd('/'),
+                    StringComparison.OrdinalIgnoreCase));
+        // Это ПЕРВИЧНАЯ загрузка сохранённого профиля, а не смена пользователем:
+        // помечаем как уже применённый, чтобы ApplyProviderSelection не затирал
+        // загруженные из конфига BaseUrl/ChatModel («providerChanged=false»).
+        _appliedProviderId = profile?.Id;
+        if (profile != null)
+            ApplyProviderSelection(profile);
     }
 
     // Прогон 3-сек эталона через активный движок → мс + RTF + вердикт.

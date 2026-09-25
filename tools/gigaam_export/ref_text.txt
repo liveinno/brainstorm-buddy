@@ -1,0 +1,1 @@
+Эталонный текст не сохранён — пересоздай ref_text.txt декодом test.wav через export_onnx.py перед --validate-onnx.

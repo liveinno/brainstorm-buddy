@@ -33,18 +33,18 @@ public class DiagnosticsServiceTests
     public void RedactLogText_RemovesUsernameEmailAndTokens()
     {
         var input =
-            @"[10:00:00.000] [Info ] [App       ] Path: C:\Users\Ivan\AppData\Roaming\BrainstormBuddy" + "\n" +
-            "[10:00:00.001] [Info ] [Net       ] Auth: PRIVATE-TOKEN=glpat-abc123SECRETxyz user ivan.petrov@example.com";
+            @"[10:00:00.000] [Info ] [App       ] Path: C:\Users\TestUser\AppData\Roaming\BrainstormBuddy" + "\n" +
+            "[10:00:00.001] [Info ] [Net       ] Auth: PRIVATE-TOKEN=glpat-abc123SECRETxyz user test@example.com";
 
         var red = DiagnosticsService.RedactLogText(input);
 
         Assert.Contains(@"C:\Users\<user>", red);
-        Assert.DoesNotContain("Ivan", red);
+        Assert.DoesNotContain("TestUser", red);
         // Токен вырезан (тут даже сильнее — PRIVATE-TOKEN=… схлопывается в ***).
         Assert.DoesNotContain("glpat-abc123SECRETxyz", red);
         Assert.DoesNotContain("SECRET", red);
         Assert.Contains("***", red);
-        Assert.DoesNotContain("ivan.petrov@example.com", red);
+        Assert.DoesNotContain("test@example.com", red);
         Assert.Contains("<email>", red);
     }
 

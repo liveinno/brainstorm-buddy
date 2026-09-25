@@ -128,9 +128,15 @@ robocopy publish\app\models publish\app-inno\models   # exit code 1 = успех
 
 Тихая установка/удаление без UI (быстрая проверка механики):
 ```powershell
-# установка «только для меня» (без UAC), полная (с моделью)
-Start-Process installer-inno\BrainstormBuddy-Setup.exe -Wait `
+# установка «только для меня» (без UAC), полная (с моделью).
+# ShowLanguageDialog=auto → диалог языка под /VERYSILENT пропускается сам;
+# /LANG не нужен. /CURRENTUSER — ставим «только для меня» без диалога выбора scope.
+Start-Process installer-inno\BrainstormBuddy-Setup-Full.exe -Wait `
   -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER"
+
+# если приложение в данный момент запущено — принудительно закрыть,
+# иначе CloseApplications=yes может ждать, пока tray-приложение завершится само:
+#   ... + "/FORCECLOSEAPPLICATIONS"
 
 # удаление
 Start-Process "$env:LOCALAPPDATA\Programs\BrainstormBuddy\unins000.exe" -Wait `
@@ -178,6 +184,11 @@ Start-Process "$env:LOCALAPPDATA\Programs\BrainstormBuddy\unins000.exe" -Wait `
 - **`installer-inno/` и `installer-full/` — в `.gitignore`.** Исходники установщика
   (`.iss`, `LICENSE.txt`) лежат в **отслеживаемой** `packaging/inno/`, а не в
   игнорируемой `installer/`.
+- **Кастомный `MsgBox` в `InitializeSetup` вешал тихую установку.** Голый `MsgBox`
+  игнорирует `/SUPPRESSMSGBOXES` — под `/VERYSILENT` апгрейд ждал ответа вечно.
+  **Решение:** все три промпта (upgrade/reinstall/downgrade) обёрнуты в
+  `if not WizardSilent()`; тихие дефолты — обновление/переустановка = да,
+  даунгрейд = нет (соответствует `MB_DEFBUTTON2`).
 
 ---
 
@@ -227,57 +238,31 @@ code-signing сертификат. Заготовка — закомментир
 
 ---
 
-## 11. Раздача (GitLab)
 
-Готовый `installer-inno\BrainstormBuddy-Setup.exe` (~465 МБ) заливается в
-**GitLab Generic Package Registry**:
-```powershell
-curl --header "PRIVATE-TOKEN: <token>" --upload-file installer-inno\BrainstormBuddy-Setup.exe `
-  "https://gitlab.com/api/v4/projects/<id>/packages/generic/brainstormbuddy-setup/1.0.0/BrainstormBuddy-Setup.exe"
-```
-Репозиторий приватный → прямая ссылка требует токен в заголовке; проще скачивать
-из веб-страницы **Packages** в залогиненном браузере. Токен — только в заголовке
-запроса, **не** в исходниках.
-
----
-
-## 12. Почему не MSIX
+## 11. Почему не MSIX
 
 MSIX-песочница ломает стелс-фичи (`WDA_EXCLUDEFROMCAPTURE`, глобальные хоткеи).
 Поэтому Inno Setup, не MSIX.
 
 ---
 
-## 13. Автотест установки через UI-тестер (FlaUI-драйвер GUI)
+## 12. Проверка установки вручную
 
-Инсталлятор тестируется **не тихой установкой**, а прогоном реального GUI-мастера
-через FlaUI — как живой пользователь кликает кнопки. Сценарий:
-`BrainstormBuddy.UITests/Scenarios/InstallerScenario.cs`.
+Минимальный ручной прогон: установка → проверка файлов → сброс конфига → удаление,
+все шаги через GUI-мастер (**режим «только для меня» → язык → welcome → лицензия →
+папка → сброс конфига → компоненты → меню Пуск → задачи → Install → Finish**).
+Дев-конфиг (`%APPDATA%\BrainstormBuddy\config.json`) бэкапится до теста и
+восстанавливается после — сброс не должен трогать реальные настройки.
 
-```bash
-# установка → проверка файлов → сброс конфига → удаление (всё через GUI):
-BrainstormBuddy.UITests.exe --install "installer-inno\BrainstormBuddy-Setup-Full.exe"
-# только удаление уже установленного (для отладки):
-BrainstormBuddy.UITests.exe --uninstall-only "C:\Users\<...>\AppData\Local\Programs\BrainstormBuddy"
-```
-Что делает: прокликивает **режим («только для меня»!) → язык → welcome → лицензия →
-папка → сброс конфига → компоненты → меню Пуск → задачи → Install → Finish**, снимает
-скриншот каждой страницы (Vision-аннотация, если Ollama жив), затем проверяет файлы,
-сброс конфига с бэкапом, и через GUI удаляет. Дев-конфиг (`%APPDATA%\...\config.json`)
-бэкапится до и восстанавливается после — сброс не трогает реальные настройки.
-
-Отчёт: `report_install.html` / `report_uninstall.html` рядом с запуском.
-
-### Грабли, которые этот тест поймал (и как починены)
+### Грабли Inno, пойманные на этом прогоне (и как починены)
 - **`THIRD-PARTY-NOTICES.txt` не попадал в установку.** Отдельная запись `Source:
   "..\..\THIRD-PARTY-NOTICES.txt"` в `[Files]` — ISCC **молча не паковал** файл по
   относительному пути (в бинаре инсталлятора имени файла не было вовсе, при этом сборка
   не падала). Фикс: `build-installer.sh` кладёт файл в `publish\app-inno\`, откуда его
   заметает общий свип `Source: "..\..\publish\app-inno\*"` (тот же, что ставит exe и dll).
 - **Окно «Выбор режима установки»** (из `PrivilegesRequiredOverridesAllowed=dialog`)
-  всплывает ДО мастера как `#32770`. Драйвер обязан жать **«Установить только для меня»**
-  и НИКОГДА «для всех пользователей» — последнее это UAC-эскалация, после неё FlaUI
-  (не поднятый) не управляет окном.
+  всплывает ДО мастера как `#32770`. Жать **«Установить только для меня»**
+  и НИКОГДА «для всех пользователей» — это UAC-эскалация: установка идёт от админа, конфиг попадёт не в ваш %APPDATA%.
 - **Деинсталлятор Inno** копирует себя в `%TEMP%` и перезапускается, **исходный процесс
   сразу выходит** → судить о завершении по `proc.HasExited` нельзя. Признак завершения
   удаления — **исчезновение exe**, а не выход процесса; финальный диалог дожимается.

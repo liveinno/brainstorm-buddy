@@ -11,7 +11,7 @@
     <ApplicationIcon>Resources\Icons\app.ico</ApplicationIcon>
     <AssemblyName>BrainstormBuddy</AssemblyName>
     <RootNamespace>BrainstormBuddy</RootNamespace>
-    <Version>2.5.3</Version>
+    <Version>2.5.13</Version>
     <Company>BrainstormBuddy</Company>
     <Product>BrainstormBuddy</Product>
     <LangVersion>12</LangVersion>

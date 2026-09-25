@@ -1,3 +1,4 @@
+using BrainstormBuddy.Ai;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -9,7 +10,7 @@ public class ConfigLoader
 {
     // Текущая версия схемы конфига. Повышать при смене дефолтов/структуры — тогда
     // старые конфиги пройдут миграцию (чистка dev-остатков, дедуп пресетов и т.п.).
-    public const int CurrentSchemaVersion = 5;
+    public const int CurrentSchemaVersion = 6;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -114,10 +115,10 @@ public class ConfigLoader
     {
         _logger.Info($"Config migration: schema {c.SchemaVersion} → {CurrentSchemaVersion}", "Config");
 
-        // 1) Dev-остатки STT (старый LAN-адрес / t-one) — попадали в конфиги ручных сборок и на
-        //    чужой машине висят недоступным сервером (STT-шторм «task canceled»).
-        if ((c.Api.SttBaseUrl?.Contains("192.168.") ?? false) ||
-            string.Equals(c.Api.SttModel, "t-one", StringComparison.OrdinalIgnoreCase))
+        // 1) Dev-остаток STT: модель «t-one» из ранних dev-сборок — на чужой машине
+        //    висит недоступным сервером (STT-шторм «task canceled»). По URL не судим:
+        //    у пользователя может быть свой легитимный LAN-STT.
+        if (string.Equals(c.Api.SttModel, "t-one", StringComparison.OrdinalIgnoreCase))
         {
             _logger.Warn($"Migration: чищу dev-STT (url={c.Api.SttBaseUrl}, model={c.Api.SttModel})", "Config");
             c.Api.SttBaseUrl = string.Empty;   // пусто → возьмётся адрес LLM
@@ -184,6 +185,14 @@ public class ConfigLoader
             }
         }
 
+        // 7) Схема 6: появился реестр LLM-провайдеров — бэкфиллим ProviderId по старому
+        //    BaseUrl, чтобы профиль (заголовки/пути) подобрался без ручной правки.
+        if (string.IsNullOrWhiteSpace(c.Api.ProviderId))
+        {
+            c.Api.ProviderId = LlmProviderRegistry.InferProviderId(c.Api.BaseUrl);
+            _logger.Info($"Migration: ProviderId пуст → вывели по BaseUrl: '{c.Api.ProviderId}' ({c.Api.BaseUrl})", "Config");
+        }
+
         c.SchemaVersion = CurrentSchemaVersion;
     }
 
@@ -234,6 +243,23 @@ public class ConfigLoader
             _logger.Warn("Invalid MaxRetries, using 2", "Config");
             config.Api.MaxRetries = 2;
         }
+        // Пользовательские провайдеры: выбрасываем неработоспособные (без Id/Name),
+        // протокол из белого списка — иначе openai-chat.
+        if (config.Api.CustomProviders.Count > 0)
+        {
+            var bad = config.Api.CustomProviders.RemoveAll(p =>
+                string.IsNullOrWhiteSpace(p.Id) || string.IsNullOrWhiteSpace(p.Name));
+            if (bad > 0) _logger.Warn($"CustomProviders: отброшено {bad} профилей без Id/Name", "Config");
+            foreach (var p in config.Api.CustomProviders)
+                if (p.Protocol is not ("openai-chat" or "openai-responses" or "anthropic"))
+                {
+                    _logger.Warn($"CustomProviders[{p.Id}]: неизвестный протокол '{p.Protocol}' → openai-chat", "Config");
+                    p.Protocol = "openai-chat";
+                }
+        }
+        // ProviderId должен быть всегда (для всяких «голых» конфигов без миграции).
+        if (string.IsNullOrWhiteSpace(config.Api.ProviderId))
+            config.Api.ProviderId = LlmProviderRegistry.InferProviderId(config.Api.BaseUrl);
         if (config.Ui.WindowOpacity <= 0 || config.Ui.WindowOpacity > 1)
         {
             _logger.Warn("Invalid WindowOpacity, using 0.9", "Config");

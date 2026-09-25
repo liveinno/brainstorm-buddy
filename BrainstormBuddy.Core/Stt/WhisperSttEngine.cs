@@ -22,19 +22,26 @@ public sealed class WhisperSttEngine : ISttEngine, IFileTranscriber
 
     /// <param name="language">"auto" (детект, поддержка смешанной речи) или код ("ru").</param>
     /// <param name="accel">"gpu" (Vulkan) или "cpu". (App разрешает "auto" заранее.)</param>
-    /// <param name="gpuDevice">Индекс Vulkan-устройства для GPU (на ноутбуках 0 — встройка).</param>
+    /// <param name="gpuDevice">Индекс Vulkan-устройства (порядок vkEnumeratePhysicalDevices,
+    /// НЕ DXGI/WMI — маппинг делает VulkanDeviceEnumerator). -1 → устройство 0 whisper.cpp.</param>
     public WhisperSttEngine(string modelPath, string language = "auto", string accel = "cpu", int gpuDevice = -1)
     {
         if (!File.Exists(modelPath)) throw new FileNotFoundException("Whisper ggml-модель не найдена", modelPath);
         _accel = string.Equals(accel, "gpu", StringComparison.OrdinalIgnoreCase) ? "gpu" : "cpu";
-        ConfigureRuntime(_accel, gpuDevice);
-        _factory = WhisperFactory.FromPath(modelPath);
+        ConfigureRuntime(_accel);
+        // Устройство — per-context через WhisperFactoryOptions: env GGML_VK_VISIBLE_DEVICES
+        // читался один раз при первой инициализации Vulkan и молча игнорировал смену карты.
+        _factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions
+        {
+            UseGpu = _accel == "gpu",
+            GpuDevice = gpuDevice >= 0 ? gpuDevice : 0
+        });
         _language = string.IsNullOrWhiteSpace(language) ? "auto" : language;
     }
 
     // Порядок нативных рантаймов (глобально, ДО первой загрузки либы). CPU-режим — без GPU.
     // Vulkan работает на NVIDIA/AMD/Intel через драйвер; при отсутствии устройства — откат на CPU.
-    private static void ConfigureRuntime(string accel, int gpuDevice)
+    private static void ConfigureRuntime(string accel)
     {
         try
         {
@@ -42,9 +49,6 @@ public sealed class WhisperSttEngine : ISttEngine, IFileTranscriber
             RuntimeOptions.RuntimeLibraryOrder = gpu
                 ? new List<RuntimeLibrary> { RuntimeLibrary.Vulkan, RuntimeLibrary.Cpu, RuntimeLibrary.CpuNoAvx }
                 : new List<RuntimeLibrary> { RuntimeLibrary.Cpu, RuntimeLibrary.CpuNoAvx };
-            // На ноутбуках Vulkan-устройство 0 — встройка (медленно). Целимся в дискретку.
-            if (gpu && gpuDevice >= 0)
-                Environment.SetEnvironmentVariable("GGML_VK_VISIBLE_DEVICES", gpuDevice.ToString());
         }
         catch { /* дрейф API — оставляем дефолтный порядок */ }
     }

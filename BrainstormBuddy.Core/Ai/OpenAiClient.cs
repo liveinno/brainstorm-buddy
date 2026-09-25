@@ -15,6 +15,9 @@ public class OpenAiClient : IApiClient
     private readonly HttpClient _http;
     private readonly LoggingService _logger;
     private readonly SemaphoreSlim _rateLimitGate = new(1, 1);
+    // Стабильный per-client ид для "{session}"-плейсхолдера в ExtraHeaders провайдера
+    // (например x-opencode-session у OpenCode Go): генерится один раз и кешируется.
+    private readonly string _sessionId = Guid.NewGuid().ToString("N");
     private DateTime _lastAskUtc = DateTime.MinValue;
 
     // Последнее сообщённое состояние здоровья (null = ещё не знаем).
@@ -38,13 +41,31 @@ public class OpenAiClient : IApiClient
         HealthChanged?.Invoke(this, new ApiHealthEventArgs(component, healthy, message));
     }
 
-    // Актуализирует Authorization-заголовок из конфига перед каждым запросом:
-    // ключ мог измениться в настройках уже после создания клиента.
+    // Актуализирует Authorization/extra-заголовки LLM-профиля перед каждым LLM-запросом:
+    // ключ/провайдер могли измениться в настройках уже после создания клиента.
+    private void ApplyHeaders()
+        => LlmRequestHeaders.Apply(_http, _config, _sessionId);
+
+    // STT-запросы идут к отдельному сервису — только Bearer, без LLM-профильных заголовков.
     private void ApplyAuth()
-    {
-        _http.DefaultRequestHeaders.Authorization =
+        => _http.DefaultRequestHeaders.Authorization =
             string.IsNullOrEmpty(_config.ApiKey) ? null : new AuthenticationHeaderValue("Bearer", _config.ApiKey);
+
+    // Профиль провайдера по ProviderId/CustomProviders, иначе синтетический из BaseUrl.
+    private LlmProviderProfile Profile => LlmProviderRegistry.Resolve(_config);
+
+    // URL эндпойнта: BaseUrl конфига (без хвостового слеша) + путь из профиля.
+    private string EndpointUrl(string path)
+    {
+        var baseUrl = string.IsNullOrWhiteSpace(_config.BaseUrl) ? Profile.BaseUrl : _config.BaseUrl;
+        return baseUrl.TrimEnd('/') + "/" + path.TrimStart('/');
     }
+
+    // Нормализация ID модели (A7): trim + zero-width/BOM/NBSP — иначе копипаст из UI
+    // тащит невидимые символы и провайдер отвечает «model not supported».
+    private static string NormalizeModelId(string model)
+        => string.Concat((model ?? "").Trim().Where(c =>
+            c != '​' && c != '‎' && c != '‏' && c != (char)0xFEFF && c != ' '));
 
     // Короткий человекочитаемый текст ошибки API для плашки: «401 Unauthorized: <сообщение>».
     private static string ShortApiError(HttpStatusCode code, string body)
@@ -71,7 +92,13 @@ public class OpenAiClient : IApiClient
     // технический текст оставляем второй строкой (для поддержки/логов).
     private static string HumanizeApiError(HttpStatusCode code, string apiErr) => (int)code switch
     {
-        402 => "Лимит бесплатного тарифа OpenRouter исчерпан — пополните счёт или переключитесь на локальную модель (Настройки → API).\n" + apiErr,
+        // 400 MissingSessionID — шлюзы вроде opencode.ai требуют session-заголовок для POST.
+        400 when apiErr.Contains("MissingSessionID", StringComparison.OrdinalIgnoreCase)
+            => "Шлюз требует заголовок сессии (MissingSessionID): включите провайдер с x-opencode-session или добавьте его в ExtraHeaders.\n" + apiErr,
+        401 => "Неверный ключ, модель не поддерживается у провайдера или лишний префикс в ID модели (напр. opencode-zen/…) — сверьте ключ и ID модели.\n" + apiErr,
+        402 => "Исчерпан лимит/баланс у провайдера — пополните счёт или переключитесь на другую модель (Настройки → API).\n" + apiErr,
+        403 => "Нет доступа к модели: региональное ограничение (region-gate) или требуется opt-in на сайте провайдера.\n" + apiErr,
+        404 => "Эндпойнт или модель не найдены: проверьте BaseUrl (только база вида https://host/v1) и ID модели.\n" + apiErr,
         429 => "Провайдер ограничил частоту запросов (rate-limit) — подождите или смените модель/тариф.\n" + apiErr,
         _ => apiErr
     };
@@ -108,12 +135,12 @@ public class OpenAiClient : IApiClient
             ? new HttpClient { Timeout = TimeSpan.FromSeconds(config.RequestTimeoutSeconds) }
             : new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(config.RequestTimeoutSeconds) };
 
+        ApplyAuth(); // стартовая авторизация; LLM-заголовки надеваются перед каждым запросом
         if (!string.IsNullOrEmpty(config.ApiKey))
         {
-            _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.ApiKey);
             _logger.Debug($"OpenAiClient: BaseUrl={config.BaseUrl}, Chat={config.ChatModel}, Stt={config.SttModel}, Key=***{(config.ApiKey.Length > 4 ? config.ApiKey[^4..] : "<short>")}", "Ai");
         }
-        else
+        else if (Profile.AuthKind != "none")
         {
             _logger.Warn("OpenAiClient: ApiKey is empty!", "Ai");
         }
@@ -224,9 +251,9 @@ public class OpenAiClient : IApiClient
     public async Task<AskResult> AskAsync(string userText, string systemPrompt, int maxTokens, List<ChatMessage> history, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(userText)) return AskResult.Empty;
-        ApplyAuth();
+        ApplyHeaders();
 
-        var url = $"{_config.BaseUrl.TrimEnd('/')}/chat/completions";
+        var url = EndpointUrl(Profile.ChatPath);
         _logger.Debug($"Ask → POST {url} (text={userText.Length} chars, history={history.Count}, maxTokens={maxTokens})", "Ai");
 
         if (_config.RateLimitSeconds > 0)
@@ -266,7 +293,8 @@ public class OpenAiClient : IApiClient
 
                 // Для reasoning-моделей (gpt-oss, o1, etc.) минимизируем reasoning,
                 // чтобы получить быстрый прямой ответ. По умолчанию для не-reasoning — отключаем.
-                var modelLower = _config.ChatModel.ToLowerInvariant();
+                var chatModel = NormalizeModelId(_config.ChatModel);
+                var modelLower = chatModel.ToLowerInvariant();
                 var isReasoning = IsReasoningModel(modelLower);
                 // Whisper-промпт: temperature 0.1 для строгости (без галлюцинаций и вопросов)
                 var isWhisperPrompt = systemPrompt.Contains("шепот", StringComparison.OrdinalIgnoreCase) ||
@@ -274,14 +302,15 @@ public class OpenAiClient : IApiClient
                 var temperature = isWhisperPrompt ? 0.1 : 0.3;
                 var req = new Dictionary<string, object>
                 {
-                    { "model", _config.ChatModel },
+                    { "model", chatModel },
                     { "messages", messages },
                     { "temperature", temperature },
                     { "max_tokens", maxTokens }
                 };
-                if (isReasoning)
+                // Effort из профиля провайдера (пусто = поле reasoning не шлём вообще).
+                if (isReasoning && !string.IsNullOrEmpty(Profile.ReasoningEffort))
                 {
-                    req["reasoning"] = new { effort = "low" };
+                    req["reasoning"] = new { effort = Profile.ReasoningEffort };
                 }
 
                 var sw = Stopwatch.StartNew();
@@ -337,21 +366,47 @@ public class OpenAiClient : IApiClient
                 ReportHealth(ApiComponent.Llm, true, "LLM-сервер отвечает");
                 _logger.Debug($"Ask ← 200 in {sw.ElapsedMilliseconds}ms, body={Truncate(body, 300)}", "Ai");
 
-                using var doc = JsonDocument.Parse(body);
-                var content_str = doc.RootElement
-                    .GetProperty("choices")[0]
-                    .GetProperty("message")
-                    .GetProperty("content")
-                    .GetString();
-
+                // Защищённый парсинг (A6): кривое 200-тело провайдера (не JSON, без choices)
+                // не должно улетать JsonException'ом наружу — считаем пустым ответом и
+                // уходим в авто-ретрай с большим лимитом по общей ветке ниже.
+                string? content_str = null;
                 int promptTokens = 0, completionTokens = 0, totalTokens = 0;
-                if (doc.RootElement.TryGetProperty("usage", out var usage))
+                string? finishReason = null;
+                try
                 {
-                    if (usage.TryGetProperty("prompt_tokens", out var pt)) promptTokens = pt.GetInt32();
-                    if (usage.TryGetProperty("completion_tokens", out var ct2)) completionTokens = ct2.GetInt32();
-                    if (usage.TryGetProperty("total_tokens", out var tt)) totalTokens = tt.GetInt32();
+                    using var doc = JsonDocument.Parse(body);
+                    var root = UnwrapDataEnvelope(doc.RootElement);
+                    var msg = TryGetByPath(root, "choices[0].message");
+                    content_str = TryGetByPath(root, Profile.ContentPath)?.GetString();
+                    if (msg is JsonElement m)
+                    {
+                        // A6: reasoning-модели при съеденном лимите кладут ответ в
+                        // reasoning_content / reasoning_details[0].text вместо content.
+                        if (string.IsNullOrWhiteSpace(content_str) && m.TryGetProperty("reasoning_content", out var rc))
+                            content_str = rc.GetString();
+                        if (string.IsNullOrWhiteSpace(content_str) &&
+                            m.TryGetProperty("reasoning_details", out var rd) &&
+                            rd.ValueKind == JsonValueKind.Array && rd.GetArrayLength() > 0 &&
+                            rd[0].TryGetProperty("text", out var rdt))
+                            content_str = rdt.GetString();
+                    }
+                    if (TryGetByPath(root, Profile.UsagePath) is JsonElement u && u.ValueKind == JsonValueKind.Object)
+                    {
+                        if (u.TryGetProperty("prompt_tokens", out var pt)) promptTokens = pt.GetInt32();
+                        else if (u.TryGetProperty("input_tokens", out var it)) promptTokens = it.GetInt32();
+                        if (u.TryGetProperty("completion_tokens", out var ct2)) completionTokens = ct2.GetInt32();
+                        else if (u.TryGetProperty("output_tokens", out var ot)) completionTokens = ot.GetInt32();
+                        if (u.TryGetProperty("total_tokens", out var tt)) totalTokens = tt.GetInt32();
+                    }
+                    finishReason = TryGetByPath(root, "choices[0].finish_reason")?.GetString();
                 }
-
+                catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentOutOfRangeException)
+                {
+                    _logger.Warn($"Ask: 200, но тело не распарсилось: {ex.Message}", "Ai");
+                }
+                // Срезаем протечку DSML-разметки функ-вызовов ДО проверки пустоты —
+                // ответ из одних маркеров уходит в ветку «модель вернула пустой ответ».
+                content_str = LlmAnswerSanitizer.Sanitize(content_str);
                 if (string.IsNullOrWhiteSpace(content_str))
                 {
                     // Reasoning-модель сожгла весь лимит на размышления (200, usage есть, content
@@ -367,10 +422,6 @@ public class OpenAiClient : IApiClient
                     return new AskResult(null, promptTokens, completionTokens, totalTokens);
                 }
                 var result = content_str.Trim();
-
-                var finishReason = doc.RootElement
-                    .GetProperty("choices")[0]
-                    .TryGetProperty("finish_reason", out var fr) ? fr.GetString() : null;
 
                 if (finishReason == "length")
                 {
@@ -412,7 +463,7 @@ public class OpenAiClient : IApiClient
 
     public async Task<bool> CheckConnectionAsync(CancellationToken ct = default)
     {
-        var url = $"{_config.BaseUrl.TrimEnd('/')}/models";
+        var url = EndpointUrl(Profile.ModelsPath);
         _logger.Debug($"CheckConnection → GET {url}", "Ai");
         try
         {
@@ -441,7 +492,7 @@ public class OpenAiClient : IApiClient
         modelLower.Contains("deepseek-r") || modelLower.Contains("qwq") || modelLower.Contains("think");
 
     public async Task<(bool ok, string detail)> CheckLlmConnectionAsync(CancellationToken ct = default)
-        => await CheckLlmConnectionAsync(0, null, ct);
+        => Collapse(await CheckLlmConnectionDetailedAsync(ct));
 
     /// <summary>
     /// Проверка подключения С БОЕВЫМИ ПАРАМЕТРАМИ. Раньше пинг шёл с max_tokens=1 без системного
@@ -451,77 +502,273 @@ public class OpenAiClient : IApiClient
     /// что content непустой.
     /// </summary>
     public async Task<(bool ok, string detail)> CheckLlmConnectionAsync(int realMaxTokens, string? systemPrompt, CancellationToken ct = default)
+        => Collapse(await CheckLlmDetailedCoreAsync(realMaxTokens, systemPrompt, ct));
+
+    /// <summary>Сводка по шагам: Chat важен; Models может отсутствовать у провайдера — это warn,
+    /// а не фейл. detail берём из первого плохого шага, иначе — «модель отвечает».</summary>
+    private static (bool ok, string detail) Collapse(List<CheckStepResult> steps)
     {
+        var chat = steps.FirstOrDefault(s => s.Name == "Chat");
+        var ok = chat?.Ok == true; // Chat-шаг обязан быть и пройти (пропуск по протоколу — тоже ок)
+        var bad = steps.FirstOrDefault(s => !s.Ok && s.Name != "Models");
+        return (ok, bad?.Detail ?? (ok ? $"OK — модель отвечает" : "Проверка не пройдена"));
+    }
+
+    /// <summary>
+    /// Пошаговая проверка LLM для кнопки «Проверить подключение»: URL → заголовки →
+    /// GET {ModelsPath} → POST {ChatPath}. Каждый шаг — строка в отчёте UI; проверка идёт
+    /// до конца, даже если промежуточный шаг упал (Models может не существовать — warn).
+    /// </summary>
+    public Task<List<CheckStepResult>> CheckLlmConnectionDetailedAsync(CancellationToken ct = default)
+        => CheckLlmDetailedCoreAsync(0, null, ct);
+
+    private async Task<List<CheckStepResult>> CheckLlmDetailedCoreAsync(int realMaxTokens, string? systemPrompt, CancellationToken ct)
+    {
+        var steps = new List<CheckStepResult>();
+        var profile = Profile;
         var baseUrl = _config.BaseUrl.TrimEnd('/');
 
-        // 1) Ключ/URL — GET /models.
-        try
-        {
-            ApplyAuth();
-            using var r1 = await _http.GetAsync($"{baseUrl}/models", ct);
-            if (!r1.IsSuccessStatusCode)
-            {
-                var b1 = await r1.Content.ReadAsStringAsync(ct);
-                _logger.Warn($"CheckLlm /models ← {(int)r1.StatusCode}: {Truncate(b1, 200)}", "Ai");
-                return (false, $"Ключ/URL: {ShortApiError(r1.StatusCode, b1)}");
-            }
-        }
-        catch (Exception ex) { _logger.Warn($"CheckLlm /models failed: {ex.Message}", "Ai"); return (false, $"Нет связи с {baseUrl}: {ex.Message}"); }
+        // 1) URL — валидация базы (A7: подсказка про «только базу вида …/v1»).
+        var urlOk = Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri) &&
+                    (baseUri.Scheme == "http" || baseUri.Scheme == "https");
+        steps.Add(urlOk
+            ? new CheckStepResult("URL", true, baseUrl)
+            : new CheckStepResult("URL", false,
+                string.IsNullOrWhiteSpace(baseUrl)
+                    ? "BaseUrl пуст — укажите базу API, например https://api.openai.com/v1"
+                    : $"«{baseUrl}» не похоже на базу API — укажите только базу вида https://host/v1 (без /chat/completions или /responses)"));
+        var modelsUrl = urlOk ? EndpointUrl(profile.ModelsPath) : null;
+        var chatUrl = urlOk ? EndpointUrl(profile.ChatPath) : null;
 
-        // 2) РЕАЛЬНЫЙ чат-пинг выбранной моделью — с боевыми max_tokens/промптом.
-        if (string.IsNullOrWhiteSpace(_config.ChatModel))
-            return (false, "Модель не указана — впишите модель провайдера в поле «Модель».");
-        try
+        // 2) Auth — заголовки профиля применены (ключ может быть пустым у локальных auth=none).
+        ApplyHeaders();
+        var hasAuth = _http.DefaultRequestHeaders.Authorization != null ||
+                      _http.DefaultRequestHeaders.Contains("x-api-key");
+        var extraCount = profile.ExtraHeaders.Count(h => _http.DefaultRequestHeaders.Contains(h.Key));
+        steps.Add(profile.AuthKind == "none"
+            ? new CheckStepResult("Auth", true, $"Без авторизации ({profile.Name}){(extraCount > 0 ? $", заголовков: {extraCount}" : "")}")
+            : new CheckStepResult("Auth", hasAuth,
+                hasAuth ? $"Ключ применён ({profile.AuthKind}){(extraCount > 0 ? $", заголовков: {extraCount}" : "")}"
+                        : "Ключ API пустой — введите ключ провайдера"));
+
+        // 3) Models — GET {ModelsPath}. Отсутствие эндпойнта (404/405) — warn, не стоп:
+        //    у части провайдеров /models нет, а чат работает.
+        if (modelsUrl == null)
+            steps.Add(new CheckStepResult("Models", false, "пропущен — невалидный URL"));
+        else
+            try
+            {
+                using var r1 = await _http.GetAsync(modelsUrl, ct);
+                var b1 = await r1.Content.ReadAsStringAsync(ct);
+                if (r1.IsSuccessStatusCode)
+                {
+                    var count = CountModelIds(b1);
+                    steps.Add(new CheckStepResult("Models", true, $"OK — моделей в списке: {count}"));
+                }
+                else
+                {
+                    _logger.Warn($"CheckLlm {profile.ModelsPath} ← {(int)r1.StatusCode}: {Truncate(b1, 200)}", "Ai");
+                    steps.Add(new CheckStepResult("Models", false, HumanizeApiError(r1.StatusCode, ShortApiError(r1.StatusCode, b1))));
+                }
+            }
+            catch (Exception ex) { _logger.Warn($"CheckLlm models failed: {ex.Message}", "Ai"); steps.Add(new CheckStepResult("Models", false, $"Нет связи: {ex.Message}")); }
+
+        // 4) Chat — боевой пинг POST {ChatPath}; у протоколов без chat/completions — пропуск.
+        var chatModel = NormalizeModelId(_config.ChatModel);
+        if (profile.Protocol != "openai-chat" || string.IsNullOrEmpty(profile.ChatPath))
+            steps.Add(new CheckStepResult("Chat", true, $"пропущен (протокол {profile.Protocol})"));
+        else if (string.IsNullOrWhiteSpace(chatModel))
+            steps.Add(new CheckStepResult("Chat", false, "Модель не указана — впишите модель провайдера в поле «Модель»."));
+        else if (chatUrl == null)
+            steps.Add(new CheckStepResult("Chat", false, "пропущен — невалидный URL"));
+        else
+            steps.Add(await CheckChatStepAsync(profile, chatModel, chatUrl, realMaxTokens, systemPrompt, ct));
+        return steps;
+    }
+
+    // Шаг «Chat»: POST {ChatPath} с боевым промптом; пустой content → авто-ретрай с лимитом
+    // 1024 (reasoning-модель съедает маленький лимит на размышления), reasoning_content — фолбэк.
+    private async Task<CheckStepResult> CheckChatStepAsync(LlmProviderProfile profile, string chatModel, string chatUrl,
+        int realMaxTokens, string? systemPrompt, CancellationToken ct)
+    {
+        var maxTokens = realMaxTokens > 0 ? realMaxTokens : 60;
+        for (int attempt = 0; attempt < 2; attempt++)
         {
-            ApplyAuth();
-            var maxTokens = realMaxTokens > 0 ? realMaxTokens : 60;
-            var messages = new List<object>();
-            if (!string.IsNullOrWhiteSpace(systemPrompt))
-                messages.Add(new { role = "system", content = systemPrompt });
-            messages.Add(new { role = "user", content = "Ответь ровно одним словом: готов" });
-            var req = new Dictionary<string, object>
+            try
             {
-                { "model", _config.ChatModel },
-                { "messages", messages },
-                { "max_tokens", maxTokens }
-            };
-            if (IsReasoningModel(_config.ChatModel.ToLowerInvariant()))
-                req["reasoning"] = new { effort = "low" };
-            using var r2 = await _http.PostAsJsonAsync($"{baseUrl}/chat/completions", req, _jsonOpts, ct);
-            var b2 = await r2.Content.ReadAsStringAsync(ct);
-            _logger.Info($"CheckLlm chat[{_config.ChatModel}] ← {(int)r2.StatusCode} (maxTokens={maxTokens}, sysPrompt={systemPrompt?.Length ?? 0} симв.)", "Ai");
-            if (r2.IsSuccessStatusCode)
-            {
-                // HTTP 200 ещё не успех: проверяем НЕПУСТОЙ content — ровно как в боевом запросе.
+                var messages = new List<object>();
+                if (!string.IsNullOrWhiteSpace(systemPrompt))
+                    messages.Add(new { role = "system", content = systemPrompt });
+                messages.Add(new { role = "user", content = "Ответь ровно одним словом: готов" });
+                var req = new Dictionary<string, object>
+                {
+                    { "model", chatModel },
+                    { "messages", messages },
+                    { "max_tokens", maxTokens }
+                };
+                if (IsReasoningModel(chatModel.ToLowerInvariant()) && !string.IsNullOrEmpty(profile.ReasoningEffort))
+                    req["reasoning"] = new { effort = profile.ReasoningEffort };
+
+                using var r2 = await _http.PostAsJsonAsync(chatUrl, req, _jsonOpts, ct);
+                var b2 = await r2.Content.ReadAsStringAsync(ct);
+                _logger.Info($"CheckLlm chat[{chatModel}] ← {(int)r2.StatusCode} (maxTokens={maxTokens})", "Ai");
+                if (!r2.IsSuccessStatusCode)
+                {
+                    _logger.Warn($"CheckLlm chat ← {(int)r2.StatusCode}: {Truncate(b2, 400)}", "Ai");
+                    var err = $"Модель «{chatModel}»: {HumanizeApiError(r2.StatusCode, ShortApiError(r2.StatusCode, b2))}";
+                    ReportHealth(ApiComponent.Llm, false, err); // реальная ошибка — в плашку тоже
+                    return new CheckStepResult("Chat", false, err);
+                }
+
+                // HTTP 200 ещё не успех: проверяем НЕПУСТОЙ content — ровно как в боевом запросе,
+                // включая фолбэки reasoning_content/reasoning_details и конверт {"data":{…}}.
                 string content = "";
                 try
                 {
-                    using var doc = System.Text.Json.JsonDocument.Parse(b2);
-                    content = doc.RootElement.GetProperty("choices")[0].GetProperty("message")
-                                 .GetProperty("content").GetString() ?? "";
+                    using var doc = JsonDocument.Parse(b2);
+                    var root = UnwrapDataEnvelope(doc.RootElement);
+                    var c = TryGetByPath(root, profile.ContentPath)?.GetString();
+                    var msg = TryGetByPath(root, "choices[0].message");
+                    if (string.IsNullOrWhiteSpace(c) && msg is JsonElement m)
+                    {
+                        if (m.TryGetProperty("reasoning_content", out var rc)) c = rc.GetString();
+                        if (string.IsNullOrWhiteSpace(c) &&
+                            m.TryGetProperty("reasoning_details", out var rd) &&
+                            rd.ValueKind == JsonValueKind.Array && rd.GetArrayLength() > 0 &&
+                            rd[0].TryGetProperty("text", out var rdt))
+                            c = rdt.GetString();
+                    }
+                    content = c ?? "";
                 }
                 catch { /* нестандартный ответ провайдера — считаем пустым */ }
-                if (string.IsNullOrWhiteSpace(content))
+
+                if (!string.IsNullOrWhiteSpace(content))
                 {
-                    var errEmpty = $"Модель «{_config.ChatModel}» вернула ПУСТОЙ ответ при лимите {maxTokens} токенов — " +
-                                   "reasoning-модель «съедает» лимит на размышления. Увеличьте «Максимум токенов ответа» или смените модель.";
-                    _logger.Warn($"CheckLlm: 200, но content пуст (модель {_config.ChatModel}, maxTokens={maxTokens})", "Ai");
-                    ReportHealth(ApiComponent.Llm, false, errEmpty);
-                    return (false, errEmpty);
+                    // Настоящий успех = LLM жив → ГАСИМ возможную залипшую плашку «ошибка LLM»
+                    // (она могла остаться со старта, когда конфиг был другой/без ключа).
+                    ReportHealth(ApiComponent.Llm, true, "LLM-сервер отвечает");
+                    return new CheckStepResult("Chat", true, $"OK — модель {chatModel} отвечает");
                 }
-                // Настоящий успех = LLM жив → ГАСИМ возможную залипшую плашку «ошибка LLM»
-                // (она могла остаться со старта, когда конфиг был другой/без ключа).
-                ReportHealth(ApiComponent.Llm, true, "LLM-сервер отвечает");
-                return (true, $"OK — модель {_config.ChatModel} отвечает");
+
+                // Пусто при малом лимите → один ретрай с 1024 (как в боевом AskAsync).
+                if (attempt == 0 && maxTokens < 1024)
+                {
+                    _logger.Warn($"CheckLlm: 200, но content пуст (maxTokens={maxTokens}) — ретрай с 1024", "Ai");
+                    maxTokens = 1024;
+                    continue;
+                }
+                var errEmpty = $"Модель «{chatModel}» вернула ПУСТОЙ ответ при лимите {maxTokens} токенов — " +
+                               "reasoning-модель «съедает» лимит на размышления. Увеличьте «Максимум токенов ответа» или смените модель.";
+                _logger.Warn($"CheckLlm: 200, но content пуст (модель {chatModel}, maxTokens={maxTokens})", "Ai");
+                ReportHealth(ApiComponent.Llm, false, errEmpty);
+                return new CheckStepResult("Chat", false, errEmpty);
             }
-            _logger.Warn($"CheckLlm chat ← {(int)r2.StatusCode}: {Truncate(b2, 400)}", "Ai");
-            // Тот же человеческий текст для 402/429, что и в боевых запросах (№5 бэклога).
-            var err = $"Модель «{_config.ChatModel}»: {HumanizeApiError(r2.StatusCode, ShortApiError(r2.StatusCode, b2))}";
-            ReportHealth(ApiComponent.Llm, false, err); // реальная ошибка — в плашку тоже
-            return (false, err);
+            catch (Exception ex)
+            {
+                _logger.Warn($"CheckLlm chat failed: {ex.Message}", "Ai");
+                return new CheckStepResult("Chat", false, ex.Message);
+            }
         }
-        catch (Exception ex) { _logger.Warn($"CheckLlm chat failed: {ex.Message}", "Ai"); return (false, ex.Message); }
+        return new CheckStepResult("Chat", false, "проверка не завершилась");
     }
+
+    /// <summary>GET {ModelsPath} провайдера → список ID моделей для комбобокса в настройках.
+    /// Парсит OpenAI-формат {"data":[{"id":…}]} и anthropic {"data"}/массив на будущее;
+    /// при ошибке — пустой список (UI предложит ручной ввод).</summary>
+    public async Task<List<string>> GetModelsAsync(CancellationToken ct = default)
+    {
+        var result = new List<string>();
+        try
+        {
+            ApplyHeaders();
+            var url = EndpointUrl(Profile.ModelsPath);
+            using var r = await _http.GetAsync(url, ct);
+            var body = await r.Content.ReadAsStringAsync(ct);
+            if (!r.IsSuccessStatusCode)
+            {
+                _logger.Warn($"GetModels ← {(int)r.StatusCode}: {Truncate(body, 200)}", "Ai");
+                return result;
+            }
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            // OpenAI: {"object":"list","data":[{"id":"…"},…]}; Anthropic: {"data":[{"id":…}]};
+            // бывает и голый массив [{"id":…}].
+            JsonElement list = root;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (!root.TryGetProperty("data", out list) &&
+                    !root.TryGetProperty("models", out list))
+                    list = root;
+            }
+            if (list.ValueKind == JsonValueKind.Array)
+                foreach (var item in list.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.Object && item.TryGetProperty("id", out var id))
+                    {
+                        var s = id.GetString();
+                        if (!string.IsNullOrWhiteSpace(s)) result.Add(s);
+                    }
+                    else if (item.ValueKind == JsonValueKind.String)
+                    {
+                        var s = item.GetString();
+                        if (!string.IsNullOrWhiteSpace(s)) result.Add(s);
+                    }
+                }
+            _logger.Info($"GetModels ← 200, моделей: {result.Count}", "Ai");
+        }
+        catch (Exception ex) { _logger.Warn($"GetModels failed: {ex.Message}", "Ai"); }
+        return result;
+    }
+
+    // Счётчик моделей для детали шага «Models» (не бросает — любой мусор = 0).
+    private static int CountModelIds(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object &&
+                root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
+                return data.GetArrayLength();
+            if (root.ValueKind == JsonValueKind.Array) return root.GetArrayLength();
+        }
+        catch { }
+        return 0;
+    }
+
+    // Обход JsonElement по пути вида "choices[0].message.content" / "content[0].text"
+    // (ContentPath профиля). null — сегмент не найден.
+    private static JsonElement? TryGetByPath(JsonElement root, string path)
+    {
+        var el = root;
+        foreach (var seg in path.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var name = seg;
+            var bracket = seg.IndexOf('[');
+            if (bracket >= 0) name = seg[..bracket];
+            if (name.Length > 0)
+            {
+                if (el.ValueKind != JsonValueKind.Object || !el.TryGetProperty(name, out el))
+                    return null;
+            }
+            if (bracket >= 0)
+            {
+                if (el.ValueKind != JsonValueKind.Array) return null;
+                var idx = seg.IndexOf(']', bracket);
+                if (idx < 0 || !int.TryParse(seg[(bracket + 1)..idx], out var i) || i < 0 || i >= el.GetArrayLength())
+                    return null;
+                el = el[i];
+            }
+        }
+        return el;
+    }
+
+    // Авто-распаковка конверта {"data":{…}}: часть шлюзов отдаёт тело ответа внутри data.
+    private static JsonElement UnwrapDataEnvelope(JsonElement root)
+        => root.ValueKind == JsonValueKind.Object &&
+           root.TryGetProperty("data", out var d) && d.ValueKind == JsonValueKind.Object &&
+           !root.TryGetProperty("choices", out _) && d.TryGetProperty("choices", out _)
+            ? d : root;
 
     private static bool IsRetryable(HttpStatusCode code)
     {
