@@ -39,7 +39,7 @@ public class SettingsViewModel : INotifyPropertyChanged
         "- [Микрофон] — сам пользователь. Это КОНТЕКСТ (что он уже сказал): учитывай, но не отвечай на него и не молчи ради ответа.\n" +
         "- [secret] — прямая команда пользователя тебе: выполни её обязательно и в первую очередь.\n" +
         "- Нечего добавить, идёт small talk, шум или обрывок — молчи (пустой ответ), не комментируй.\n" +
-        "- Русский язык, по делу, без воды. НИКАКИХ служебных пометок, ролей и тегов в ответе — только сама реплика.\n" +
+        "- НИКОГДА не показывай свои рассуждения, анализ или ход мыслей — выводи только готовый текст ответа, который пользователь может произнести вслух.\n" +
         "- Не выдумывай факты, цифры и названия. Бери их из разговора; чего не знаешь — формулируй общими словами.\n\n";
 
     private static readonly List<NamedPrompt> DefaultPromptPresets = new()
@@ -110,7 +110,7 @@ public class SettingsViewModel : INotifyPropertyChanged
                 "## SOURCE\n" +
                 "Speech via STT. Tags: [Динамик] = the other side, [Микрофон] = the user, [secret] = manual message. STT may have errors, typos, missing punctuation.\n\n" +
                 "## TASK\n" +
-                "Translate each utterance into the opposite language: Russian→English, English→Russian. Preserve meaning and tone, be concise (1-2 sentences). Output only the translation — no notes, no tags. Translate [secret] too."
+                "Translate each utterance into the opposite language: Russian→English, English→Russian. Preserve meaning and tone, be concise (1-2 sentences). Output only the translation — never show reasoning, analysis, meta-comments or tags. Translate [secret] too."
         },
         new NamedPrompt
         {
@@ -506,6 +506,15 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Hotkeys.TogglePause = value; OnPropertyChanged(); }
     }
 
+    public string ToggleKaraokeHotkey
+    {
+        get => _config.Hotkeys.ToggleKaraoke;
+        set { _config.Hotkeys.ToggleKaraoke = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Дёрнуть INPC для KaraokeEnabled — хоткей меняет Config напрямую, без сеттера VM.</summary>
+    public void NotifyKaraokeEnabledChanged() => OnPropertyChanged(nameof(KaraokeEnabled));
+
     public int RateLimitSeconds
     {
         get => _config.Api.RateLimitSeconds;
@@ -536,6 +545,176 @@ public class SettingsViewModel : INotifyPropertyChanged
     {
         get => _config.Ui.EngineerMode;
         set { _config.Ui.EngineerMode = value; OnPropertyChanged(); }
+    }
+
+    // ===== Караоке-оверлей =====
+
+    public bool KaraokeEnabled
+    {
+        get => _config.Karaoke.Enabled;
+        set { _config.Karaoke.Enabled = value; OnPropertyChanged(); }
+    }
+
+    public string KaraokePosition
+    {
+        get => _config.Karaoke.Position;
+        set { _config.Karaoke.Position = value; OnPropertyChanged(); }
+    }
+
+    public int KaraokeWidthPct
+    {
+        get => _config.Karaoke.WidthPct;
+        set { _config.Karaoke.WidthPct = value; OnPropertyChanged(); }
+    }
+
+    public int KaraokeHeightPct
+    {
+        get => _config.Karaoke.HeightPct;
+        set { _config.Karaoke.HeightPct = value; OnPropertyChanged(); }
+    }
+
+    public double KaraokeFontSize
+    {
+        get => _config.Karaoke.FontSize;
+        set { _config.Karaoke.FontSize = value; OnPropertyChanged(); }
+    }
+
+    public string KaraokeTextColor
+    {
+        get => _config.Karaoke.TextColor;
+        set { _config.Karaoke.TextColor = value; OnPropertyChanged(); }
+    }
+
+    public string KaraokeAccentColor
+    {
+        get => _config.Karaoke.AccentColor;
+        set { _config.Karaoke.AccentColor = value; OnPropertyChanged(); }
+    }
+
+    public string KaraokeFreshColor
+    {
+        get => _config.Karaoke.FreshColor;
+        set { _config.Karaoke.FreshColor = value; OnPropertyChanged(); }
+    }
+
+    public string KaraokeBackgroundColor
+    {
+        get => _config.Karaoke.BackgroundColor;
+        set { _config.Karaoke.BackgroundColor = value; OnPropertyChanged(); }
+    }
+
+    public double KaraokeBackgroundOpacity
+    {
+        get => _config.Karaoke.BackgroundOpacity;
+        set { _config.Karaoke.BackgroundOpacity = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeShowBackground
+    {
+        get => _config.Karaoke.ShowBackground;
+        set { _config.Karaoke.ShowBackground = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeTextShadow
+    {
+        get => _config.Karaoke.TextShadow;
+        set { _config.Karaoke.TextShadow = value; OnPropertyChanged(); }
+    }
+
+    public double KaraokeOpacity
+    {
+        get => _config.Karaoke.Opacity;
+        set { _config.Karaoke.Opacity = value; OnPropertyChanged(); }
+    }
+
+    public int KaraokeMaxLines
+    {
+        get => _config.Karaoke.MaxLines;
+        set { _config.Karaoke.MaxLines = value; OnPropertyChanged(); }
+    }
+
+    public int KaraokeSlideDurationMs
+    {
+        get => _config.Karaoke.SlideDurationMs;
+        set { _config.Karaoke.SlideDurationMs = value; OnPropertyChanged(); }
+    }
+
+    public int KaraokeFadeDurationMs
+    {
+        get => _config.Karaoke.FadeDurationMs;
+        set { _config.Karaoke.FadeDurationMs = value; OnPropertyChanged(); }
+    }
+
+    public int KaraokeInnerPadding
+    {
+        get => _config.Karaoke.InnerPadding;
+        set { _config.Karaoke.InnerPadding = value; OnPropertyChanged(); }
+    }
+
+    public int KaraokeMarginPx
+    {
+        get => _config.Karaoke.MarginPx;
+        set { _config.Karaoke.MarginPx = value; OnPropertyChanged(); }
+    }
+
+    public string KaraokeTextAlignment
+    {
+        get => _config.Karaoke.TextAlignment;
+        set { _config.Karaoke.TextAlignment = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeShowAnswers
+    {
+        get => _config.Karaoke.ShowAnswers;
+        set { _config.Karaoke.ShowAnswers = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeShowQuestions
+    {
+        get => _config.Karaoke.ShowQuestions;
+        set { _config.Karaoke.ShowQuestions = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeShowUserLines
+    {
+        get => _config.Karaoke.ShowUserLines;
+        set { _config.Karaoke.ShowUserLines = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeDimByAge
+    {
+        get => _config.Karaoke.DimByAge;
+        set { _config.Karaoke.DimByAge = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeAgeColorFade
+    {
+        get => _config.Karaoke.AgeColorFade;
+        set { _config.Karaoke.AgeColorFade = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeShowMarker
+    {
+        get => _config.Karaoke.ShowMarker;
+        set { _config.Karaoke.ShowMarker = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeHiddenFromCapture
+    {
+        get => _config.Karaoke.HiddenFromCapture;
+        set { _config.Karaoke.HiddenFromCapture = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeClickThrough
+    {
+        get => _config.Karaoke.ClickThrough;
+        set { _config.Karaoke.ClickThrough = value; OnPropertyChanged(); }
+    }
+
+    public bool KaraokeWordWrap
+    {
+        get => _config.Karaoke.WordWrap;
+        set { _config.Karaoke.WordWrap = value; OnPropertyChanged(); }
     }
 
     public string SystemPrompt

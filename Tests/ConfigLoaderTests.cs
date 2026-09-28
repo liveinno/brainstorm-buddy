@@ -96,7 +96,7 @@ public class ConfigLoaderTests
         var json = """
         {
           "SchemaVersion": 0,
-          "Api": { "SttBaseUrl": "http://127.0.0.1:2701/v1", "SttModel": "t-one" },
+          "Api": { "SttBaseUrl": "http://192.168.0.10:2701/v1", "SttModel": "t-one" },
           "Advanced": {
             "ActiveSystemPromptName": "Несуществующий",
             "SystemPromptPresets": [
@@ -131,15 +131,14 @@ public class ConfigLoaderTests
             if (File.Exists(path)) File.Delete(path);
         }
     }
-
     [Fact]
-    public void Load_Migration_KeepsLegitLanSttUrl()
+    public void Load_Migration_KeepsLegitLanStt()
     {
         var path = Path.Combine(Path.GetTempPath(), $"bsb_test_{Guid.NewGuid()}.json");
         var json = """
         {
           "SchemaVersion": 0,
-          "Api": { "SttBaseUrl": "http://192.168.1.50:8001/v1", "SttModel": "whisper-1" }
+          "Api": { "SttBaseUrl": "http://192.168.0.77:8001/v1", "SttModel": "whisper-1" }
         }
         """;
         try
@@ -148,15 +147,17 @@ public class ConfigLoaderTests
             var logger = new LoggingService(Path.Combine(Path.GetTempPath(), "bsb_test"));
             var config = new ConfigLoader(path, logger).Load();
 
-            // LAN-адрес без маркера dev-модели — легитимный, миграция его не трогает
-            Assert.Equal("http://192.168.1.50:8001/v1", config.Api.SttBaseUrl);
+            // легитимный LAN-STT не должен сбрасываться миграцией
+            Assert.Equal("http://192.168.0.77:8001/v1", config.Api.SttBaseUrl);
             Assert.Equal("whisper-1", config.Api.SttModel);
+            Assert.Equal(ConfigLoader.CurrentSchemaVersion, config.SchemaVersion);
         }
         finally
         {
             if (File.Exists(path)) File.Delete(path);
         }
     }
+
 
 
     [Theory]

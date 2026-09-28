@@ -205,6 +205,10 @@ class Program
                 var settingsScenario = new SettingsWindowScenario(targetTab);
                 await settingsScenario.RunAsync(launcher, vision, report);
 
+                // Переключение LLM-провайдеров + показ ошибок API (детерминированный)
+                var providers = new ProviderCheckScenario(report);
+                await providers.RunAsync(launcher, vision, report);
+
                 // Always run UX audit: hover buttons, check tooltips, both themes
                 var uxAudit = new UiUxAuditScenario();
                 await uxAudit.RunAsync(launcher, vision, report);

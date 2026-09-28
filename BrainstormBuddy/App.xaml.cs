@@ -57,6 +57,7 @@ public partial class App : Application
     public int TotalTokens => _totalPromptTokens + _totalCompletionTokens;
 
     private OverlayWindow? _overlay;
+    private KaraokeWindow? _karaoke;
     private SettingsWindow? _settingsWindow;
     private FileTranscriptionWindow? _fileTranscriptionWindow;
     private BrainstormBuddy.Stt.WhisperSttEngine? _whisperEngine; // ленивый кэш (модель ~600МБ)
@@ -372,6 +373,12 @@ public partial class App : Application
         {
             _overlay = new OverlayWindow();
             _overlay.Initialize(Config.Ui, WindowHelper.ApplyClickThrough, WindowHelper.ApplyExcludeFromCapture);
+            // Караоке-оверлей (телесуфлёр): создаётся вместе с главным оверлеем.
+            // Click-through/стелс окно разруливает само по своему конфигу.
+            _karaoke = new KaraokeWindow();
+            _karaoke.Initialize(Config.Karaoke, WindowHelper.ApplyClickThrough, WindowHelper.ApplyExcludeFromCapture);
+            if (Config.Karaoke.Enabled || Environment.GetEnvironmentVariable("BUDDY_KARAOKE_DEMO") == "1")
+                _karaoke.Show();
             _overlay.Show();
             _overlay.SetActivePresets(SettingsVm.SystemPromptPresets, Config.Advanced.ActiveSystemPromptName);
             _overlay.RefreshAudioPauseButton();
@@ -413,9 +420,10 @@ public partial class App : Application
                 var p = HotkeyManager.Register(Config.Hotkeys.TogglePause, "pause");
                 var y = HotkeyManager.Register("Ctrl+Shift+Y", "llmpause");
                 var c = HotkeyManager.Register("Ctrl+Shift+C", "screenshot");
+                var k = HotkeyManager.Register(Config.Hotkeys.ToggleKaraoke, "karaoke");
 
-                Logger.Info($"Hotkeys: toggle={t}, opacity={o}, settings={s}, logs={l}, pause={p}, llmpause={y}, screenshot={c}", "UI");
-                if (!(t && o && s && l && p && y && c))
+                Logger.Info($"Hotkeys: toggle={t}, opacity={o}, settings={s}, logs={l}, pause={p}, llmpause={y}, screenshot={c}, karaoke={k}", "UI");
+                if (!(t && o && s && l && p && y && c && k))
                     Notifier.ShowWarning("Горячие клавиши", "Не удалось зарегистрировать некоторые горячие клавиши. Возможно, они заняты.");
 
                 // Применить текущий ClickThrough из конфига
@@ -448,6 +456,55 @@ public partial class App : Application
     {
         Logger.Debug("HideOverlay() called", "UI");
         _overlay?.Hide();
+    }
+
+    /// <summary>
+    /// Предпросмотр караоке-оверлея из настроек (кнопка «Предпросмотр» → reflection).
+    /// Создаёт окно, если оверлей ещё не показывался, и пушит три демо-строки,
+    /// чтобы юзер сразу увидел ленту (PushLine фильтрует по Show*-флагам конфига).
+    /// </summary>
+    public void PreviewKaraoke()
+    {
+        if (_karaoke == null)
+        {
+            _karaoke = new KaraokeWindow();
+            _karaoke.Initialize(Config.Karaoke, WindowHelper.ApplyClickThrough, WindowHelper.ApplyExcludeFromCapture);
+        }
+        _karaoke.Show();
+        _karaoke.PushLine("question", "Расскажите о вашем опыте работы с асинхронными системами?");
+        _karaoke.PushLine("answer", "Упомяните очереди сообщений, паттерны retry/backoff и конкретный проект с Kafka/RabbitMQ.");
+        _karaoke.PushLine("answer", "Хорошо ляжет цифра: «обработка N сообщений/сек с гарантией at-least-once».");
+    }
+
+    /// <summary>
+    /// Хоткей «karaoke» (Ctrl+Shift+K): включает/выключает караоке-оверлей.
+    /// Состояние сохраняется в конфиг (Enabled) — переживает перезапуск;
+    /// чекбокс на вкладке «Караоке» обновляется через VM (биндинг к Config).
+    /// </summary>
+    public void ToggleKaraoke()
+    {
+        Config.Karaoke.Enabled = !Config.Karaoke.Enabled;
+        if (_karaoke == null)
+        {
+            _karaoke = new KaraokeWindow();
+            _karaoke.Initialize(Config.Karaoke, WindowHelper.ApplyClickThrough, WindowHelper.ApplyExcludeFromCapture);
+        }
+        if (Config.Karaoke.Enabled)
+        {
+            _karaoke.ApplyConfig(Config.Karaoke);
+            _karaoke.Clear(); // свежая сессия — строки, накопленные пока окно было скрыто, не показываем
+            _karaoke.Show();
+            Notifier.ShowInfo("Караоке", "Телесуфлёр включён");
+            Logger.Info("Karaoke enabled via hotkey", "UI");
+        }
+        else
+        {
+            _karaoke.Hide();
+            Notifier.ShowInfo("Караоке", "Телесуфлёр выключен");
+            Logger.Info("Karaoke disabled via hotkey", "UI");
+        }
+        SettingsVm.NotifyKaraokeEnabledChanged();
+        SaveConfigSafe();
     }
 
     // Безопасно сохранить текущий конфиг (используется визардом и др.).
@@ -1475,6 +1532,8 @@ public partial class App : Application
         {
             _overlay?.AddSendingItem(label, 0, DateTime.Now, DateTime.Now, DateTime.Now, 0);
             _overlay?.SetStatus("Думаю над [secret]…");
+            // Караоке: секретное сообщение — реплика юзера без метки [secret].
+            _karaoke?.PushLine("user", text);
         });
         try
         {
@@ -1488,6 +1547,8 @@ public partial class App : Application
                 {
                     _overlay?.MarkAnswered(result.Content, DateTime.Now, 0);
                     _overlay?.SetStatus(T("L_Listening"));
+                    // Секретные ответы обходят AnswerWorkerLoop — пушим ответ в караоке здесь.
+                    _karaoke?.PushLine("answer", result.Content);
                 });
                 lock (_historyLock)
                 {
@@ -1695,6 +1756,14 @@ public partial class App : Application
             _overlay.ApplyUiConfig(Config.Ui);
             _overlay.SetActivePresets(SettingsVm.SystemPromptPresets, Config.Advanced.ActiveSystemPromptName);
         }
+        // Караоке-оверлей: горячее применение + показать/скрыть по Enabled.
+        // Окно переиспользуемо — Hide(), не Close(); стелс/click-through меняет сам ApplyConfig.
+        if (_karaoke != null)
+        {
+            _karaoke.ApplyConfig(Config.Karaoke);
+            if (Config.Karaoke.Enabled && !_karaoke.IsVisible) _karaoke.Show();
+            else if (!Config.Karaoke.Enabled && _karaoke.IsVisible) _karaoke.Hide();
+        }
         ApplyEndpointModeLive();   // ДО UpdateConfig: в ручном режиме порог тишины применится из конфига
         AudioEngine.UpdateConfig(Config.Audio);
         Logger.Configure(Config.Logging);
@@ -1744,6 +1813,9 @@ public partial class App : Application
                     break;
                 case "screenshot":
                     _overlay?.ToggleScreenCaptureVisibility();
+                    break;
+                case "karaoke":
+                    ToggleKaraoke();
                     break;
             }
         });
@@ -2153,6 +2225,9 @@ public partial class App : Application
                     // «ожидание», ни пометок, и задача в LLM-очередь не ставится вовсе.
                     bool llmOff = Config.Ui.LlmDisabled;
                     var pair = _overlay?.AddSendingItem(labeledText, audioSeconds, chunkStart, sttStart, sttEnd, sttMs, transcriptOnly: llmOff);
+                    // Караоке-лента: та же реплика, но БЕЗ метки — роль по каналу
+                    // ([Микрофон] → "user", динамик → "question"). Фильтрация Show* — внутри PushLine.
+                    _karaoke?.PushLine(source == "mic" ? "user" : "question", text);
                     await Dispatcher.InvokeAsync(() =>
                     {
                         _overlay?.SetStatus(T("L_Listening"));
@@ -2263,6 +2338,8 @@ public partial class App : Application
                         if (visible.Count > 0)
                         {
                             _overlay?.ShowMultiAgent(pair, visible);
+                            // Караоке: агрегированный ответ агентов одной строкой-ответом.
+                            _karaoke?.PushLine("answer", string.Join("\n", visible.Select(r => r.Text)));
                             totalAnswered++;
                             await Dispatcher.InvokeAsync(() => _overlay?.SetTimelineState(TimelineState.Received)); // зелёный: агенты ответили
                         }
@@ -2305,6 +2382,7 @@ public partial class App : Application
                         }
                         QaLogger?.Log(labeledText, answer!, "OK", job.SttMs, askMs, job.AudioSeconds, Config.Api.ChatModel);
                         _overlay?.MarkAnswered(pair, answer!, askEnd, askMs);
+                        _karaoke?.PushLine("answer", answer!);
                         await Dispatcher.InvokeAsync(() => { _overlay?.SetTimelineState(TimelineState.Received); UpdateTokenDisplay(); }); // зелёный: LLM ответил
                     }
                     else if (!string.IsNullOrEmpty(askResult?.Error))
@@ -2403,6 +2481,7 @@ public partial class App : Application
                 TrayIcon.Dispose();
             }
             Notifier?.Dispose();
+            _karaoke?.Close();
             LogWindow?.Close();
 
             Logger?.Dispose();

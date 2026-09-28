@@ -75,6 +75,7 @@
     <sys:String x:Key="L_Tab_Audio">Аудио</sys:String>
     <sys:String x:Key="L_Tab_LocalStt">Распознавание речи (STT)</sys:String>
     <sys:String x:Key="L_Tab_Overlay">Оверлей</sys:String>
+    <sys:String x:Key="L_Tab_Karaoke">Караоке</sys:String>
     <sys:String x:Key="L_Tab_Hotkeys">Горячие клавиши</sys:String>
     <sys:String x:Key="L_Tab_About">О приложении</sys:String>
     <sys:String x:Key="L_Tab_Profile">Резюме</sys:String>

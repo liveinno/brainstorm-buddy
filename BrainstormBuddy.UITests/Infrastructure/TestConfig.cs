@@ -9,6 +9,8 @@ public class ProviderConfig
     public string BaseUrl { get; set; } = "";
     public string ApiKey { get; set; } = "";
     public string VisionModel { get; set; } = "";
+    // Кастомные заголовки для gateway'ев (напр. x-opencode-session у OpenCode Go). Опционально.
+    public Dictionary<string, string>? ExtraHeaders { get; set; }
 }
 
 public class TestConfig

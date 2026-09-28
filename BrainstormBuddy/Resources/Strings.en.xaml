@@ -74,6 +74,7 @@
     <sys:String x:Key="L_Tab_Audio">Audio</sys:String>
     <sys:String x:Key="L_Tab_LocalStt">Speech recognition (STT)</sys:String>
     <sys:String x:Key="L_Tab_Overlay">Overlay</sys:String>
+    <sys:String x:Key="L_Tab_Karaoke">Karaoke</sys:String>
     <sys:String x:Key="L_Tab_Hotkeys">Hotkeys</sys:String>
     <sys:String x:Key="L_Tab_About">About</sys:String>
     <sys:String x:Key="L_Tab_Profile">Resume</sys:String>

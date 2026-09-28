@@ -1,0 +1,34 @@
+<Window x:Class="BrainstormBuddy.KaraokeWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        Title="BrainstormBuddy Karaoke">
+
+    <!-- Полоса-телесуфлёр: BgLayer — скруглённый фон-слой (при ShowBackground=false
+         скрывается, остаётся плавающий текст), поверх — лента строк LinesPanel,
+         прижатая к низу. Лента сдвигается TranslateTransform'ом (slide-in снизу),
+         старые строки гаснут по возрасту через Opacity. ClipToBounds обрезает
+         выходящие за полосу строки; OpacityMask задаёт мягкое затухание у верха
+         полосы, как mask-image в прототипе karaoke-overlay-v1. -->
+    <Grid>
+        <Border x:Name="BgLayer"
+                CornerRadius="20"
+                BorderThickness="1"/>
+        <Grid x:Name="Strip" ClipToBounds="True">
+            <StackPanel x:Name="LinesPanel"
+                        Orientation="Vertical"
+                        VerticalAlignment="Bottom">
+                <StackPanel.RenderTransform>
+                    <TranslateTransform x:Name="LinesTransform" X="0" Y="0"/>
+                </StackPanel.RenderTransform>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

@@ -13,4 +13,9 @@
     <PackageReference Include="System.Drawing.Common" Version="10.0.9" />
   </ItemGroup>
 
+
+  <ItemGroup>
+    <None Include="config.test.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -372,23 +372,28 @@ public class OpenAiClient : IApiClient
                 string? content_str = null;
                 int promptTokens = 0, completionTokens = 0, totalTokens = 0;
                 string? finishReason = null;
+                // Модель прислала ТОЛЬКО рассуждения (CoT) без ответа. Текст сохраняем,
+                // но НЕ показываем юзеру сразу (раньше сюда проваливался CoT
+                // deepseek-v4.1-flash и шёл на экран как «ответ»). Фолбэк на него —
+                // только после ретрая и только для reasoning-моделей (A6:
+                // space-bunny-free держит ответ в reasoning_content by design).
+                var sawReasoningOnly = false;
+                string? reasoningText = null;
                 try
                 {
                     using var doc = JsonDocument.Parse(body);
                     var root = UnwrapDataEnvelope(doc.RootElement);
                     var msg = TryGetByPath(root, "choices[0].message");
                     content_str = TryGetByPath(root, Profile.ContentPath)?.GetString();
-                    if (msg is JsonElement m)
+                    if (string.IsNullOrWhiteSpace(content_str) && msg is JsonElement m)
                     {
-                        // A6: reasoning-модели при съеденном лимите кладут ответ в
-                        // reasoning_content / reasoning_details[0].text вместо content.
-                        if (string.IsNullOrWhiteSpace(content_str) && m.TryGetProperty("reasoning_content", out var rc))
-                            content_str = rc.GetString();
-                        if (string.IsNullOrWhiteSpace(content_str) &&
-                            m.TryGetProperty("reasoning_details", out var rd) &&
-                            rd.ValueKind == JsonValueKind.Array && rd.GetArrayLength() > 0 &&
-                            rd[0].TryGetProperty("text", out var rdt))
-                            content_str = rdt.GetString();
+                        if (m.TryGetProperty("reasoning_content", out var rc) && !string.IsNullOrWhiteSpace(rc.GetString()))
+                            reasoningText = rc.GetString();
+                        else if (m.TryGetProperty("reasoning_details", out var rd) &&
+                                 rd.ValueKind == JsonValueKind.Array && rd.GetArrayLength() > 0 &&
+                                 rd[0].TryGetProperty("text", out var rdt) && !string.IsNullOrWhiteSpace(rdt.GetString()))
+                            reasoningText = rdt.GetString();
+                        sawReasoningOnly = reasoningText != null;
                     }
                     if (TryGetByPath(root, Profile.UsagePath) is JsonElement u && u.ValueKind == JsonValueKind.Object)
                     {
@@ -409,16 +414,33 @@ public class OpenAiClient : IApiClient
                 content_str = LlmAnswerSanitizer.Sanitize(content_str);
                 if (string.IsNullOrWhiteSpace(content_str))
                 {
-                    // Reasoning-модель сожгла весь лимит на размышления (200, usage есть, content
-                    // пуст — живой тест: tencent/hy3 при лимите 180). Один авто-ретрай с большим
-                    // лимитом вместо показа юзеру «пустой ответ» при исправной модели.
+                    var cot = sawReasoningOnly ? ", в ответе только рассуждения" : "";
+                    // A6: space-bunny-free кладёт ОТВЕТ в reasoning_content при пустом
+                    // content по дизайну — берём его сразу (ретрай для неё бесполезен:
+                    // content останется пустым). Маркер фолбэка — только в лог, в текст
+                    // ответа не добавляем (он виден в оверлее).
+                    // Для прочих reasoning-моделей (deepseek-v* и др.) reasoning ≠ ответ —
+                    // иначе CoT deepseek-v4.1-flash опять протечёт на экран.
+                    if (AnswersInReasoningContent(modelLower) && !string.IsNullOrWhiteSpace(reasoningText))
+                    {
+                        var fb = reasoningText.Trim();
+                        _logger.Warn($"Ask: content пуст, fallback на reasoning_content (модель отвечает в reasoning, len={fb.Length})", "Ai");
+                        RaiseExchange(isRequest: false, fb, sw.Elapsed.TotalSeconds, totalTokens);
+                        return new AskResult(fb, promptTokens, completionTokens, totalTokens);
+                    }
+                    // Reasoning-модель сожгла весь лимит на размышления (200, usage есть,
+                    // content пуст — живой тест: tencent/hy3 при лимите 180). Один
+                    // авто-ретрай с большим лимитом вместо «пустого ответа».
                     if (maxTokens < 1024)
                     {
                         var boosted = Math.Max(1024, maxTokens * 4);
-                        _logger.Warn($"Ask: 200, но content пуст (completion={completionTokens}/{maxTokens}) — авто-ретрай с max_tokens={boosted}", "Ai");
+                        _logger.Warn($"Ask: 200, но content пуст (completion={completionTokens}/{maxTokens}{cot}) — авто-ретрай с max_tokens={boosted}", "Ai");
                         return await AskAsync(userText, systemPrompt, boosted, history, ct);
                     }
-                    RaiseExchange(isRequest: false, $"пустой ответ (200, completion={completionTokens}/{maxTokens} — reasoning-модель съела лимит)", sw.Elapsed.TotalSeconds, totalTokens, isError: true);
+                    var emptyMsg = sawReasoningOnly
+                        ? $"пустой ответ (200: модель прислала только рассуждения, completion={completionTokens}/{maxTokens})"
+                        : $"пустой ответ (200, completion={completionTokens}/{maxTokens} — reasoning-модель съела лимит)";
+                    RaiseExchange(isRequest: false, emptyMsg, sw.Elapsed.TotalSeconds, totalTokens, isError: true);
                     return new AskResult(null, promptTokens, completionTokens, totalTokens);
                 }
                 var result = content_str.Trim();
@@ -489,7 +511,16 @@ public class OpenAiClient : IApiClient
     private static bool IsReasoningModel(string modelLower) =>
         modelLower.Contains("gpt-oss") || modelLower.Contains("o1") || modelLower.Contains("o3") ||
         modelLower.Contains("reasoning") || modelLower.Contains("hy3") || modelLower.Contains("hunyuan") ||
-        modelLower.Contains("deepseek-r") || modelLower.Contains("qwq") || modelLower.Contains("think");
+        modelLower.Contains("deepseek-r") || modelLower.Contains("deepseek-v") ||
+        modelLower.Contains("qwq") || modelLower.Contains("think");
+
+    // Модели, у которых ФИНАЛЬНЫЙ ответ живёт в reasoning_content при пустом content
+    // (бэклог A6: space-bunny-free на OpenCode). Для них — мгновенный fallback на
+    // reasoning (ретрай бесполезен: content останется пустым); для прочих
+    // reasoning-моделей (deepseek-v* и т.п.) пустой content = null, иначе их CoT
+    // утекает на экран (баг deepseek-v4.1-flash).
+    private static bool AnswersInReasoningContent(string modelLower) =>
+        modelLower.Contains("space-bunny");
 
     public async Task<(bool ok, string detail)> CheckLlmConnectionAsync(CancellationToken ct = default)
         => Collapse(await CheckLlmConnectionDetailedAsync(ct));
@@ -587,7 +618,9 @@ public class OpenAiClient : IApiClient
     }
 
     // Шаг «Chat»: POST {ChatPath} с боевым промптом; пустой content → авто-ретрай с лимитом
-    // 1024 (reasoning-модель съедает маленький лимит на размышления), reasoning_content — фолбэк.
+    // 1024 (reasoning-модель съедает маленький лимит на размышления). Фолбэк на
+    // reasoning_content — только для space-bunny-подобных (как в боевом AskAsync),
+    // прочим reasoning-моделям их CoT ответом не считаем.
     private async Task<CheckStepResult> CheckChatStepAsync(LlmProviderProfile profile, string chatModel, string chatUrl,
         int realMaxTokens, string? systemPrompt, CancellationToken ct)
     {
@@ -621,24 +654,29 @@ public class OpenAiClient : IApiClient
                 }
 
                 // HTTP 200 ещё не успех: проверяем НЕПУСТОЙ content — ровно как в боевом запросе,
-                // включая фолбэки reasoning_content/reasoning_details и конверт {"data":{…}}.
+                // включая конверт {"data":{…}}. reasoning_content/reasoning_details не считаем
+                // ответом: это мысли модели, юзеру они не показываются.
                 string content = "";
                 try
                 {
                     using var doc = JsonDocument.Parse(b2);
                     var root = UnwrapDataEnvelope(doc.RootElement);
                     var c = TryGetByPath(root, profile.ContentPath)?.GetString();
-                    var msg = TryGetByPath(root, "choices[0].message");
-                    if (string.IsNullOrWhiteSpace(c) && msg is JsonElement m)
-                    {
-                        if (m.TryGetProperty("reasoning_content", out var rc)) c = rc.GetString();
-                        if (string.IsNullOrWhiteSpace(c) &&
-                            m.TryGetProperty("reasoning_details", out var rd) &&
-                            rd.ValueKind == JsonValueKind.Array && rd.GetArrayLength() > 0 &&
-                            rd[0].TryGetProperty("text", out var rdt))
-                            c = rdt.GetString();
-                    }
                     content = c ?? "";
+                    // A6: у space-bunny-free ОТВЕТ может лежать в reasoning_content при
+                    // пустом content — считаем валидным, как боевой AskAsync. Прочим
+                    // reasoning-моделям reasoning ≠ ответ (иначе CoT deepseek протекает).
+                    if (string.IsNullOrWhiteSpace(content) &&
+                        AnswersInReasoningContent(chatModel.ToLowerInvariant()) &&
+                        TryGetByPath(root, "choices[0].message") is JsonElement m)
+                    {
+                        if (m.TryGetProperty("reasoning_content", out var rc) && !string.IsNullOrWhiteSpace(rc.GetString()))
+                            content = rc.GetString()!;
+                        else if (m.TryGetProperty("reasoning_details", out var rd) &&
+                                 rd.ValueKind == JsonValueKind.Array && rd.GetArrayLength() > 0 &&
+                                 rd[0].TryGetProperty("text", out var rdt) && !string.IsNullOrWhiteSpace(rdt.GetString()))
+                            content = rdt.GetString()!;
+                    }
                 }
                 catch { /* нестандартный ответ провайдера — считаем пустым */ }
 

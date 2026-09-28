@@ -1081,6 +1081,196 @@
                 </ScrollViewer>
             </TabItem>
 
+            <!-- ====================== Караоке (телесуфлёр) ====================== -->
+            <TabItem Header="{DynamicResource L_Tab_Karaoke}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12">
+                        <CheckBox Content="Включить караоке-оверлей (полоса-телесуфлёр поверх экрана)"
+                                  IsChecked="{Binding KaraokeEnabled}"
+                                  Margin="0,4,0,8"/>
+
+                        <TextBlock Text="Позиция полосы:" Style="{StaticResource Label}"/>
+                        <ComboBox SelectedValue="{Binding KaraokePosition}" SelectedValuePath="Tag" Margin="0,2,0,12">
+                            <ComboBoxItem Content="Снизу" Tag="Bottom"/>
+                            <ComboBoxItem Content="Сверху" Tag="Top"/>
+                            <ComboBoxItem Content="Слева" Tag="Left"/>
+                            <ComboBoxItem Content="Справа" Tag="Right"/>
+                        </ComboBox>
+
+                        <TextBlock Text="Выравнивание текста:" Style="{StaticResource Label}"/>
+                        <ComboBox SelectedValue="{Binding KaraokeTextAlignment}" SelectedValuePath="Tag" Margin="0,2,0,12">
+                            <ComboBoxItem Content="Слева" Tag="Left"/>
+                            <ComboBoxItem Content="По центру" Tag="Center"/>
+                        </ComboBox>
+
+                        <TextBlock Text="Ширина полосы (% экрана):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="KaraokeWidthSlider" Minimum="20" Maximum="100"
+                                Value="{Binding KaraokeWidthPct, Mode=TwoWay}"
+                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run Text="{Binding Value, ElementName=KaraokeWidthSlider, StringFormat=F0}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Высота полосы (% экрана, 0=авто):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="KaraokeHeightSlider" Minimum="0" Maximum="100"
+                                Value="{Binding KaraokeHeightPct, Mode=TwoWay}"
+                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run Text="{Binding Value, ElementName=KaraokeHeightSlider, StringFormat=F0}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Размер шрифта (pt):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="KaraokeFontSizeSlider" Minimum="12" Maximum="64"
+                                Value="{Binding KaraokeFontSize, Mode=TwoWay}"
+                                TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run Text="{Binding Value, ElementName=KaraokeFontSizeSlider, StringFormat=F0}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Прозрачность окна (0.25 — почти прозрачное, 1.0 — непрозрачное):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="KaraokeOpacitySlider" Minimum="0.25" Maximum="1.0"
+                                Value="{Binding KaraokeOpacity, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                TickFrequency="0.05" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run Text="{Binding Value, ElementName=KaraokeOpacitySlider, StringFormat=F2}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Прозрачность фона полосы (0 — прозрачный, 1 — сплошной):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="KaraokeBgOpacitySlider" Minimum="0" Maximum="1.0"
+                                Value="{Binding KaraokeBackgroundOpacity, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                TickFrequency="0.05" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run Text="{Binding Value, ElementName=KaraokeBgOpacitySlider, StringFormat=F2}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Видимых строк (при высоте 100% — до 30 на весь экран):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="KaraokeMaxLinesSlider" Minimum="1" Maximum="30"
+                                Value="{Binding KaraokeMaxLines, Mode=TwoWay}"
+                                TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run Text="{Binding Value, ElementName=KaraokeMaxLinesSlider, StringFormat=F0}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Скорость въезда строки (мс):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="KaraokeSlideSlider" Minimum="100" Maximum="2000"
+                                Value="{Binding KaraokeSlideDurationMs, Mode=TwoWay}"
+                                TickFrequency="50" IsSnapToTickEnabled="True" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run Text="{Binding Value, ElementName=KaraokeSlideSlider, StringFormat=F0}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Скорость затухания строк (мс):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="KaraokeFadeSlider" Minimum="100" Maximum="2000"
+                                Value="{Binding KaraokeFadeDurationMs, Mode=TwoWay}"
+                                TickFrequency="50" IsSnapToTickEnabled="True" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run Text="{Binding Value, ElementName=KaraokeFadeSlider, StringFormat=F0}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Внутренний отступ полосы (px):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="KaraokePaddingSlider" Minimum="0" Maximum="80"
+                                Value="{Binding KaraokeInnerPadding, Mode=TwoWay}"
+                                TickFrequency="4" IsSnapToTickEnabled="True" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run Text="{Binding Value, ElementName=KaraokePaddingSlider, StringFormat=F0}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Отступ от края экрана (px):" Style="{StaticResource Label}"/>
+                        <Slider x:Name="KaraokeMarginSlider" Minimum="0" Maximum="200"
+                                Value="{Binding KaraokeMarginPx, Mode=TwoWay}"
+                                TickFrequency="10" IsSnapToTickEnabled="True" Margin="0,4,0,4"/>
+                        <TextBlock Foreground="{DynamicResource TextMutedBrush}" FontSize="11">
+                            <Run Text="Текущая:"/>
+                            <Run Text="{Binding Value, ElementName=KaraokeMarginSlider, StringFormat=F0}"
+                                 Foreground="{DynamicResource TextBrightBrush}"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Цвет текста (#AARRGGBB):" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding KaraokeTextColor, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"
+                                 FontFamily="Cascadia Mono, Consolas"/>
+
+                        <TextBlock Text="Цвет маркера свежей строки (#AARRGGBB):" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding KaraokeAccentColor, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"
+                                 FontFamily="Cascadia Mono, Consolas"/>
+
+                        <TextBlock Text="Цвет свежей строки (#AARRGGBB):" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding KaraokeFreshColor, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"
+                                 FontFamily="Cascadia Mono, Consolas"/>
+
+                        <TextBlock Text="Цвет фона полосы (#AARRGGBB):" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding KaraokeBackgroundColor, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"
+                                 FontFamily="Cascadia Mono, Consolas"/>
+
+                        <CheckBox Content="Показывать ответы ИИ"
+                                  IsChecked="{Binding KaraokeShowAnswers}"
+                                  Margin="0,8,0,4"/>
+
+                        <CheckBox Content="Показывать вопросы собеседника"
+                                  IsChecked="{Binding KaraokeShowQuestions}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox Content="Показывать мои реплики (микрофон)"
+                                  IsChecked="{Binding KaraokeShowUserLines}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox Content="Затухание старых строк по возрасту"
+                                  IsChecked="{Binding KaraokeDimByAge}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox Content="Градиент цвета по возрасту (золото→серый)"
+                                  IsChecked="{Binding KaraokeAgeColorFade}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox Content="Маркер у свежей строки"
+                                  IsChecked="{Binding KaraokeShowMarker}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox Content="Фоновая полоса (снять галку — только текст, без прямоугольника)"
+                                  IsChecked="{Binding KaraokeShowBackground}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox Content="Тень текста (когда фон скрыт)"
+                                  IsChecked="{Binding KaraokeTextShadow}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox Content="Перенос строк"
+                                  IsChecked="{Binding KaraokeWordWrap}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox Content="Невидим при захвате экрана (только вам)"
+                                  IsChecked="{Binding KaraokeHiddenFromCapture}"
+                                  Margin="0,0,0,4"/>
+
+                        <CheckBox Content="Сквозной режим (клики проходят через полосу)"
+                                  IsChecked="{Binding KaraokeClickThrough}"
+                                  Margin="0,0,0,8"/>
+
+                        <Button x:Name="KaraokePreviewButton" Content="Предпросмотр"
+                                Style="{StaticResource PrimaryButton}"
+                                Click="OnKaraokePreviewClick"
+                                Width="160" HorizontalAlignment="Left" Margin="0,6,0,0"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <!-- ====================== Горячие клавиши ====================== -->
             <TabItem Header="{DynamicResource L_Tab_Hotkeys}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -1097,6 +1287,9 @@
                         <TextBlock Text="Пауза аудио:" Style="{StaticResource Label}"/>
                         <TextBox Text="{Binding TogglePauseHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
 
+                        <TextBlock Text="Караоке-оверлей (вкл/выкл):" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding ToggleKaraokeHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+
                         <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextDimBrush}" FontSize="11" Margin="0,8,0,0"
                                    Text="Поддерживаемые модификаторы: Ctrl, Shift, Alt, Win + клавиша A–Z, 0–9, F1–F12, Space, Tab, Esc."/>
                     </StackPanel>
@@ -1107,11 +1300,11 @@
             <TabItem Header="{DynamicResource L_Tab_About}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="12">
-                        <TextBlock Text="BrainstormBuddy v2.5.13" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
+                        <TextBlock x:Name="TitleVersionRun" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
                         <TextBlock Text="Текстовый AI-помощник для совещаний и интервью." Margin="0,4,0,12" Foreground="{DynamicResource TextMutedBrush}"/>
                         <TextBlock><Run Text="Автор:" Foreground="{DynamicResource TextMutedBrush}"/><Run Text=" liveinno" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/></TextBlock>
                         <TextBlock><Run Text="{DynamicResource L_About_Site}" Foreground="{DynamicResource TextMutedBrush}"/><Hyperlink NavigateUri="https://aigens.ru" RequestNavigate="OnSiteLinkNavigate" Foreground="{DynamicResource AccentBrush}">https://aigens.ru</Hyperlink></TextBlock>
-                        <TextBlock><Run Text="Версия:" Foreground="{DynamicResource TextMutedBrush}"/><Run Text=" 2.5.13" Foreground="{DynamicResource TextBrightBrush}"/></TextBlock>
+                        <TextBlock><Run Text="Версия:" Foreground="{DynamicResource TextMutedBrush}"/><Run x:Name="VersionRun" Foreground="{DynamicResource TextBrightBrush}"/></TextBlock>
                         <TextBlock><Run Text="Логи:" Foreground="{DynamicResource TextMutedBrush}"/><Run x:Name="LogPathRun" Text="" Foreground="{DynamicResource TextBrightBrush}"/></TextBlock>
                         <Button Content="Открыть папку с логами" Width="220" Margin="0,10,0,0" Click="OnOpenLogs" HorizontalAlignment="Left"/>
                     </StackPanel>

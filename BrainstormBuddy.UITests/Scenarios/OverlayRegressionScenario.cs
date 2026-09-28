@@ -63,7 +63,11 @@ public class OverlayRegressionScenario
             DragSlider("ChunkSlider", "Слайдер чанка");
 
             // --- Секретное сообщение: ввод + Enter, ждём появление пары в истории ---
+            // ВАЖНО: LLM выключен -> SendSecretMessage показывает тост и НЕ добавляет в историю.
+            // Тестер наследует персист-конфиг %AppData%, поэтому нормализуем состояние и восстанавливаем.
+            var llmWasOff = EnsureLlmOn();
             await SendSecretMessage();
+            RestoreLlmOff(llmWasOff);
 
             // --- Контекст-меню истории (правый клик) ---
             RightClickHistory();
@@ -189,6 +193,30 @@ public class OverlayRegressionScenario
             if (!texts.Any(t => (t.Name ?? "").Contains("регресс-тест")))
                 throw new InvalidOperationException("отправленный текст не появился в истории");
         });
+    }
+
+    // Состояние LLM-on/off читается из tooltip кнопки (нет ToggleButton/IsChecked):
+    // выключен -> «LLM выключен — чистый транскрибатор…». Возвращает true, если был выключен.
+    private bool EnsureLlmOn()
+    {
+        var btn = FindButton("LlmOffButton");
+        var tip = btn?.Properties.HelpText.ValueOrDefault ?? "";
+        if (!tip.Contains("выключен", StringComparison.OrdinalIgnoreCase)) return false;
+        _report.AddStep("Regress: LLM был выключен → включаю", null,
+            "Персист-конфиг держал LLM off (чистый транскрибатор); включаю для секретного сообщения.");
+        btn!.Invoke();
+        Thread.Sleep(600);
+        return true;
+    }
+
+    private void RestoreLlmOff(bool wasOff)
+    {
+        if (!wasOff) return;
+        var btn = FindButton("LlmOffButton");
+        if (btn == null) return;
+        btn.Invoke();
+        Thread.Sleep(400);
+        _report.AddStep("Regress: восстановил LLM off", null, "Вернул чистый транскрибатор после теста.");
     }
 
     private void RightClickHistory()

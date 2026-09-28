@@ -7,7 +7,7 @@
 ; ============================================================================
 
 #define MyAppName "BrainstormBuddy"
-#define MyAppVersion "2.5.13"
+#define MyAppVersion "2.6.2"
 #define MyAppPublisher "BrainstormBuddy"
 #define MyAppExeName "BrainstormBuddy.exe"
 ; Стабильный AppId — НЕ менять между версиями (иначе апгрейд не найдёт прошлую установку).

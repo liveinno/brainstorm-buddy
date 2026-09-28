@@ -33,6 +33,9 @@ public class AppConfig
 
     [JsonPropertyName("Logging")]
     public LoggingConfig Logging { get; set; } = new();
+
+    [JsonPropertyName("Karaoke")]
+    public KaraokeConfig Karaoke { get; set; } = new();
 }
 
 public class LoggingConfig
@@ -159,7 +162,7 @@ public class AudioConfig
     public int FileSttGpuDevice { get; set; } = -1;
     // Путь к ONNX-модели GigaAM (пусто → авто: %APPDATA%\models, рядом с exe, или artifacts для dev).
     public string SttModelPath { get; set; } = "";
-    // Докачка модели (Фаза 1.3): URL + ожидаемый размер для проверки.
+    // Докачка модели (Фаза 1.3): URL (GitLab Release/Package) + ожидаемый размер для проверки.
     public string SttModelUrl { get; set; } = "";
     public long SttModelBytes { get; set; } = 0;
     public string SttModelSha256 { get; set; } = "";
@@ -207,22 +210,55 @@ public class UiConfig
     public bool LoopbackMuted { get; set; } = false; // «Динамик выкл»: loopback-кадры выбрасываются до буфера
 }
 
+public class KaraokeConfig
+{
+    public bool Enabled { get; set; } = false;                 // показывать окно
+    public string Position { get; set; } = "Bottom";           // Bottom|Top|Left|Right
+    public int WidthPct { get; set; } = 60;                    // 20-100, % ширины экрана (для Left/Right — ширина верт. полосы)
+    public int HeightPct { get; set; } = 0;                    // 0 = авто (по шрифту/числу строк); 1-100 = % высоты рабочей области
+    public double FontSize { get; set; } = 26;                 // 12-64
+    public string TextColor { get; set; } = "#FFFFFFFF";       // #AARRGGBB
+    public string AccentColor { get; set; } = "#FF4ADE80";     // маркер свежей строки
+    public string FreshColor { get; set; } = "#FFFFE9A8";      // цвет самой свежей строки (age=0) при градиенте по возрасту
+    public string BackgroundColor { get; set; } = "#FF0A1622"; // фон полосы
+    public double BackgroundOpacity { get; set; } = 0.78;      // 0-1 прозрачность фона полосы
+    public bool ShowBackground { get; set; } = true;           // false = скрыть прямоугольник-фон, оставить только текст
+    public bool TextShadow { get; set; } = true;               // тень текста при ShowBackground=false (читаемость на любом фоне)
+    public double Opacity { get; set; } = 0.9;                 // 0.25-1 прозрачность всего окна
+    public int MaxLines { get; set; } = 4;                     // 1-30 видимых строк (при HeightPct=100 — до 30 на весь экран)
+    public int SlideDurationMs { get; set; } = 700;            // 100-2000 скорость въезда
+    public int FadeDurationMs { get; set; } = 600;             // 100-2000 затухание/смена возраста
+    public int InnerPadding { get; set; } = 24;                // 0-80 px заполнение (padding полосы)
+    public int MarginPx { get; set; } = 30;                    // 0-200 отступ от края экрана
+    public string TextAlignment { get; set; } = "Left";        // Left|Center
+    public bool ShowAnswers { get; set; } = true;              // ответы LLM
+    public bool ShowQuestions { get; set; } = false;           // реплики собеседника [Динамик]
+    public bool ShowUserLines { get; set; } = false;           // реплики юзера [Микрофон]
+    public bool DimByAge { get; set; } = true;                 // гасить старые строки по возрасту
+    public bool AgeColorFade { get; set; } = true;             // градиент цвета по возрасту: золото (FreshColor) → TextColor → серый
+    public bool ShowMarker { get; set; } = true;               // акцентный маркер у свежей строки
+    public bool HiddenFromCapture { get; set; } = true;        // true = видно только юзеру (WDA_EXCLUDEFROMCAPTURE), false = видно всем
+    public bool ClickThrough { get; set; } = true;             // клики проходят сквозь
+    public bool WordWrap { get; set; } = true;                 // перенос строк
+}
+
 public class HotkeysConfig
 {
     public string ToggleVisibility { get; set; } = "Ctrl+Shift+H";
     public string ChangeOpacity { get; set; } = "Ctrl+Shift+O";
     public string OpenSettings { get; set; } = "Ctrl+Shift+S";
     public string TogglePause { get; set; } = "Ctrl+Shift+P";
+    public string ToggleKaraoke { get; set; } = "Ctrl+Shift+K";
 }
 
 public class AdvancedConfig
 {
     public string SystemPrompt { get; set; } =
-        "Ты — скрытый AI-ассистент (шепот), который слушает техническое собеседование. " +
-        "Твоя единственная цель — давать интервьюеру мгновенные шпаргалки, факты, правильные ответы или советы, как оценить кандидата. " +
-        "ТЕБЕ ЗАПРЕЩЕНО задавать вопросы. " +
-        "Если услышал вопрос или обрывки речи — давай краткий и точный ответ на русском. " +
-        "Формат: 1-2 предложения чистой сути.";
+        "Ты — скрытый ассистент кандидата на техническом собеседовании. " +
+        "Отвечай СРАЗУ и КОРОТКО (1-3 предложения) готовым текстом, который кандидат может произнести. " +
+        "ЗАПРЕЩЕНО: рассуждать вслух, описывать свой анализ, упоминать теги [Динамик]/[Микрофон]/[secret], задавать вопросы, писать мета-комментарии. " +
+        "Теги — только метка источника: [Динамик]=вопрос интервьюера, [Микрофон]=реплика кандидата, [secret]=личное указание. " +
+        "На любой вопрос давай прямой ответ на русском.";
     public int HistorySize { get; set; } = 15;
     public int MaxResponseTokens { get; set; } = 180;
     public bool MergeMicLoopback { get; set; } = false;

@@ -46,7 +46,14 @@ public class OverlayScenario
                 .FirstOrDefault(w => w.Title.Contains("Overlay", StringComparison.OrdinalIgnoreCase));
             if (overlay == null) Thread.Sleep(1000);
         }
-        if (overlay == null) { report.AddFailure("Overlay", "Main overlay window not found"); return; }
+        if (overlay == null)
+        {
+            var reason = launcher.HasExited
+                ? $"App process exited early (code {launcher.ExitCode}) — вероятно сработал single-instance mutex или крэш на старте"
+                : "Main overlay window not found (10s timeout)";
+            report.AddFailure("Overlay", reason);
+            return;
+        }
 
         // --- 1) Структурная проверка: зоны не пересекаются ---
         var zones = new (string name, string automationId)[]

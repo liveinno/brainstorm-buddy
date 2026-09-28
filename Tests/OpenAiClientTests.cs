@@ -168,7 +168,7 @@ public class OpenAiClientTests
     }
 
     [Fact]
-    public async Task AskAsync_NormalizesModelId_AndReadsReasoningContent()
+    public async Task AskAsync_NormalizesModelId_AndNeverShowsReasoning()
     {
         string? sentModel = null;
         var handler = new Mock<HttpMessageHandler>();
@@ -185,7 +185,8 @@ public class OpenAiClientTests
                 return new HttpResponseMessage
                 {
                     StatusCode = HttpStatusCode.OK,
-                    // content пуст, ответ лежит в reasoning_content (reasoning-модель, A6)
+                    // content пуст, рассуждения в reasoning_content — юзеру НЕ показываем CoT,
+                    // поэтому AskResult.Content обязан быть null (а не «ответ» из головы модели).
                     Content = new StringContent(
                         "{\"choices\":[{\"message\":{\"content\":\"\",\"reasoning_content\":\"ответ\"}}]," +
                         "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}",
@@ -207,8 +208,139 @@ public class OpenAiClientTests
         var result = await client.AskAsync("q", "s", 2000, new System.Collections.Generic.List<ChatMessage>());
 
         Assert.Equal("model", sentModel);
-        Assert.Equal("ответ", result.Content);
+        Assert.Null(result.Content);
         Assert.Equal(3, result.TotalTokens);
+    }
+
+    [Fact]
+    public async Task AskAsync_EmptyContentWithReasoning_RetriesBoosted_AndNeverLeaksCoT()
+    {
+        var sentMaxTokens = new List<int>();
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync((HttpRequestMessage req, CancellationToken ct) =>
+            {
+                var json = req.Content!.ReadAsStringAsync().Result;
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                sentMaxTokens.Add(doc.RootElement.GetProperty("max_tokens").GetInt32());
+                var empty = sentMaxTokens.Count == 1; // первая попытка — только CoT, ретрай — ответ
+                var body = empty
+                    ? "{\"choices\":[{\"message\":{\"content\":\"\",\"reasoning_content\":\"длинные рассуждения модели\"}}]}"
+                    : "{\"choices\":[{\"message\":{\"content\":\"\",\"reasoning_content\":\"опять думает\"," +
+                      "\"reasoning_details\":[{\"text\":\"ещё CoT\"}]}}],\"usage\":{\"total_tokens\":9}}";
+                return new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.OK,
+                    Content = new StringContent(body, Encoding.UTF8, "application/json")
+                };
+            });
+
+        var config = new ApiConfig
+        {
+            BaseUrl = "https://test.example.com/v1",
+            ApiKey = "k",
+            ChatModel = "deepseek-v4.1-flash",
+            RequestTimeoutSeconds = 5,
+            MaxRetries = 0
+        };
+        var logger = new LoggingService(Path.Combine(Path.GetTempPath(), "bsb_test"));
+        var client = new OpenAiClient(config, logger, handler.Object);
+
+        var result = await client.AskAsync("q", "s", 100, new System.Collections.Generic.List<ChatMessage>());
+
+        // Пустой content (хоть с reasoning, хоть без) → один авто-ретрай с лимитом 1024.
+        Assert.Equal(new[] { 100, 1024 }, sentMaxTokens);
+        // deepseek-v4.1-flash — reasoning-модель, но НЕ из allowlist «ответ в reasoning»:
+        // её CoT не должен стать показываемым ответом. Content = null, CoT не утёк.
+        Assert.Null(result.Content);
+        Assert.Equal(9, result.TotalTokens);
+    }
+
+    [Fact]
+    public async Task AskAsync_SpaceBunny_EmptyContent_FallsBackToReasoningContent()
+    {
+        var sentMaxTokens = new List<int>();
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync((HttpRequestMessage req, CancellationToken ct) =>
+            {
+                var json = req.Content!.ReadAsStringAsync().Result;
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                sentMaxTokens.Add(doc.RootElement.GetProperty("max_tokens").GetInt32());
+                // space-bunny-free (бэклог A6): ответ живёт в reasoning_content,
+                // content пустой по дизайну — обе попытки.
+                var body = "{\"choices\":[{\"message\":{\"content\":\"\"," +
+                           "\"reasoning_content\":\"Вот прямой ответ на вопрос.\"}}]," +
+                           "\"usage\":{\"total_tokens\":12}}";
+                return new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.OK,
+                    Content = new StringContent(body, Encoding.UTF8, "application/json")
+                };
+            });
+
+        var config = new ApiConfig
+        {
+            BaseUrl = "https://test.example.com/v1",
+            ApiKey = "k",
+            ChatModel = "space-bunny-free",
+            RequestTimeoutSeconds = 5,
+            MaxRetries = 0
+        };
+        var logger = new LoggingService(Path.Combine(Path.GetTempPath(), "bsb_test"));
+        var client = new OpenAiClient(config, logger, handler.Object);
+
+        var result = await client.AskAsync("q", "s", 100, new System.Collections.Generic.List<ChatMessage>());
+
+        // Мгновенный фолбэк на reasoning_content — у space-bunny ответ там по дизайну (A6),
+        // ретрай бесполезен (content останется пустым): всего один запрос, без двойной
+        // латентности.
+        Assert.Equal(new[] { 100 }, sentMaxTokens);
+        Assert.Equal("Вот прямой ответ на вопрос.", result.Content);
+    }
+
+    [Fact]
+    public async Task AskAsync_ContentPresent_IgnoresReasoningFields()
+    {
+        var handler = new Mock<HttpMessageHandler>();
+        handler.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK,
+                // И content, и reasoning заполнены → берём только content.
+                Content = new StringContent(
+                    "{\"choices\":[{\"message\":{\"content\":\"Готовый ответ.\"," +
+                    "\"reasoning_content\":\"сначала подумаю вслух...\"}}]}",
+                    Encoding.UTF8, "application/json")
+            });
+
+        var config = new ApiConfig
+        {
+            BaseUrl = "https://test.example.com/v1",
+            ApiKey = "k",
+            ChatModel = "deepseek-v4.1-flash",
+            RequestTimeoutSeconds = 5,
+            MaxRetries = 0
+        };
+        var logger = new LoggingService(Path.Combine(Path.GetTempPath(), "bsb_test"));
+        var client = new OpenAiClient(config, logger, handler.Object);
+
+        var result = await client.AskAsync("q", "s", 100, new System.Collections.Generic.List<ChatMessage>());
+
+        Assert.Equal("Готовый ответ.", result.Content);
+        Assert.DoesNotContain("подумаю", result.Content);
     }
 
     [Fact]

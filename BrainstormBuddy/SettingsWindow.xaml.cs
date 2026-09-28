@@ -32,6 +32,9 @@ public partial class SettingsWindow : Window
         DataContext = vm;
 
         LogPathRun.Text = App.Current.Logger.LogDirectory;
+        var asmVer = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        VersionRun.Text = $" {asmVer?.Major}.{asmVer?.Minor}.{asmVer?.Build}";
+        TitleVersionRun.Text = $"BrainstormBuddy v{asmVer?.Major}.{asmVer?.Minor}.{asmVer?.Build}";
 
         _rmsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
         _rmsTimer.Tick += (s, e) =>
@@ -1232,5 +1235,13 @@ public partial class SettingsWindow : Window
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = dir, UseShellExecute = true });
         }
         catch (Exception ex) { App.Current.Logger.Error("Open logs folder failed", ex, "UI"); }
+    }
+
+    // «Предпросмотр» караоке: App.PreviewKaraoke() вызывается через reflection,
+    // чтобы вкладка собиралась независимо от наличия метода у App.
+    private void OnKaraokePreviewClick(object sender, RoutedEventArgs e)
+    {
+        var app = System.Windows.Application.Current;
+        app?.GetType().GetMethod("PreviewKaraoke")?.Invoke(app, null);
     }
 }

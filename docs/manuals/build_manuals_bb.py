@@ -3,7 +3,7 @@
 
 The script intentionally uses only Python's standard library plus Microsoft Word COM.
 Run from any directory on Windows:
-    py docs/manuals/build_manuals_bb.py
+    py docs/manuals/build_manuals.py
 """
 
 from __future__ import annotations

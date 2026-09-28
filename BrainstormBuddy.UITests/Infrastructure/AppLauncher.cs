@@ -16,8 +16,24 @@ public class AppLauncher : IDisposable
         if (!File.Exists(exePath))
             throw new FileNotFoundException($"Cannot find EXE at: {exePath}");
 
+        // Приложение single-instance (Global\BrainstormBuddy_SingleInstance): уже запущенная
+        // копия (например, установленная) заставит новый процесс показать MessageBox и выйти,
+        // FlaUI не найдёт окно и все сценарии упадут. Убиваем экземпляры ДО запуска.
+        KillAll();
+
         _app = Application.Launch(exePath);
         Automation = new UIA3Automation();
+    }
+
+    public bool HasExited => _app.HasExited;
+    public int ExitCode => _app.ExitCode;
+
+    private static void KillAll()
+    {
+        foreach (var p in System.Diagnostics.Process.GetProcessesByName("BrainstormBuddy"))
+        {
+            try { p.Kill(); p.WaitForExit(5000); } catch { }
+        }
     }
 
     public Window GetMainWindow()
@@ -37,10 +53,6 @@ public class AppLauncher : IDisposable
         Thread.Sleep(500);
         try { Automation?.Dispose(); } catch {}
 
-        var leftover = System.Diagnostics.Process.GetProcessesByName("BrainstormBuddy");
-        foreach (var p in leftover)
-        {
-            try { p.Kill(); p.WaitForExit(3000); } catch {}
-        }
+        KillAll();
     }
 }

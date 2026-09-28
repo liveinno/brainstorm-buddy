@@ -41,6 +41,7 @@ public class VisionClient
             {
                 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
                 http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", provider.ApiKey);
+                ApplyExtraHeaders(http, provider);
 
                 var payload = new
                 {
@@ -94,6 +95,7 @@ public class VisionClient
                 {
                     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
                 http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", provider.ApiKey);
+                ApplyExtraHeaders(http, provider);
 
                 var payload = new
                 {
@@ -151,6 +153,13 @@ public class VisionClient
         LastCallAllFailed = true;
         LastFailureReason = errors.ToString();
         return $"All providers failed.\n{errors.ToString()}";
+    }
+
+    private static void ApplyExtraHeaders(HttpClient http, ProviderConfig provider)
+    {
+        if (provider.ExtraHeaders == null) return;
+        foreach (var kv in provider.ExtraHeaders)
+            http.DefaultRequestHeaders.TryAddWithoutValidation(kv.Key, kv.Value);
     }
 
     private static string Truncate(string s, int max) =>

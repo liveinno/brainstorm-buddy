@@ -157,8 +157,8 @@ def chapters(h):
                 ["Ui.ShowCompatibilityBorder / ShowTimingLine / TimelineCollapsed", "false / true / true", "Рамка совместимости; тех-строка rec/STT/LLM; эквалайзер свёрнут"],
             ]),
             h.table(["Поле", "По умолчанию", "Назначение"], [
-                ["Hotkeys.ToggleVisibility / ChangeOpacity / OpenSettings / TogglePause",
-                 "Ctrl+Shift+H / O / S / P", "Переназначаемые хоткеи (Ctrl+Shift+L/Y/C зашиты в коде)"],
+                ["Hotkeys.ToggleVisibility / ChangeOpacity / OpenSettings / TogglePause / ToggleKaraoke",
+                 "Ctrl+Shift+H / O / S / P / K", "Переназначаемые хоткеи (Ctrl+Shift+L/Y/C зашиты в коде)"],
                 ["LocalStt.Enabled / AutoStart", "false / false", "Docker-мост локального STT и его автоподнятие"],
                 ["LocalStt.Model / Port / ContainerName", "gigaam-v2 / 8765 / brainstorm-local-stt", "Параметры контейнера"],
                 ["Advanced.SystemPrompt / SystemPromptPresets / ActiveSystemPromptName",
@@ -169,6 +169,37 @@ def chapters(h):
                  "false / interview / 5 сценариев / пустое резюме", "Мульти-агентный режим и профиль пользователя"],
                 ["Logging.Enabled / Verbose / MaxFiles / MaxFileSizeMb", "true / false / 5 / 1",
                  "Файловый лог, уровень Debug и ротация app.log"],
+            ]),
+            h.p("Секция Karaoke — настройки полосы-телесуфлёра (вкладка «Караоке» в настройках, "
+                "окно KaraokeWindow):"),
+            h.table(["Поле", "По умолчанию", "Назначение"], [
+                ["Karaoke.Enabled", "false", "Показывать караоке-полосу поверх экрана"],
+                ["Karaoke.Position / WidthPct / HeightPct / MarginPx / InnerPadding",
+                 "Bottom / 60 / 0 / 30 / 24", "Край экрана (Bottom|Top|Left|Right), "
+                 "ширина %, высота % рабочей области (0 = авто: по числу строк для "
+                 "Top/Bottom, 70 % высоты для Left/Right), отступ от края и "
+                 "внутренний отступ, px"],
+                ["Karaoke.FontSize / TextAlignment / WordWrap", "26 / Left / true",
+                 "Шрифт 12–64 pt, выравнивание Left|Center, перенос строк"],
+                ["Karaoke.TextColor / AccentColor / FreshColor / BackgroundColor",
+                 "#FFFFFFFF / #FF4ADE80 / #FFFFE9A8 / #FF0A1622", "Цвета ленты в "
+                 "#AARRGGBB: текст, маркер свежей строки, сама свежая строка "
+                 "(при градиенте по возрасту), фон полосы"],
+                ["Karaoke.BackgroundOpacity / Opacity / ShowBackground / TextShadow",
+                 "0.78 / 0.9 / true / true", "Прозрачность фона и всего окна; "
+                 "ShowBackground=false оставляет только текст без прямоугольника; "
+                 "TextShadow рисует тень букв в режиме без фона"],
+                ["Karaoke.MaxLines / SlideDurationMs / FadeDurationMs", "4 / 700 / 600",
+                 "Видимых строк 1–30; длительности анимаций въезда и затухания, мс"],
+                ["Karaoke.ShowAnswers / ShowQuestions / ShowUserLines", "true / false / false",
+                 "Фильтры ленты: ответы LLM, реплики собеседника, реплики пользователя"],
+                ["Karaoke.DimByAge / AgeColorFade / ShowMarker", "true / true / true",
+                 "Затухание старых строк по возрасту (прозрачность); градиент цвета "
+                 "по возрасту — свежая строка FreshColor, затем TextColor, дальше лерп "
+                 "к серому; акцентный маркер у свежей"],
+                ["Karaoke.HiddenFromCapture / ClickThrough", "true / true",
+                 "Стелс: WDA_EXCLUDEFROMCAPTURE — невидим в Zoom/OBS/скриншотах; клики "
+                 "сквозь полосу"],
             ]),
             h.h2("Перенос на другую машину"),
             h.ol([

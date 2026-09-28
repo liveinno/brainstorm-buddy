@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json.Nodes;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Input;
 using FlaUI.UIA3;
@@ -45,6 +46,7 @@ class Shots
         ("11-tab-summary.png", "Резюме"),
         ("12-tab-agents.png", "Агенты"),
         ("13-tab-diag.png", "Диагностика"),
+        ("17-tab-karaoke.png", "Караоке"),
     };
 
     [STAThread]
@@ -87,9 +89,36 @@ class Shots
         else
         {
             if (!File.Exists(ExePath)) { Console.WriteLine("exe missing: " + ExePath); return; }
-            if (File.Exists(ConfigPath)) File.Copy(ConfigPath, ConfigBackup, true);
+            if (File.Exists(ConfigPath))
+            {
+                File.Copy(ConfigPath, ConfigBackup, true);
+                // Демо-караоке для мануала: чёрный текст на белой полосе (как просил юзер),
+                // золотая свежая строка, остальные — градиент в серый.
+                // Ключ апи и прочий конфиг юзера не трогаем — только секцию Karaoke.
+                try
+                {
+                    var root = JsonNode.Parse(File.ReadAllText(ConfigPath)) as JsonObject ?? new JsonObject();
+                    root["Karaoke"] = new JsonObject
+                    {
+                        ["Enabled"] = true, ["Position"] = "Bottom", ["WidthPct"] = 72,
+                        ["FontSize"] = 20, ["MaxLines"] = 6,
+                        ["TextColor"] = "#FF000000", ["AccentColor"] = "#FFB8860B",
+                        ["BackgroundColor"] = "#FFFFFFFF", ["ShowBackground"] = true,
+                        ["BackgroundOpacity"] = 1.0,
+                        ["DimByAge"] = true,
+                        ["ShowMarker"] = true, ["HiddenFromCapture"] = true,
+                        ["ClickThrough"] = true, ["Opacity"] = 1.0, ["MarginPx"] = 40,
+                        ["InnerPadding"] = 24, ["ShowAnswers"] = true,
+                        ["ShowQuestions"] = true, ["ShowUserLines"] = true,
+                    };
+                    File.WriteAllText(ConfigPath, root.ToJsonString());
+                }
+                catch (Exception e) { Console.WriteLine("karaoke config patch failed: " + e.Message); }
+            }
             var psi = new ProcessStartInfo(ExePath) { UseShellExecute = false };
             psi.Environment["BUDDY_CAPTURE_VISIBLE"] = "1";
+            // Демо-лента караоке: автопоказ окна + строки каждые 1.5 с (StartDemo).
+            psi.Environment["BUDDY_KARAOKE_DEMO"] = "1";
             AppProc = Process.Start(psi)!;
             AppPid = AppProc.Id;
             WeLaunchedApp = true;
@@ -108,6 +137,20 @@ class Shots
         }
         if (overlay == null) { Console.WriteLine("overlay window not found"); return; }
         Thread.Sleep(1500);
+
+        // Караоке-лента: демо-тик 1.5 с → за паузу выше уже несколько строк + градиент
+        // по возрасту. PrintWindow по hwnd на белый холст — чужие окна юзера не попадают.
+        if (Want("karaoke"))
+        {
+            var kw = WaitAppWindow(uia, "Karaoke", 10);
+            if (kw != null)
+            {
+                Thread.Sleep(4000); // добьём ленту до ~5 строк для наглядного градиента
+                Shot(kw, "18-karaoke-live.png", 48);
+            }
+            else Console.WriteLine("karaoke window not found (BUDDY_KARAOKE_DEMO?)");
+        }
+
         if (Want("overlay")) Shot(overlay, "01-overlay-idle.png", 48);
 
         if (Want("answer")) TryOverlayAnswer(uia, overlay);
@@ -116,7 +159,7 @@ class Shots
         SendHotkey(VirtualKeyShort.CONTROL, VirtualKeyShort.SHIFT, VirtualKeyShort.KEY_H);
         Thread.Sleep(700);
 
-        if (Want("tabs"))
+        if (Want("tabs") || Want("ktab"))
         {
             SendHotkey(VirtualKeyShort.CONTROL, VirtualKeyShort.SHIFT, VirtualKeyShort.KEY_S);
             var settings = WaitAppWindow(uia, "Настройки", 15);
@@ -127,6 +170,9 @@ class Shots
                 Console.WriteLine("tabitems: " + tabItems.Length);
                 foreach (var t in Tabs)
                 {
+                    // ktab: только вкладка караоке — остальные не переснимаем (на API-вкладке
+                    // виден ключ юзера, её скрин уже есть в мануале).
+                    if (!Want("tabs") && !t.Header.Contains("Караоке")) continue;
                     try
                     {
                         var item = tabItems.FirstOrDefault(x => SafeName(x).Contains(t.Header));
