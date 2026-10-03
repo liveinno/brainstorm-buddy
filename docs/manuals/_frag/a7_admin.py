@@ -133,7 +133,7 @@ def chapters(h):
                 ["Audio.SampleRate", "16000", "Частота аудио-конвейера, Гц (8000/16000/32000/48000)"],
                 ["Audio.ChunkMaxSeconds", "60", "Потолок длины аудио-чанка для STT (в UI: 8–120 с)"],
                 ["Audio.SilenceSeconds", "1.8", "Пауза тишины, после которой реплика уходит в STT (0.4–10 с)"],
-                ["Audio.RmsThreshold", "0.001", "Порог RMS детектора речи (ручной режим)"],
+                ["Audio.RmsThreshold", "0.004", "Порог RMS детектора речи (ручной режим)"],
                 ["Audio.AutoCalibrateThreshold", "false", "Авто-подстройка порога под шумовой пол — для шумных помещений"],
                 ["Audio.EndpointMode", "adaptive", "Нарезка речи: manual | adaptive | semantic"],
                 ["Audio.VadMode", "0", "Агрессивность VAD 0–3 (0 — консервативный)"],
@@ -155,16 +155,17 @@ def chapters(h):
                 ["Ui.EngineerMode", "false", "Инженерный режим: слайдеры и эквалайзер на главном оверлее"],
                 ["Ui.AudioPaused / LlmDisabled / LoopbackMuted", "false", "Состояния кнопок микрофон/LLM/динамик — переживают перезапуск"],
                 ["Ui.ShowCompatibilityBorder / ShowTimingLine / TimelineCollapsed", "false / true / true", "Рамка совместимости; тех-строка rec/STT/LLM; эквалайзер свёрнут"],
+                ["Ui.HideTrayIcon", "false", "Скрыть значок в трее; вернуть — хоткей Hotkeys.ShowTrayIcon"],
             ]),
             h.table(["Поле", "По умолчанию", "Назначение"], [
-                ["Hotkeys.ToggleVisibility / ChangeOpacity / OpenSettings / TogglePause / ToggleKaraoke",
-                 "Ctrl+Shift+H / O / S / P / K", "Переназначаемые хоткеи (Ctrl+Shift+L/Y/C зашиты в коде)"],
+                ["Hotkeys.ToggleVisibility / ChangeOpacity / OpenSettings / TogglePause / ToggleKaraoke / ShowTrayIcon",
+                 "Ctrl+Shift+H / O / S / P / K / T", "Переназначаемые хоткеи (Ctrl+Shift+L/Y/C зашиты в коде)"],
                 ["LocalStt.Enabled / AutoStart", "false / false", "Docker-мост локального STT и его автоподнятие"],
                 ["LocalStt.Model / Port / ContainerName", "gigaam-v2 / 8765 / brainstorm-local-stt", "Параметры контейнера"],
                 ["Advanced.SystemPrompt / SystemPromptPresets / ActiveSystemPromptName",
                  "текст ассистента-«шёпота»", "Системный промпт и библиотека пресетов"],
                 ["Advanced.HistorySize / MaxResponseTokens", "15 / 180", "Глубина истории чата; лимит токенов ответа"],
-                ["Advanced.MergeMicLoopback", "false", "Склеивать [Микрофон]+[Динамик] в один запрос к LLM"],
+                ["Advanced.StreamLlmAnswers", "false", "Стриминг ответа LLM по SSE — буквы по мере генерации"],
                 ["MultiAgent.Enabled / ActiveScenarioId / Scenarios / UserProfile",
                  "false / interview / 5 сценариев / пустое резюме", "Мульти-агентный режим и профиль пользователя"],
                 ["Logging.Enabled / Verbose / MaxFiles / MaxFileSizeMb", "true / false / 5 / 1",
@@ -181,10 +182,10 @@ def chapters(h):
                  "внутренний отступ, px"],
                 ["Karaoke.FontSize / TextAlignment / WordWrap", "26 / Left / true",
                  "Шрифт 12–64 pt, выравнивание Left|Center, перенос строк"],
-                ["Karaoke.TextColor / AccentColor / FreshColor / BackgroundColor",
-                 "#FFFFFFFF / #FF4ADE80 / #FFFFE9A8 / #FF0A1622", "Цвета ленты в "
-                 "#AARRGGBB: текст, маркер свежей строки, сама свежая строка "
-                 "(при градиенте по возрасту), фон полосы"],
+                ["Karaoke.TextColor / AccentColor / FreshColor / OldLinesColor / BackgroundColor",
+                 "#FFFFFFFF / #FF4ADE80 / #FFFFE9A8 / #FFFFFFFF / #FF0A1622", "Цвета ленты в "
+                 "#AARRGGBB: текст, маркер свежей строки, сама свежая строка, "
+                 "старые строки (лерп-таргет затухания), фон полосы"],
                 ["Karaoke.BackgroundOpacity / Opacity / ShowBackground / TextShadow",
                  "0.78 / 0.9 / true / true", "Прозрачность фона и всего окна; "
                  "ShowBackground=false оставляет только текст без прямоугольника; "
@@ -196,7 +197,7 @@ def chapters(h):
                 ["Karaoke.DimByAge / AgeColorFade / ShowMarker", "true / true / true",
                  "Затухание старых строк по возрасту (прозрачность); градиент цвета "
                  "по возрасту — свежая строка FreshColor, затем TextColor, дальше лерп "
-                 "к серому; акцентный маркер у свежей"],
+                 "к OldLinesColor; акцентный маркер у свежей"],
                 ["Karaoke.HiddenFromCapture / ClickThrough", "true / true",
                  "Стелс: WDA_EXCLUDEFROMCAPTURE — невидим в Zoom/OBS/скриншотах; клики "
                  "сквозь полосу"],

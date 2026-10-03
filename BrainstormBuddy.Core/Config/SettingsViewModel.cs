@@ -249,6 +249,35 @@ public class SettingsViewModel : INotifyPropertyChanged
     /// <summary>Перечитать список провайдеров (после правок custom-профилей).</summary>
     public void RefreshLlmProviders() => OnPropertyChanged(nameof(LlmProviders));
 
+    /// <summary>Глобальный reasoning effort (Api.ReasoningEffortOverride) для комбо в UI.
+    /// Маппинг getter: null → "по профилю", "" → "не слать", иначе само значение.
+    /// Setter терпим к вариантам лейблов: null/"по профилю"/"(по профилю)"/"inherit"/"&lt;null&gt;"
+    /// → null (брать из профиля провайдера); ""/"не слать"/"(не слать)" → ""
+    /// (поле reasoning не шлём); остальное — как есть (low/medium/high).</summary>
+    public string ReasoningEffortUi
+    {
+        get => _config.Api.ReasoningEffortOverride switch
+        {
+            null => "по профилю",
+            "" => "не слать",
+            var v => v
+        };
+        set
+        {
+            _config.Api.ReasoningEffortOverride = value switch
+            {
+                null or "по профилю" or "(по профилю)" or "inherit" or "<null>" => null,
+                "" or "не слать" or "(не слать)" => "",
+                var v => v
+            };
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Дёрнуть INPC для ReasoningEffortUi — при смене провайдера лейбл "(по профилю)"
+    /// остаётся тем же, а эффективное значение за ним меняется; UI перечитывает.</summary>
+    public void NotifyReasoningEffortChanged() => OnPropertyChanged(nameof(ReasoningEffortUi));
+
     public string SttModel
     {
         get => _config.Api.SttModel;
@@ -307,10 +336,17 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Advanced.HistorySize = value; OnPropertyChanged(); }
     }
 
-    public int MaxResponseTokensVm
+    /// <summary>Максимум токенов ответа (config: Advanced.MaxResponseTokens, лимит 50..4096).</summary>
+    public int MaxResponseTokens
     {
         get => _config.Advanced.MaxResponseTokens;
-        set { _config.Advanced.MaxResponseTokens = value; OnPropertyChanged(); }
+        set { _config.Advanced.MaxResponseTokens = Math.Clamp(value, 50, 4096); OnPropertyChanged(); }
+    }
+
+    public bool StreamLlmAnswersVm
+    {
+        get => _config.Advanced.StreamLlmAnswers;
+        set { _config.Advanced.StreamLlmAnswers = value; OnPropertyChanged(); }
     }
 
     public bool EnableDebugLogs
@@ -482,6 +518,12 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Ui.ShowCompatibilityBorder = value; OnPropertyChanged(); }
     }
 
+    public bool HideTrayIcon
+    {
+        get => _config.Ui.HideTrayIcon;
+        set { _config.Ui.HideTrayIcon = value; OnPropertyChanged(); }
+    }
+
     public string ToggleVisibilityHotkey
     {
         get => _config.Hotkeys.ToggleVisibility;
@@ -514,6 +556,15 @@ public class SettingsViewModel : INotifyPropertyChanged
 
     /// <summary>Дёрнуть INPC для KaraokeEnabled — хоткей меняет Config напрямую, без сеттера VM.</summary>
     public void NotifyKaraokeEnabledChanged() => OnPropertyChanged(nameof(KaraokeEnabled));
+
+    public string ShowTrayIconHotkey
+    {
+        get => _config.Hotkeys.ShowTrayIcon;
+        set { _config.Hotkeys.ShowTrayIcon = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Дёрнуть INPC для HideTrayIcon — хоткей возврата иконки меняет Config напрямую, без сеттера VM.</summary>
+    public void NotifyHideTrayIconChanged() => OnPropertyChanged(nameof(HideTrayIcon));
 
     public int RateLimitSeconds
     {
@@ -595,6 +646,12 @@ public class SettingsViewModel : INotifyPropertyChanged
     {
         get => _config.Karaoke.FreshColor;
         set { _config.Karaoke.FreshColor = value; OnPropertyChanged(); }
+    }
+
+    public string KaraokeOldLinesColor
+    {
+        get => _config.Karaoke.OldLinesColor;
+        set { _config.Karaoke.OldLinesColor = value; OnPropertyChanged(); }
     }
 
     public string KaraokeBackgroundColor

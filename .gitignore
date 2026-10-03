@@ -57,3 +57,6 @@ packaging/inno/ffmpeg/
 report_install.html
 report_install_keep.html
 report_uninstall.html
+
+# локальные скриншоты (не для публикации)
+pdf_imgs/

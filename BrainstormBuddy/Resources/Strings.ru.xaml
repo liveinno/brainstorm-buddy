@@ -21,6 +21,8 @@
     <sys:String x:Key="L_SecretHint">Секретное сообщение в LLM…</sys:String>
     <sys:String x:Key="L_WaitingLlm">(ожидание ответа LLM…)</sys:String>
     <sys:String x:Key="L_AgentsSilent">(агенты промолчали)</sys:String>
+    <sys:String x:Key="L_ModelSilent">(модель промолчала)</sys:String>
+    <sys:String x:Key="L_ModelNoAnswer">модель не ответила</sys:String>
     <sys:String x:Key="L_MicNoted">🎧 ваша реплика — учтена в контексте</sys:String>
 
     <!-- Оверлей: тултипы -->
@@ -90,6 +92,9 @@
     <sys:String x:Key="L_Language">Язык интерфейса / Language:</sys:String>
     <sys:String x:Key="L_Theme">Тема оформления:</sys:String>
 
+    <sys:String x:Key="L_StreamLlm">Стриминг ответа (буквы появляются сразу)</sys:String>
+    <sys:String x:Key="L_StreamLlmHint">Показывать ответ LLM по мере генерации; выкл — блок целиком</sys:String>
+
     <sys:String x:Key="L_About_Site">Сайт программы:</sys:String>
 
     <sys:String x:Key="L_SendBtn">Отправить</sys:String>
@@ -97,5 +102,13 @@
 
     <sys:String x:Key="L_TT_Minimize">Свернуть</sys:String>
     <sys:String x:Key="L_TT_Maximize">Развернуть</sys:String>
+
+    <!-- Настройки: караоке -->
+    <sys:String x:Key="L_KaraokeOldColor">Цвет старых строк (hex)</sys:String>
+
+    <!-- Настройки: иконка трея -->
+    <sys:String x:Key="L_HideTrayIcon">Скрыть значок в трее</sys:String>
+    <sys:String x:Key="L_HideTrayIconHint">Значок исчезнет из области уведомлений. Вернуть: хоткей Ctrl+Shift+T (настраивается на вкладке «Горячие клавиши»).</sys:String>
+    <sys:String x:Key="L_HK_ShowTray">Показать значок в трее:</sys:String>
 
 </ResourceDictionary>

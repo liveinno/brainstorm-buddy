@@ -1,6 +1,7 @@
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
+using FlaUI.Core.WindowsAPI;
 using System.Drawing.Imaging;
 using System.Text;
 using BrainstormBuddy.UITests.Infrastructure;
@@ -84,13 +85,78 @@ public class ProviderCheckScenario
                 {
                     SelectProvider(combo, itemNames.First(n => n.Contains("Custom", StringComparison.OrdinalIgnoreCase)));
                     await Task.Delay(700);
-                    var panel = win.FindFirstDescendant(cf => cf.ByAutomationId("LlmProviderEditPanel"));
-                    var visible = panel != null && !panel.Properties.IsOffscreen.ValueOrDefault;
+                    // Пока попап комбобокса открыт, UIA помечает элементы окна offscreen
+                    // (BoundingRectangle=0x0) — закрываем выпадашку перед замером панели.
+                    try { combo.Collapse(); } catch { }
+                    await Task.Delay(300);
+                    // StackPanel/Border не экспонируются в UIA — проверяем по дочернему
+                    // контролу (TextBox имеет peer). BoundingRectangle>0 = панель видна.
+                    var probe = win.FindFirstDescendant(cf => cf.ByAutomationId("ProviderNameBox"))
+                             ?? win.FindFirstDescendant(cf => cf.ByAutomationId("ProviderBaseUrlBox"));
+                    var rect = probe?.BoundingRectangle ?? System.Drawing.Rectangle.Empty;
+                    var visible = rect.Width > 0 && rect.Height > 0;
                     report.AddStep("Providers: Custom редактор", Capture(win),
-                        visible ? "OK — панель редактирования открылась" : "WARN — выбрали Custom, панель не видна");
+                        visible ? "OK — панель редактирования открылась"
+                                : $"WARN — выбрали Custom, панель не видна (rect={rect.Width}x{rect.Height})");
                 }
                 catch (Exception ex) { report.AddFailure("Providers: Custom редактор", ex.Message); }
             }
+
+            // 2.7.2: reasoning-effort комбо (openai-chat профили) + поле лимита токенов.
+            // Выбор провайдера ничего не пишет в конфиг — override кладём и сразу откатываем.
+            try
+            {
+                SelectProvider(combo, itemNames.First(n =>
+                    n.Contains("OpenCode", StringComparison.OrdinalIgnoreCase)));
+                await Task.Delay(600);
+                // Строка-обёртка — StackPanel без UIA-элемента: меряем само комбо.
+                try { combo.Collapse(); } catch { } // открытый попап даёт offscreen-геометрию
+                await Task.Delay(300);
+                var eff = win.FindFirstDescendant(cf => cf.ByAutomationId("ReasoningEffortCombo"))?.AsComboBox();
+                bool visible = eff != null && eff.BoundingRectangle.Height > 5;
+                if (visible)
+                {
+                    eff!.Expand(); Thread.Sleep(300);
+                    var high = eff.Items.FirstOrDefault(i => i.Name == "high");
+                    high?.Patterns.SelectionItem.PatternOrDefault?.Select();
+                    await Task.Delay(300);
+                    // Откат: «по профилю» = null → конфиг чист.
+                    eff.Expand(); Thread.Sleep(300);
+                    eff.Items.FirstOrDefault(i => i.Name.Contains("профилю"))
+                        ?.Patterns.SelectionItem.PatternOrDefault?.Select();
+                }
+                report.AddStep("Providers: Reasoning effort", Capture(win),
+                    visible ? "OK — строка видна, пункты «по профилю»/low/medium/high выбираются"
+                            : "WARN — ReasoningEffortRow не видна для openai-chat провайдера");
+            }
+            catch (Exception ex) { report.AddFailure("Providers: Reasoning effort", ex.Message); }
+
+            // Вкладка «LLM» (индекс 1): MaxTokensBox принимает и коммитит значение.
+            try
+            {
+                try { tabs[1].AsTabItem().Select(); } catch { tabs[1].Click(); }
+                await Task.Delay(700);
+                var tok = win.FindFirstDescendant(cf => cf.ByAutomationId("MaxTokensBox"))?.AsTextBox();
+                if (tok != null)
+                {
+                    var orig = tok.Text;
+                    tok.Focus(); tok.Text = "777"; Keyboard.Press(VirtualKeyShort.RETURN);
+                    await Task.Delay(300);
+                    var committed = win.FindFirstDescendant(cf => cf.ByAutomationId("MaxTokensBox"))?.AsTextBox()?.Text;
+                    // Возврат исходного значения, чтобы OnExit сохранил конфиг без мусора.
+                    tok = win.FindFirstDescendant(cf => cf.ByAutomationId("MaxTokensBox"))?.AsTextBox();
+                    if (tok != null) { tok.Focus(); tok.Text = orig; Keyboard.Press(VirtualKeyShort.RETURN); }
+                    report.AddStep("Providers: MaxTokensBox", Capture(win),
+                        committed == "777"
+                            ? "OK — поле лимита токенов принимает и коммитит значение"
+                            : $"WARN — поле не закоммитило '777' (осталось '{committed}')");
+                }
+                else report.AddStep("Providers: MaxTokensBox", Capture(win), "WARN — MaxTokensBox не найден на вкладке LLM");
+                try { tabs[0].AsTabItem().Select(); } catch { tabs[0].Click(); }
+                await Task.Delay(500);
+            }
+            catch (Exception ex) { report.AddFailure("Providers: MaxTokensBox", ex.Message); }
+
         }
         finally
         {

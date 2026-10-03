@@ -86,6 +86,10 @@ public class ApiConfig
     // "custom" = ручной BaseUrl без профиля. Детали профиля (заголовки, пути) — в реестре.
     public string ProviderId { get; set; } = "";
     public List<LlmProviderProfile> CustomProviders { get; set; } = new();
+    /// <summary>Глобальный override reasoning effort для ВСЕХ провайдеров.
+    /// null (дефолт) = брать Profile.ReasoningEffort; "" = не слать поле reasoning
+    /// вообще; "low"/"medium"/"high" = слать это значение.</summary>
+    public string? ReasoningEffortOverride { get; set; } = null;
     public string BaseUrl { get; set; } = "http://127.0.0.1:11434/v1";
     public string ApiKey { get; set; } = string.Empty;
     public string ChatModel { get; set; } = "qwen2.5vl:7b";
@@ -111,15 +115,16 @@ public class AudioConfig
     // Дефолт паузы для нарезки. Был 4.0с — слишком много (при адаптиве перекрывается,
     // но база важна на старте). 1.8с = разумный разговорный дефолт (совпадает с кнопкой сброса).
     public double SilenceSeconds { get; set; } = 1.8;
-    // Порог речи. 0.001 — по замерам владельца на реальном железе: шум обычного микрофона
-    // не дотягивает и до 0.001 (хлопки/щелчки — 0.000), а тихая речь ~0.009 ловится уверенно.
-    public double RmsThreshold { get; set; } = 0.001;
+    // Порог речи. Дефолт 0.004 (требование владельца): выше шумового пола обычного
+    // микрофона (хлопки/щелчки ~0.000-0.001 не дают ложных срабатываний из коробки),
+    // при этом нормальная/тихая речь ~0.009+ ловится уверенно.
+    public double RmsThreshold { get; set; } = 0.004;
     // Авто-калибровка порога распознавания под реальный уровень звука (шумовой пол × запас).
     // ВКЛ по умолчанию — работает и с тихим (видео/loopback), и с громким звуком без ручной настройки.
     // ВЫКЛ → используется фиксированный RmsThreshold (ползунок в настройках).
-    // Дефолт ВЫКЛ (решение владельца по живым замерам): на обычных микрофонах шумовой пол
-    // практически нулевой, ручной порог 0.001 ловит и тихую речь, и тихое видео — без сюрпризов
-    // авто-адаптации. Авто — опция для реально шумного окружения.
+    // Дефолт ВЫКЛ (решение владельца по живым замерам): ручной порог 0.004 стоит выше
+    // шумового пола обычного микрофона и ловит речь без сюрпризов авто-адаптации.
+    // Авто — опция для реально шумного окружения.
     public bool AutoCalibrateThreshold { get; set; } = false;
     public int VadMode { get; set; } = 0;
     /// <summary>
@@ -203,6 +208,8 @@ public class UiConfig
     // Инженерный режим: показывает тонкие настройки на главном оверлее (слайдеры паузы/чанка,
     // пресеты скорости речи, эквалайзер). По умолчанию выключен — главный экран чистый.
     public bool EngineerMode { get; set; } = false;
+    // Скрыть иконку в трее: вернуть её хоткеем Hotkeys.ShowTrayIcon (по умолчанию Ctrl+Shift+T).
+    public bool HideTrayIcon { get; set; } = false;
     // Состояния кнопок нижней панели оверлея — переживают перезапуск (требование владельца:
     // выключил LLM/динамик перед встречей — после рестарта режим тот же, без сюрпризов).
     public bool AudioPaused { get; set; } = false;   // микрофон: пауза захвата аудио
@@ -217,9 +224,10 @@ public class KaraokeConfig
     public int WidthPct { get; set; } = 60;                    // 20-100, % ширины экрана (для Left/Right — ширина верт. полосы)
     public int HeightPct { get; set; } = 0;                    // 0 = авто (по шрифту/числу строк); 1-100 = % высоты рабочей области
     public double FontSize { get; set; } = 26;                 // 12-64
-    public string TextColor { get; set; } = "#FFFFFFFF";       // #AARRGGBB
+    public string TextColor { get; set; } = "#FFFFFFFF";       // #AARRGGBB; единый цвет строк при AgeColorFade=false (в фейде не участвует)
     public string AccentColor { get; set; } = "#FF4ADE80";     // маркер свежей строки
     public string FreshColor { get; set; } = "#FFFFE9A8";      // цвет самой свежей строки (age=0) при градиенте по возрасту
+    public string OldLinesColor { get; set; } = "#FFFFFFFF";   // цвет старших строк (age>=1) при градиенте по возрасту
     public string BackgroundColor { get; set; } = "#FF0A1622"; // фон полосы
     public double BackgroundOpacity { get; set; } = 0.78;      // 0-1 прозрачность фона полосы
     public bool ShowBackground { get; set; } = true;           // false = скрыть прямоугольник-фон, оставить только текст
@@ -235,7 +243,7 @@ public class KaraokeConfig
     public bool ShowQuestions { get; set; } = false;           // реплики собеседника [Динамик]
     public bool ShowUserLines { get; set; } = false;           // реплики юзера [Микрофон]
     public bool DimByAge { get; set; } = true;                 // гасить старые строки по возрасту
-    public bool AgeColorFade { get; set; } = true;             // градиент цвета по возрасту: золото (FreshColor) → TextColor → серый
+    public bool AgeColorFade { get; set; } = true;             // градиент цвета по возрасту: золото (FreshColor) на свежей строке → OldLinesColor на старших
     public bool ShowMarker { get; set; } = true;               // акцентный маркер у свежей строки
     public bool HiddenFromCapture { get; set; } = true;        // true = видно только юзеру (WDA_EXCLUDEFROMCAPTURE), false = видно всем
     public bool ClickThrough { get; set; } = true;             // клики проходят сквозь
@@ -249,6 +257,8 @@ public class HotkeysConfig
     public string OpenSettings { get; set; } = "Ctrl+Shift+S";
     public string TogglePause { get; set; } = "Ctrl+Shift+P";
     public string ToggleKaraoke { get; set; } = "Ctrl+Shift+K";
+    // Возврат иконки трея, когда Ui.HideTrayIcon скрыл её из трея.
+    public string ShowTrayIcon { get; set; } = "Ctrl+Shift+T";
 }
 
 public class AdvancedConfig
@@ -261,6 +271,11 @@ public class AdvancedConfig
         "На любой вопрос давай прямой ответ на русском.";
     public int HistorySize { get; set; } = 15;
     public int MaxResponseTokens { get; set; } = 180;
+    // Default=false (2.7.1): часть шлюзов в SSE-режиме игнорит max_tokens и не
+    // шлёт finish_reason у пустого ответа — латентность вырастает ×3. OpenAiClient
+    // сам отключает стрим на сессию при таком симптоме, но лучше не включать его
+    // по умолчанию. У юзеров со включённой настройкой в config.json всё остаётся.
+    public bool StreamLlmAnswers { get; set; } = false;
     public bool MergeMicLoopback { get; set; } = false;
     public string ExpandInstruction { get; set; } =
         "## РЕЖИМ РАСШИРЕНИЯ ОТВЕТА\n" +

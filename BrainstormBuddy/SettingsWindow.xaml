@@ -444,6 +444,19 @@
                             <Button x:Name="LlmProviderDeleteBtn" Grid.Column="3" Content="✕" Width="28" Height="28" Margin="4,0,0,0"
                                     Click="OnDeleteProvider" ToolTip="Удалить свой профиль" Visibility="Collapsed"/>
                         </Grid>
+                        <StackPanel x:Name="ReasoningEffortRow" Visibility="Collapsed" Margin="0,0,0,4">
+                            <TextBlock Text="Reasoning effort:" Style="{StaticResource Label}"/>
+                            <ComboBox x:Name="ReasoningEffortCombo" SelectedValuePath="Tag"
+                                      Width="170" HorizontalAlignment="Left"
+                                      SelectionChanged="OnReasoningEffortChanged"
+                                      ToolTip="Усилие рассуждения для reasoning-моделей; «не слать» — поле reasoning не отправляется вообще">
+                                <ComboBoxItem Content="(по профилю)" Tag="inherit"/>
+                                <ComboBoxItem Content="(не слать)" Tag=""/>
+                                <ComboBoxItem Content="low" Tag="low"/>
+                                <ComboBoxItem Content="medium" Tag="medium"/>
+                                <ComboBoxItem Content="high" Tag="high"/>
+                            </ComboBox>
+                        </StackPanel>
                         <TextBlock x:Name="LlmProviderPrivacyNote" TextWrapping="Wrap" FontSize="11"
                                    Foreground="{DynamicResource WarnBrush}" Margin="0,0,0,4" Visibility="Collapsed"/>
                         <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}" FontSize="11" Margin="0,0,0,10"
@@ -621,6 +634,9 @@
                     <StackPanel Grid.Row="2" Grid.ColumnSpan="3" Margin="0,12,0,0">
                         <CheckBox Content="Объединять [Динамик] и [Микрофон] в один запрос к LLM"
                                   IsChecked="{Binding MergeMicLoopback}" Margin="0,0,0,4"/>
+                        <CheckBox x:Name="StreamLlmCheck" Content="{DynamicResource L_StreamLlm}"
+                                  IsChecked="{Binding StreamLlmAnswersVm}" Margin="0,0,0,4"
+                                  ToolTip="{DynamicResource L_StreamLlmHint}"/>
                         <TextBlock Text="Размер истории чата (сообщений):" Style="{StaticResource Label}"/>
                         <Slider x:Name="HistorySizeSlider" Minimum="2" Maximum="20"
                                 Value="{Binding HistorySize, Mode=TwoWay}"
@@ -630,6 +646,12 @@
                             <Run Text="{Binding Value, ElementName=HistorySizeSlider, StringFormat=F0}" Foreground="{DynamicResource AccentBrush}"/>
                             <Run Text="(сообщения не удаляются — это лишь размер контекста для LLM; в протокол и экспорт идёт вся история)" Foreground="{DynamicResource TextMutedBrush}"/>
                         </TextBlock>
+                        <TextBlock Text="Макс. токенов ответа:" Style="{StaticResource Label}" Margin="0,8,0,0"/>
+                        <TextBox x:Name="MaxTokensBox" Width="90" HorizontalAlignment="Left"
+                                 ToolTip="При обрезке (finish_reason=length) увеличьте"
+                                 LostFocus="OnMaxTokensCommit" KeyDown="OnMaxTokensKeyDown"/>
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextMutedBrush}" Margin="0,4,0,0"
+                            Text="Лимит длины ответа. ~180 = короткая подсказка суфлёра. Reasoning-модели (deepseek-r*/v*, o*, qwq) сжигают токены на скрытые размышления — ставьте 600–1000, иначе возможны пустые ответы."/>
                     </StackPanel>
                 </Grid>
             </TabItem>
@@ -755,10 +777,10 @@
                         <CheckBox Content="Авто-калибровка порога (сама подстраивается под уровень звука)"
                                   IsChecked="{Binding AutoCalibrateThreshold, Mode=TwoWay}"
                                   Margin="0,4,0,2"
-                                  ToolTip="По умолчанию ВЫКЛ: ручной порог 0.001 ловит даже тихую речь, а шум обычного микрофона до него не дотягивает. Включай, если фон реально шумный (ложные срабатывания) — порог будет держаться чуть выше шума автоматически."/>
+                                  ToolTip="По умолчанию ВЫКЛ: ручной порог 0.004 стоит выше шумового пола обычного микрофона и ловит даже тихую речь. Включай, если фон реально шумный (ложные срабатывания) — порог будет держаться чуть выше шума автоматически."/>
 
                         <TextBlock Text="RMS-порог (чувствительность микрофона):" Style="{StaticResource Label}"
-                                   ToolTip="Звук тише порога считается тишиной. 0.001 — максимум чувствительности; если пошли ложные срабатывания от шума — поднимай порог или включи авто-калибровку."/>
+                                   ToolTip="Звук тише порога считается тишиной. По умолчанию 0.004 — выше шумового пола обычного микрофона; 0.001 — максимум чувствительности. Если пошли ложные срабатывания от шума — поднимай порог или включи авто-калибровку."/>
                         <Slider x:Name="RmsSlider" Minimum="0.001" Maximum="0.1"
                                 Value="{Binding RmsThreshold, Mode=TwoWay}"
                                 IsEnabled="{Binding ManualThreshold}"
@@ -1048,6 +1070,13 @@
                                    TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}"
                                    Margin="0,0,0,6"/>
 
+                        <CheckBox Content="{DynamicResource L_HideTrayIcon}"
+                                  IsChecked="{Binding HideTrayIcon}"
+                                  Margin="0,0,0,2"/>
+                        <TextBlock Text="{DynamicResource L_HideTrayIconHint}"
+                                   TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextFaintBrush}"
+                                   Margin="0,0,0,6"/>
+
                         <TextBlock Text="Размер шрифта в оверлее (pt):" Style="{StaticResource Label}"/>
                         <Slider x:Name="FontSizeSlider" Minimum="10" Maximum="22"
                                 Value="{Binding FontSize, Mode=TwoWay}"
@@ -1215,6 +1244,10 @@
                         <TextBox Text="{Binding KaraokeFreshColor, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"
                                  FontFamily="Cascadia Mono, Consolas"/>
 
+                        <TextBlock Text="{DynamicResource L_KaraokeOldColor}" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding KaraokeOldLinesColor, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"
+                                 FontFamily="Cascadia Mono, Consolas"/>
+
                         <TextBlock Text="Цвет фона полосы (#AARRGGBB):" Style="{StaticResource Label}"/>
                         <TextBox Text="{Binding KaraokeBackgroundColor, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"
                                  FontFamily="Cascadia Mono, Consolas"/>
@@ -1235,7 +1268,7 @@
                                   IsChecked="{Binding KaraokeDimByAge}"
                                   Margin="0,0,0,4"/>
 
-                        <CheckBox Content="Градиент цвета по возрасту (золото→серый)"
+                        <CheckBox Content="Градиент цвета по возрасту (золото → цвет старых строк)"
                                   IsChecked="{Binding KaraokeAgeColorFade}"
                                   Margin="0,0,0,4"/>
 
@@ -1289,6 +1322,9 @@
 
                         <TextBlock Text="Караоке-оверлей (вкл/выкл):" Style="{StaticResource Label}"/>
                         <TextBox Text="{Binding ToggleKaraokeHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+
+                        <TextBlock Text="{DynamicResource L_HK_ShowTray}" Style="{StaticResource Label}"/>
+                        <TextBox Text="{Binding ShowTrayIconHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
 
                         <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextDimBrush}" FontSize="11" Margin="0,8,0,0"
                                    Text="Поддерживаемые модификаторы: Ctrl, Shift, Alt, Win + клавиша A–Z, 0–9, F1–F12, Space, Tab, Esc."/>

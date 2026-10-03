@@ -1184,6 +1184,29 @@ public partial class OverlayWindow : Window
         });
     }
 
+    // Стриминг (SSE): перегрузка для контекстов, где QaPair недоступен — тот же таргет,
+    // что у MarkAnswered(string,…): текущий _sendingItem. В отличие от MarkAnswered,
+    // _sendingItem НЕ снимается — поток ещё идёт, финализирует его MarkAnswered/MarkFailed.
+    public void AppendAnswerDelta(string delta)
+    {
+        var item = _sendingItem;
+        if (item == null) return;
+        AppendAnswerDelta(item, delta);
+    }
+
+    // Стриминг (SSE): дописывает дельту в ответ КОНКРЕТНОГО пузыря — без пересоздания
+    // (INPC на QaPair.Answer). BeginInvoke: дельты идут часто с фонового потока,
+    // блокировать SSE-ридер синхронным Invoke незачем. Автоскролл — как у Add*Item.
+    public void AppendAnswerDelta(QaPair pair, string delta)
+    {
+        if (pair == null || string.IsNullOrEmpty(delta)) return;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            pair.AppendAnswerDelta(delta);
+            if (_autoScroll) HistoryScroll.ScrollToEnd();
+        }));
+    }
+
     public void MarkFailed(string error, DateTime llmReceivedAt, double llmLatencyMs)
     {
         var item = _sendingItem;
@@ -1427,6 +1450,7 @@ public class QaPair : INotifyPropertyChanged
     private string _expandedAnswer = string.Empty;
     private QaStatus _status = QaStatus.Pending;
     private bool _isFocused;
+    private bool _answerStreaming;
 
     // === Тайминги (локальное время юзера, DateTime.Now) ===
     public DateTime? ChunkReadyAt { get; set; }    // когда VAD выдал чанк
@@ -1446,11 +1470,28 @@ public class QaPair : INotifyPropertyChanged
         get => _answer;
         set
         {
+            _answerStreaming = false;
             _answer = value == null ? string.Empty
                 : System.Text.RegularExpressions.Regex.Replace(value.Replace("\r\n", "\n"), "\n{2,}", "\n").Trim();
             OnPropertyChanged();
             OnPropertyChanged(nameof(AnswerSectionVisibility));
         }
+    }
+
+    // Стриминг (SSE): дельта дописывается в _answer БЕЗ нормализации сеттера —
+    // иначе Trim/схлопывание \n\n на каждом тике съедало бы пробелы и переносы
+    // на границах дельт. Финальную нормализацию делает MarkAnswered (Answer=...).
+    // Первая дельта заменяет плейсхолдер «ожидание» (статус ещё Sending).
+    public void AppendAnswerDelta(string delta)
+    {
+        if (string.IsNullOrEmpty(delta)) return;
+        if (_answerStreaming || _status != QaStatus.Sending)
+            _answer += delta;
+        else
+            _answer = delta;
+        _answerStreaming = true;
+        OnPropertyChanged(nameof(Answer));
+        OnPropertyChanged(nameof(AnswerSectionVisibility));
     }
     public QaStatus Status
     {

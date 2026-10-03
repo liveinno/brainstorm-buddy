@@ -20,6 +20,8 @@
     <sys:String x:Key="L_SecretHint">Send secret message to LLM…</sys:String>
     <sys:String x:Key="L_WaitingLlm">(waiting for LLM response…)</sys:String>
     <sys:String x:Key="L_AgentsSilent">(agents stayed silent)</sys:String>
+    <sys:String x:Key="L_ModelSilent">(model stayed silent)</sys:String>
+    <sys:String x:Key="L_ModelNoAnswer">model did not answer</sys:String>
     <sys:String x:Key="L_MicNoted">🎧 your line — added to context</sys:String>
 
     <!-- Overlay: tooltips -->
@@ -89,6 +91,9 @@
     <sys:String x:Key="L_Language">Язык интерфейса / Language:</sys:String>
     <sys:String x:Key="L_Theme">Theme:</sys:String>
 
+    <sys:String x:Key="L_StreamLlm">Stream answer (letters appear as generated)</sys:String>
+    <sys:String x:Key="L_StreamLlmHint">Show the LLM answer as it is generated; off — whole block at once</sys:String>
+
     <sys:String x:Key="L_About_Site">Program website:</sys:String>
 
     <sys:String x:Key="L_SendBtn">Send</sys:String>
@@ -96,5 +101,13 @@
 
     <sys:String x:Key="L_TT_Minimize">Minimize</sys:String>
     <sys:String x:Key="L_TT_Maximize">Maximize / restore</sys:String>
+
+    <!-- Settings: karaoke -->
+    <sys:String x:Key="L_KaraokeOldColor">Old lines color (hex)</sys:String>
+
+    <!-- Settings: tray icon -->
+    <sys:String x:Key="L_HideTrayIcon">Hide tray icon</sys:String>
+    <sys:String x:Key="L_HideTrayIconHint">The icon will disappear from the notification area. Bring it back with Ctrl+Shift+T (configurable on the Hotkeys tab).</sys:String>
+    <sys:String x:Key="L_HK_ShowTray">Show tray icon:</sys:String>
 
 </ResourceDictionary>

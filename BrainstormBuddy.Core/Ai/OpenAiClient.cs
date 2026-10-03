@@ -2,6 +2,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BrainstormBuddy.Config;
@@ -19,6 +20,11 @@ public class OpenAiClient : IApiClient
     // (например x-opencode-session у OpenCode Go): генерится один раз и кешируется.
     private readonly string _sessionId = Guid.NewGuid().ToString("N");
     private DateTime _lastAskUtc = DateTime.MinValue;
+    // Фолбэк со стрима на буферный ответ до конца сессии: поднимается, когда SSE-
+    // ответ показал, что шлюз игнорит max_tokens (completion заметно больше капа)
+    // или теряет finish_reason у пустого ответа (2.7.1: латентность ×3 на таких
+    // шлюзах). После установки stream:true в запрос не добавляется вообще.
+    private volatile bool _streamDisabled;
 
     // Последнее сообщённое состояние здоровья (null = ещё не знаем).
     // Событие шлём только при переходе, чтобы не спамить UI на каждый чанк.
@@ -248,7 +254,7 @@ public class OpenAiClient : IApiClient
         return null;
     }
 
-    public async Task<AskResult> AskAsync(string userText, string systemPrompt, int maxTokens, List<ChatMessage> history, CancellationToken ct = default)
+    public async Task<AskResult> AskAsync(string userText, string systemPrompt, int maxTokens, List<ChatMessage> history, CancellationToken ct = default, Action<string>? onDelta = null)
     {
         if (string.IsNullOrWhiteSpace(userText)) return AskResult.Empty;
         ApplyHeaders();
@@ -307,21 +313,56 @@ public class OpenAiClient : IApiClient
                     { "temperature", temperature },
                     { "max_tokens", maxTokens }
                 };
-                // Effort из профиля провайдера (пусто = поле reasoning не шлём вообще).
-                if (isReasoning && !string.IsNullOrEmpty(Profile.ReasoningEffort))
+                // Effort: глобальный override (Api.ReasoningEffortOverride) приоритетнее
+                // профиля провайдера; итог пуст — поле reasoning не шлём вообще.
+                var reasoningEffort = _config.ReasoningEffortOverride ?? Profile.ReasoningEffort;
+                if (isReasoning && !string.IsNullOrEmpty(reasoningEffort))
                 {
-                    req["reasoning"] = new { effort = Profile.ReasoningEffort };
+                    req["reasoning"] = new { effort = reasoningEffort };
+                }
+
+                // Стриминг — безопасный upgrade: только когда вызывающий дал onDelta
+                // и протокол openai-chat. Прокси, проигнорировавший stream:true и
+                // вернувший обычный JSON, уходит в буферный парсинг ниже без ошибки.
+                // _streamDisabled: шлюз уже доказал, что портит SSE — дальше только буфер.
+                var streaming = onDelta != null && Profile.Protocol == "openai-chat" && !_streamDisabled;
+                if (streaming)
+                {
+                    req["stream"] = true;
+                    req["stream_options"] = new { include_usage = true };
                 }
 
                 var sw = Stopwatch.StartNew();
-                using var response = await _http.PostAsJsonAsync(url, req, _jsonOpts, ct);
-                var body = await response.Content.ReadAsStringAsync(ct);
-                sw.Stop();
+                HttpResponseMessage response;
+                string? body = null;
+                var isSse = false;
+                if (streaming)
+                {
+                    using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+                    {
+                        Content = new StringContent(JsonSerializer.Serialize(req, _jsonOpts), Encoding.UTF8, "application/json")
+                    };
+                    response = await _http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct);
+                    var ctHeader = response.Content.Headers.ContentType?.MediaType;
+                    if (response.IsSuccessStatusCode &&
+                        ctHeader != null && ctHeader.StartsWith("text/event-stream", StringComparison.OrdinalIgnoreCase))
+                        isSse = true;
+                    else
+                        body = await response.Content.ReadAsStringAsync(ct);
+                }
+                else
+                {
+                    response = await _http.PostAsJsonAsync(url, req, _jsonOpts, ct);
+                    body = await response.Content.ReadAsStringAsync(ct);
+                }
+                using (response)
+                {
+                if (!isSse) sw.Stop();
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.Warn($"Ask ← {(int)response.StatusCode} {response.StatusCode} in {sw.ElapsedMilliseconds}ms: {Truncate(body, 300)}", "Ai");
-                    var apiErr = ShortApiError(response.StatusCode, body);
+                    _logger.Warn($"Ask ← {(int)response.StatusCode} {response.StatusCode} in {sw.ElapsedMilliseconds}ms: {Truncate(body ?? "", 300)}", "Ai");
+                    var apiErr = ShortApiError(response.StatusCode, body ?? "");
                     if (response.StatusCode == HttpStatusCode.Unauthorized)
                     {
                         _logger.Error("Auth error: invalid API key (401)", null, "Ai");
@@ -332,7 +373,7 @@ public class OpenAiClient : IApiClient
                     if ((int)response.StatusCode == 402 && maxTokens > 50)
                     {
                         _logger.Warn($"Payment required (402): reducing max_tokens from {maxTokens} to 50 and retrying", "Ai");
-                        return await AskAsync(userText, systemPrompt, 50, history, ct);
+                        return await AskAsync(userText, systemPrompt, 50, history, ct, onDelta);
                     }
                     if ((int)response.StatusCode == 402 && maxTokens <= 50)
                     {
@@ -343,11 +384,11 @@ public class OpenAiClient : IApiClient
                         RaiseExchange(isRequest: false, apiErr, isError: true);
                         return AskResult.Failed(friendly402);
                     }
-                    if (body.Contains("context_length_exceeded") && history.Count > 2)
+                    if (body != null && body.Contains("context_length_exceeded") && history.Count > 2)
                     {
                         _logger.Warn($"Context length exceeded (history={history.Count}), trimming to 2", "Ai");
                         history.RemoveRange(0, history.Count - 2);
-                        return await AskAsync(userText, systemPrompt, maxTokens, history, ct);
+                        return await AskAsync(userText, systemPrompt, maxTokens, history, ct, onDelta);
                     }
                     if (IsRetryable(response.StatusCode) && attempt < _config.MaxRetries)
                     {
@@ -364,24 +405,85 @@ public class OpenAiClient : IApiClient
 
                 // Дошёл ответ 200 — LLM-сервер жив.
                 ReportHealth(ApiComponent.Llm, true, "LLM-сервер отвечает");
-                _logger.Debug($"Ask ← 200 in {sw.ElapsedMilliseconds}ms, body={Truncate(body, 300)}", "Ai");
+
+                string? content_str = null;
+                int promptTokens = 0, completionTokens = 0, totalTokens = 0;
+                string? finishReason = null;
+                var sawReasoningOnly = false;
+                string? reasoningText = null;
+
+                if (isSse)
+                {
+                    // SSE-стрим: читаем дельты построчно, onDelta — на потоке
+                    // вызывающего. Финальный content = склейка дельт → дальше те же
+                    // ветки (пустой/stop=молчание/length), что у буферного ответа.
+                    SseResult sse;
+                    try
+                    {
+                        sse = await ReadSseStreamAsync(response, onDelta!, ct);
+                    }
+                    // Обрыв живого потока (таймаут/разрыв посреди ответа) — это НЕ
+                    // «нет соединения»: connectivity-ветка ниже дала бы юзеру ложный
+                    // диагноз и ReportHealth(Llm,false). Возвращаем обрыв как есть.
+                    catch (Exception ex) when ((ex is TaskCanceledException or HttpRequestException) && !ct.IsCancellationRequested)
+                    {
+                        sw.Stop();
+                        _logger.Warn($"Ask: SSE-поток оборвался ({ex.GetType().Name}: {ex.Message})", "Ai");
+                        RaiseExchange(isRequest: false, "Ответ LLM оборвался (поток прерван)", sw.Elapsed.TotalSeconds, 0, isError: true);
+                        return AskResult.Failed("Ответ LLM оборвался (поток прерван)");
+                    }
+                    sw.Stop();
+                    if (sse.Aborted)
+                    {
+                        _logger.Warn("Ask: SSE-поток оборвался без data: [DONE]", "Ai");
+                        ReportHealth(ApiComponent.Llm, false, "Ответ LLM оборвался");
+                        RaiseExchange(isRequest: false, "Ответ LLM оборвался (поток прерван)", sw.Elapsed.TotalSeconds, sse.TotalTokens, isError: true);
+                        return AskResult.Failed("Ответ LLM оборвался (поток прерван)");
+                    }
+                    _logger.Debug($"Ask ← 200 SSE in {sw.ElapsedMilliseconds}ms, deltas={sse.DeltaCount}, len={sse.Content.Length}, finish={sse.FinishReason ?? "<null>"}, completion={sse.CompletionTokens}/{maxTokens}", "Ai");
+                    content_str = sse.Content;
+                    promptTokens = sse.PromptTokens;
+                    completionTokens = sse.CompletionTokens;
+                    totalTokens = sse.TotalTokens;
+                    finishReason = sse.FinishReason;
+
+                    // Авто-фолбэк со стрима на буферный запрос (2.7.1). Два симптома
+                    // глючного шлюза: completion > maxTokens*1.25 — кап проигнорирован
+                    // (в SSE opencode.ai/zen жгло 820-883 токена при лимите 180,
+                    // латентность ×3); пустой content без finish_reason — молчание не
+                    // распознаётся и уходит в авто-ретрай с max_tokens=1024. Стрим
+                    // выключаем до конца сессии и переиздаём тот же запрос буфером —
+                    // один раз: рекурсивный вызов уже идёт без stream:true (флаг
+                    // поднят), на стрим-путь не вернётся.
+                    var capIgnored = sse.CompletionTokens > maxTokens * 1.25;
+                    var finishLost = string.IsNullOrWhiteSpace(sse.Content) && sse.FinishReason == null;
+                    if (capIgnored || finishLost)
+                    {
+                        var why = capIgnored
+                            ? $"provider ignored max_tokens in SSE (completion={sse.CompletionTokens}/{maxTokens})"
+                            : "SSE ответ без finish_reason при пустом content";
+                        _logger.Warn($"Ask: {why} — reissue без стрима", "Ai");
+                        _streamDisabled = true;
+                        _logger.Info($"stream disabled for session ({why})", "Ai");
+                        return await AskAsync(userText, systemPrompt, maxTokens, history, ct, onDelta);
+                    }
+                }
+                else
+                {
+                _logger.Debug($"Ask ← 200 in {sw.ElapsedMilliseconds}ms, body={Truncate(body ?? "", 300)}", "Ai");
 
                 // Защищённый парсинг (A6): кривое 200-тело провайдера (не JSON, без choices)
                 // не должно улетать JsonException'ом наружу — считаем пустым ответом и
                 // уходим в авто-ретрай с большим лимитом по общей ветке ниже.
-                string? content_str = null;
-                int promptTokens = 0, completionTokens = 0, totalTokens = 0;
-                string? finishReason = null;
                 // Модель прислала ТОЛЬКО рассуждения (CoT) без ответа. Текст сохраняем,
                 // но НЕ показываем юзеру сразу (раньше сюда проваливался CoT
                 // deepseek-v4.1-flash и шёл на экран как «ответ»). Фолбэк на него —
                 // только после ретрая и только для reasoning-моделей (A6:
                 // space-bunny-free держит ответ в reasoning_content by design).
-                var sawReasoningOnly = false;
-                string? reasoningText = null;
+
                 try
                 {
-                    using var doc = JsonDocument.Parse(body);
+                    using var doc = JsonDocument.Parse(body!);
                     var root = UnwrapDataEnvelope(doc.RootElement);
                     var msg = TryGetByPath(root, "choices[0].message");
                     content_str = TryGetByPath(root, Profile.ContentPath)?.GetString();
@@ -409,52 +511,65 @@ public class OpenAiClient : IApiClient
                 {
                     _logger.Warn($"Ask: 200, но тело не распарсилось: {ex.Message}", "Ai");
                 }
-                // Срезаем протечку DSML-разметки функ-вызовов ДО проверки пустоты —
-                // ответ из одних маркеров уходит в ветку «модель вернула пустой ответ».
-                content_str = LlmAnswerSanitizer.Sanitize(content_str);
-                if (string.IsNullOrWhiteSpace(content_str))
-                {
-                    var cot = sawReasoningOnly ? ", в ответе только рассуждения" : "";
-                    // A6: space-bunny-free кладёт ОТВЕТ в reasoning_content при пустом
-                    // content по дизайну — берём его сразу (ретрай для неё бесполезен:
-                    // content останется пустым). Маркер фолбэка — только в лог, в текст
-                    // ответа не добавляем (он виден в оверлее).
-                    // Для прочих reasoning-моделей (deepseek-v* и др.) reasoning ≠ ответ —
-                    // иначе CoT deepseek-v4.1-flash опять протечёт на экран.
-                    if (AnswersInReasoningContent(modelLower) && !string.IsNullOrWhiteSpace(reasoningText))
-                    {
-                        var fb = reasoningText.Trim();
-                        _logger.Warn($"Ask: content пуст, fallback на reasoning_content (модель отвечает в reasoning, len={fb.Length})", "Ai");
-                        RaiseExchange(isRequest: false, fb, sw.Elapsed.TotalSeconds, totalTokens);
-                        return new AskResult(fb, promptTokens, completionTokens, totalTokens);
-                    }
-                    // Reasoning-модель сожгла весь лимит на размышления (200, usage есть,
-                    // content пуст — живой тест: tencent/hy3 при лимите 180). Один
-                    // авто-ретрай с большим лимитом вместо «пустого ответа».
-                    if (maxTokens < 1024)
-                    {
-                        var boosted = Math.Max(1024, maxTokens * 4);
-                        _logger.Warn($"Ask: 200, но content пуст (completion={completionTokens}/{maxTokens}{cot}) — авто-ретрай с max_tokens={boosted}", "Ai");
-                        return await AskAsync(userText, systemPrompt, boosted, history, ct);
-                    }
-                    var emptyMsg = sawReasoningOnly
-                        ? $"пустой ответ (200: модель прислала только рассуждения, completion={completionTokens}/{maxTokens})"
-                        : $"пустой ответ (200, completion={completionTokens}/{maxTokens} — reasoning-модель съела лимит)";
-                    RaiseExchange(isRequest: false, emptyMsg, sw.Elapsed.TotalSeconds, totalTokens, isError: true);
-                    return new AskResult(null, promptTokens, completionTokens, totalTokens);
-                }
-                var result = content_str.Trim();
-
-                if (finishReason == "length")
-                {
-                    result = result.TrimEnd('.', ' ', ',', ';') + "…";
-                    _logger.Warn($"Answer was truncated by max_tokens (used {completionTokens}/{maxTokens}), appended '…'", "Ai");
                 }
 
-                _logger.Info($"Ask tokens: prompt={promptTokens}, completion={completionTokens}, total={totalTokens}", "Ai");
-                _lastAskUtc = DateTime.UtcNow;
-                RaiseExchange(isRequest: false, result, sw.Elapsed.TotalSeconds, totalTokens);
-                return new AskResult(result, promptTokens, completionTokens, totalTokens);
+            // Срезаем протечку DSML-разметки функ-вызовов ДО проверки пустоты —
+            // ответ из одних маркеров уходит в ветку «модель вернула пустой ответ».
+            content_str = LlmAnswerSanitizer.Sanitize(content_str);
+            if (string.IsNullOrWhiteSpace(content_str))
+            {
+                var cot = sawReasoningOnly ? ", в ответе только рассуждения" : "";
+                // A6: space-bunny-free кладёт ОТВЕТ в reasoning_content при пустом
+                // content по дизайну — берём его сразу (ретрай для неё бесполезен:
+                // content останется пустым). Маркер фолбэка — только в лог, в текст
+                // ответа не добавляем (он виден в оверлее).
+                // Для прочих reasoning-моделей (deepseek-v* и др.) reasoning ≠ ответ —
+                // иначе CoT deepseek-v4.1-flash опять протечёт на экран.
+                if (AnswersInReasoningContent(modelLower) && !string.IsNullOrWhiteSpace(reasoningText))
+                {
+                    var fb = reasoningText.Trim();
+                    _logger.Warn($"Ask: content пуст, fallback на reasoning_content (модель отвечает в reasoning, len={fb.Length})", "Ai");
+                    RaiseExchange(isRequest: false, fb, sw.Elapsed.TotalSeconds, totalTokens);
+                    return new AskResult(fb, promptTokens, completionTokens, totalTokens);
+                }
+                // finish_reason="stop" при пустом content = осознанное молчание
+                // (промпт суфлёра сам требует тишины на small talk/шуме). Не
+                // ретраим — третий запрос бесполезен и добавляет латентность.
+                // Отличается от finish_reason="length", где лимит съеден.
+                if (finishReason == "stop")
+                {
+                    _logger.Info($"Ask: 200, пустой content при finish_reason=stop — модель промолчала (completion={completionTokens}/{maxTokens})", "Ai");
+                    RaiseExchange(isRequest: false, "(молчание)", sw.Elapsed.TotalSeconds, totalTokens);
+                    return new AskResult(null, promptTokens, completionTokens, totalTokens) { IsSilent = true };
+                }
+                // Reasoning-модель сожгла весь лимит на размышления (200, usage есть,
+                // content пуст — живой тест: tencent/hy3 при лимите 180). Один
+                // авто-ретрай с большим лимитом вместо «пустого ответа».
+                if (maxTokens < 1024)
+                {
+                    var boosted = Math.Max(1024, maxTokens * 4);
+                    _logger.Warn($"Ask: 200, но content пуст (completion={completionTokens}/{maxTokens}{cot}) — авто-ретрай с max_tokens={boosted}", "Ai");
+                    return await AskAsync(userText, systemPrompt, boosted, history, ct, onDelta);
+                }
+                var emptyMsg = sawReasoningOnly
+                    ? $"пустой ответ (200: модель прислала только рассуждения, completion={completionTokens}/{maxTokens})"
+                    : $"пустой ответ (200, completion={completionTokens}/{maxTokens} — reasoning-модель съела лимит)";
+                RaiseExchange(isRequest: false, emptyMsg, sw.Elapsed.TotalSeconds, totalTokens, isError: true);
+                return new AskResult(null, promptTokens, completionTokens, totalTokens);
+            }
+            var result = content_str.Trim();
+
+            if (finishReason == "length")
+            {
+                result = result.TrimEnd('.', ' ', ',', ';') + "…";
+                _logger.Warn($"Answer was truncated by max_tokens (used {completionTokens}/{maxTokens}), appended '…'", "Ai");
+            }
+
+            _logger.Info($"Ask tokens: prompt={promptTokens}, completion={completionTokens}, total={totalTokens}", "Ai");
+            _lastAskUtc = DateTime.UtcNow;
+            RaiseExchange(isRequest: false, result, sw.Elapsed.TotalSeconds, totalTokens);
+            return new AskResult(result, promptTokens, completionTokens, totalTokens);
+            }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -639,8 +754,9 @@ public class OpenAiClient : IApiClient
                     { "messages", messages },
                     { "max_tokens", maxTokens }
                 };
-                if (IsReasoningModel(chatModel.ToLowerInvariant()) && !string.IsNullOrEmpty(profile.ReasoningEffort))
-                    req["reasoning"] = new { effort = profile.ReasoningEffort };
+                var checkEffort = _config.ReasoningEffortOverride ?? profile.ReasoningEffort;
+                if (IsReasoningModel(chatModel.ToLowerInvariant()) && !string.IsNullOrEmpty(checkEffort))
+                    req["reasoning"] = new { effort = checkEffort };
 
                 using var r2 = await _http.PostAsJsonAsync(chatUrl, req, _jsonOpts, ct);
                 var b2 = await r2.Content.ReadAsStringAsync(ct);
@@ -807,6 +923,77 @@ public class OpenAiClient : IApiClient
            root.TryGetProperty("data", out var d) && d.ValueKind == JsonValueKind.Object &&
            !root.TryGetProperty("choices", out _) && d.TryGetProperty("choices", out _)
             ? d : root;
+
+    // Результат чтения SSE-стрима: склеенный контент, usage из финального чанка,
+    // finish_reason последнего choice-чанка. Aborted — поток кончился без [DONE].
+    private sealed record SseResult(string Content, string? FinishReason,
+        int PromptTokens, int CompletionTokens, int TotalTokens, int DeltaCount, bool Aborted);
+
+    // Читает text/event-stream построчно: data: {json}-чанки → дельты по
+    // Profile.DeltaPath → onDelta (на потоке вызывающего), data: [DONE] — конец.
+    // Битый JSON-чанк пропускаем (warn), reasoning_content в дельтах игнорируем —
+    // на экран идёт только content. Исключение из onDelta гасим: баг в UI-колбэке
+    // не должен убивать стрим.
+    private async Task<SseResult> ReadSseStreamAsync(HttpResponseMessage response, Action<string> onDelta, CancellationToken ct)
+    {
+        var sb = new StringBuilder();
+        string? finishReason = null;
+        int promptTokens = 0, completionTokens = 0, totalTokens = 0, deltaCount = 0;
+        var done = false;
+        var deltaPath = string.IsNullOrEmpty(Profile.DeltaPath) ? "choices[0].delta.content" : Profile.DeltaPath;
+        var onDeltaThrew = false;
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (await reader.ReadLineAsync(ct) is { } line)
+        {
+            if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
+            var data = line[5..].Trim();
+            if (data == "[DONE]") { done = true; break; }
+            if (data.Length == 0) continue;
+            JsonElement chunkRoot;
+            try
+            {
+                using var doc = JsonDocument.Parse(data);
+                chunkRoot = UnwrapDataEnvelope(doc.RootElement).Clone();
+            }
+            catch (JsonException)
+            {
+                _logger.Warn($"Ask SSE: нераспарсенный чанк ({Truncate(data, 120)})", "Ai");
+                continue;
+            }
+            if (TryGetByPath(chunkRoot, deltaPath) is JsonElement delta && delta.ValueKind == JsonValueKind.String)
+            {
+                var d = delta.GetString();
+                if (!string.IsNullOrEmpty(d))
+                {
+                    sb.Append(d);
+                    deltaCount++;
+                    if (!onDeltaThrew)
+                    {
+                        try { onDelta(d); }
+                        catch (Exception cbEx)
+                        {
+                            onDeltaThrew = true;
+                            _logger.Warn($"Ask SSE: onDelta бросил исключение ({cbEx.Message}) — дальше без колбэка", "Ai");
+                        }
+                    }
+                }
+            }
+            if (TryGetByPath(chunkRoot, "choices[0].finish_reason") is JsonElement fr &&
+                fr.ValueKind == JsonValueKind.String)
+                finishReason = fr.GetString();
+            if (TryGetByPath(chunkRoot, Profile.UsagePath) is JsonElement u && u.ValueKind == JsonValueKind.Object)
+            {
+                if (u.TryGetProperty("prompt_tokens", out var pt)) promptTokens = pt.GetInt32();
+                else if (u.TryGetProperty("input_tokens", out var it)) promptTokens = it.GetInt32();
+                if (u.TryGetProperty("completion_tokens", out var ct2)) completionTokens = ct2.GetInt32();
+                else if (u.TryGetProperty("output_tokens", out var ot)) completionTokens = ot.GetInt32();
+                if (u.TryGetProperty("total_tokens", out var tt)) totalTokens = tt.GetInt32();
+            }
+        }
+        return new SseResult(sb.ToString(), finishReason, promptTokens, completionTokens, totalTokens, deltaCount, Aborted: !done);
+    }
 
     private static bool IsRetryable(HttpStatusCode code)
     {

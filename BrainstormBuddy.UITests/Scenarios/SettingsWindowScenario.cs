@@ -51,28 +51,35 @@ public class SettingsWindowScenario
         var sidebarItems = settingsWindow.FindAllDescendants(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.TabItem));
         if (sidebarItems.Length < 7) { report.AddFailure("Sidebar", $"Expected >=7 tabs, found {sidebarItems.Length}"); return; }
 
-        void SelectTab(int idx)
+        // Выбор вкладки по ИМЕНИ, не по индексу: порядок TabItem в XAML менялся
+        // («Транскрибация файла», «Караоке» вставлялись в середину) и индексы тихо съезжали.
+        FlaUI.Core.AutomationElements.AutomationElement? FindTab(string name) =>
+            sidebarItems.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase))
+            ?? sidebarItems.FirstOrDefault(t => (t.Name ?? "").Contains(name, StringComparison.OrdinalIgnoreCase));
+        bool SelectTab(string name)
         {
-            try { sidebarItems[idx].AsTabItem().Select(); } catch { sidebarItems[idx].Click(); }
+            var tab = FindTab(name);
+            if (tab == null) { Console.WriteLine($"  Tab '{name}' not found"); return false; }
+            try { tab.AsTabItem().Select(); } catch { tab.Click(); }
+            return true;
         }
 
-        // Switch to HackerTheme first for dark theme testing (Оверлей = idx 4)
+        // Switch to HackerTheme first for dark theme testing
         Console.WriteLine("Step 0: Switch to HackerTheme");
-        SelectTab(4); Thread.Sleep(500);
+        SelectTab("Оверлей"); Thread.Sleep(500);
         var themeCombo = settingsWindow.FindFirstDescendant(cf => cf.ByAutomationId("ThemeCombo"))?.AsComboBox();
         if (themeCombo != null) { themeCombo.Select("HackerTheme"); Thread.Sleep(800); }
 
-        // Test all sidebar tabs
-        var navMap = new (int idx, string name)[] {
-            (0, "API"), (1, "LLM"), (2, "Аудио"), (3, "Локальный STT"), (4, "Оверлей"),
-            (5, "Горячие клавиши"), (6, "О приложении"), (7, "Профиль"), (8, "Агенты"), (9, "LLM Логи")
+        // Test all sidebar tabs — по именам, индексы больше не нужны.
+        var navNames = new[] {
+            "API", "LLM", "Аудио", "Транскрибация файла", "Распознавание речи", "Оверлей",
+            "Караоке", "Горячие клавиши", "О приложении", "Резюме", "Агенты", "Диагностика"
         };
 
-        foreach (var (idx, name) in navMap) {
+        foreach (var name in navNames) {
             if (!ShouldProcessTab(name, effectiveTarget)) continue;
-            if (idx >= sidebarItems.Length) continue;
-            Console.WriteLine($"Switching to: {name} (idx {idx})");
-            SelectTab(idx);
+            Console.WriteLine($"Switching to: {name}");
+            if (!SelectTab(name)) { report.AddStep($"Dark: {name}", null, "WARN: вкладка не найдена в сайдбаре"); continue; }
             Thread.Sleep(800);
             var b64 = CaptureBase64(settingsWindow);
             var fb = await vision.AskAboutImageAsync(b64, UI_CHECK_PROMPT + $"Тёмная тема, вкладка настроек '{name}'.");
@@ -82,7 +89,7 @@ public class SettingsWindowScenario
         // === INTERACTIVE TESTS ===
         // 1. Test ComboBox dropdowns actually open
         Console.WriteLine("=== INTERACTIVE: Testing ComboBox dropdowns ===");
-        SelectTab(0); Thread.Sleep(500); // API tab
+        SelectTab("API"); Thread.Sleep(500); // API tab
         var combos = settingsWindow.FindAllDescendants(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.ComboBox));
         Console.WriteLine($"Found {combos.Length} combos on API tab");
         foreach (var c in combos) {
@@ -100,7 +107,7 @@ public class SettingsWindowScenario
 
         // 2. Test theme switching (HackerTheme vs LightTheme)
         Console.WriteLine("=== INTERACTIVE: Theme switching ===");
-        SelectTab(4); Thread.Sleep(500); // Overlay
+        SelectTab("Оверлей"); Thread.Sleep(500); // Overlay
         var themeCb = settingsWindow.FindFirstDescendant(cf => cf.ByAutomationId("ThemeCombo"))?.AsComboBox();
         if (themeCb != null) {
             themeCb.Select("HackerTheme"); Thread.Sleep(800);
@@ -114,10 +121,9 @@ public class SettingsWindowScenario
             report.AddStep("L: Оверлей", bLight, fLight);
 
             // Now test ALL tabs in LightTheme
-            foreach (var (idx, name) in navMap) {
+            foreach (var name in navNames) {
                 if (!ShouldProcessTab(name, effectiveTarget)) continue;
-                if (idx >= sidebarItems.Length) continue;
-                SelectTab(idx);
+                if (!SelectTab(name)) continue;
                 Thread.Sleep(800);
                 var b64 = CaptureBase64(settingsWindow);
                 var fb = await vision.AskAboutImageAsync(b64, UI_CHECK_PROMPT + $"Светлая тема, вкладка настроек '{name}'.");

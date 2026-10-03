@@ -32,7 +32,9 @@ public partial class KaraokeWindow : Window
     // Затухание по возрасту (как в прототипе): age → opacity.
     private static readonly double[] AgeOpacity = { 1.0, 0.72, 0.48, 0.28, 0.14, 0.06 };
 
-    // Мягкое затухание верха полосы (аналог mask-image в прототипе).
+    // Мягкое затухание верха ленты (аналог mask-image в прототипе). Вешается на
+    // LinesPanel, а не на Strip: RelativeToBoundingBox берёт 24% от высоты ленты,
+    // а не всего окна — иначе на полноэкранной полосе верх затирался на сотни px.
     private static readonly LinearGradientBrush _topFadeMask = Freeze(
         new LinearGradientBrush(
             new GradientStopCollection
@@ -59,9 +61,11 @@ public partial class KaraokeWindow : Window
         RenderingBias = RenderingBias.Quality
     });
 
-    // Кисти строк: _textBrush — базовый TextColor; _ageBrushes[age] — цвет по возрасту
-    // (золото → TextColor → серый). Пересобираются в ApplyConfig — на push лишь выбор
-    // из кэша, без аллокаций. Все кисти заморожены.
+    // Кисти строк: _textBrush — единый цвет при AgeColorFade=false (TextColor);
+    // _ageBrushes[age] — цвет по возрасту при фейде (золото FreshColor на age0,
+    // старшие строки — OldLinesColor; TextColor в фейде не участвует).
+    // Пересобираются в ApplyConfig — на push лишь выбор из кэша, без аллокаций.
+    // Все кисти заморожены.
     private Brush _textBrush = FrozenBrush(null, Colors.White);
     private Brush[] _ageBrushes = Array.Empty<Brush>();
 
@@ -89,6 +93,12 @@ public partial class KaraokeWindow : Window
     private readonly DispatcherTimer _demoTimer;
     private int _demoIndex;
 
+    // Активная стрим-строка (SSE): создаётся BeginStreamLine, дописывается
+    // AppendToStreamLine, отпускается EndStreamLine. _streamSuppressed — Begin
+    // прошёл, но роль отфильтрована/полоса скрыта: дельты проглатываем, как PushLine.
+    private LineEntry? _streamEntry;
+    private bool _streamSuppressed;
+
     /// <summary>Строка ленты: VM (текст/роль/возраст) + созданный для неё UI.</summary>
     private sealed class LineEntry
     {
@@ -102,7 +112,7 @@ public partial class KaraokeWindow : Window
     public KaraokeWindow()
     {
         InitializeComponent();
-        Strip.OpacityMask = _topFadeMask;
+        LinesPanel.OpacityMask = _topFadeMask;
         BgLayer.BorderBrush = _borderBrush;
         // Демо-тик ~1.5с; без per-frame таймеров — все анимации на composition thread.
         _demoTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
@@ -213,22 +223,94 @@ public partial class KaraokeWindow : Window
         }
 
         if (string.IsNullOrWhiteSpace(text)) return;
+        if (!CanShowRole(role)) return;
 
-        // Скрытая полоса строк не копит: иначе при повторном показе (хоткей ИЛИ
-        // чекбокс в настройках) всплывёт залпом всё буферизованное. Демо/предпросмотр
-        // не задевает — StartDemo/PushLine там идут после Show().
-        if (!IsVisible) return;
+        AddLineCore(role, text);
+    }
 
-        bool show = role switch
+    // Фильтр строки по роли (Show*-флаги) + гейт на скрытую полосу: строк не копим,
+    // иначе при повторном показе (хоткей ИЛИ чекбокс в настройках) всплывёт залпом всё
+    // буферизованное. Демо/предпросмотр не задевает — StartDemo/PushLine идут после Show().
+    private bool CanShowRole(string role)
+    {
+        if (!IsVisible) return false;
+        return role switch
         {
             "answer" => _cfg.ShowAnswers,
             "question" => _cfg.ShowQuestions,
             "user" => _cfg.ShowUserLines,
             _ => true
         };
-        if (!show) return;
+    }
 
-        AddLineCore(role, text);
+    /// <summary>Стриминг (SSE): начать новую пустую строку ленты роли role
+    /// ("answer"|"user"). Потокобезопасно — маршаллится на UI-диспетчер, как PushLine.
+    /// Фильтрация Show*/видимость — как у PushLine: отфильтрованная роль глушит дельты.</summary>
+    public void BeginStreamLine(string role)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => BeginStreamLine(role)));
+            return;
+        }
+
+        _streamEntry = null;
+        if (!CanShowRole(role))
+        {
+            _streamSuppressed = true; // Begin был — Append не должен создавать "answer"
+            return;
+        }
+        _streamSuppressed = false;
+        _streamEntry = AddLineCore(role, "");
+    }
+
+    /// <summary>Стриминг (SSE): дописать дельту в последнюю стрим-строку (INPC на
+    /// KaraokeLineVm.Text — строка не пересоздаётся). Если Begin не вызывался —
+    /// создаёт строку роли "answer" (через CanShowRole — те же фильтры, что у PushLine).</summary>
+    public void AppendToStreamLine(string delta)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => AppendToStreamLine(delta)));
+            return;
+        }
+
+        if (string.IsNullOrEmpty(delta) || _streamSuppressed) return;
+
+        // Clear()/TrimExcess() могли выкинуть стрим-строку из ленты — не пишем в невидимое.
+        if (_streamEntry != null && (_streamEntry.Removing || !_lines.Contains(_streamEntry)))
+            _streamEntry = null;
+
+        if (_streamEntry == null)
+        {
+            if (!CanShowRole("answer")) return;
+            _streamEntry = AddLineCore("answer", "");
+        }
+
+        _streamEntry.Vm.Text += delta;
+    }
+
+    /// <summary>Стриминг (SSE): финализировать стрим-строку — остаётся обычной строкой
+    /// ленты. Пустая строка (дельт не было) убирается, как пустой PushLine.</summary>
+    public void EndStreamLine()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(EndStreamLine));
+            return;
+        }
+
+        var entry = _streamEntry;
+        _streamEntry = null;
+        _streamSuppressed = false;
+
+        if (entry != null && !entry.Removing
+            && string.IsNullOrWhiteSpace(entry.Vm.Text)
+            && _lines.Remove(entry))
+        {
+            LinesPanel.Children.Remove(entry.Root);
+            RefreshAges(); // маркер/возраст соседей пересчитываются под новый хвост
+        }
     }
 
     /// <summary>Полностью очистить ленту (строки + панель). Юзается при включении
@@ -242,6 +324,8 @@ public partial class KaraokeWindow : Window
         }
         _lines.Clear();
         LinesPanel.Children.Clear();
+        _streamEntry = null;
+        _streamSuppressed = false;
         LinesTransform.BeginAnimation(TranslateTransform.YProperty, null);
         LinesTransform.Y = 0;
     }
@@ -266,7 +350,7 @@ public partial class KaraokeWindow : Window
 
     // ─── Лента строк ──────────────────────────────────────────────────────
 
-    private void AddLineCore(string role, string text)
+    private LineEntry AddLineCore(string role, string text)
     {
         var entry = new LineEntry();
         entry.Vm.Text = text;
@@ -316,6 +400,7 @@ public partial class KaraokeWindow : Window
 
         RefreshAges();
         TrimExcess();
+        return entry;
     }
 
     /// <summary>Пересчёт возрастов: age = позиция от конца; маркер у свежей (age==0).</summary>
@@ -327,7 +412,7 @@ public partial class KaraokeWindow : Window
             var entry = _lines[k];
             int age = n - 1 - k;
             entry.Vm.Age = age;
-            entry.Tb.Foreground = BrushForAge(age); // цвет по возрасту: золото → TextColor → серый
+            entry.Tb.Foreground = BrushForAge(age); // цвет по возрасту: золото → OldLinesColor
 
             double target = _cfg.DimByAge ? AgeOpacity[Math.Min(age, AgeOpacity.Length - 1)] : 1.0;
             entry.Vm.Opacity = target;
@@ -389,17 +474,20 @@ public partial class KaraokeWindow : Window
         element.BeginAnimation(UIElement.OpacityProperty, anim);
     }
 
-    // Пересборка кистей строк: вызывается из ApplyConfig (зависит от TextColor/FreshColor),
-    // не на каждый push. При AgeColorFade=false в RefreshAges/StyleLine берётся _textBrush.
+    // Пересборка кистей строк: вызывается из ApplyConfig (зависит от
+    // TextColor/FreshColor/OldLinesColor), не на каждый push.
+    // При AgeColorFade=false в RefreshAges/StyleLine берётся _textBrush.
     private void RebuildAgeBrushes()
     {
         var text = ParseColor(_cfg.TextColor, Colors.White);
         _textBrush = Freeze(new SolidColorBrush(text));
 
         var fresh = ParseColor(_cfg.FreshColor, Color.FromArgb(0xFF, 0xFF, 0xE9, 0xA8));
+        // Битый/пустой hex → фолбэк на дефолт (золото/белый) через ParseColor.
+        var old = ParseColor(_cfg.OldLinesColor, Colors.White);
         var brushes = new Brush[AgeOpacity.Length];
         for (int age = 0; age < brushes.Length; age++)
-            brushes[age] = Freeze(new SolidColorBrush(AgeColor(age, text, fresh)));
+            brushes[age] = Freeze(new SolidColorBrush(AgeColor(age, fresh, old)));
         _ageBrushes = brushes;
     }
 
@@ -409,22 +497,12 @@ public partial class KaraokeWindow : Window
             ? _ageBrushes[Math.Min(Math.Max(age, 0), _ageBrushes.Length - 1)]
             : _textBrush;
 
-    // age0 = FreshColor (золото), age1 = TextColor, age>=2 — лерп TextColor → #FF808080
-    // с нарастающей «серостью» (age2=0.3, age3=0.6, age4+=0.85).
-    private static Color AgeColor(int age, Color text, Color fresh)
-    {
-        if (age <= 0) return fresh;
-        if (age == 1) return text;
-        double t = Math.Min((age - 1) * 0.3, 0.85);
-        return LerpColor(text, Color.FromArgb(0xFF, 0x80, 0x80, 0x80), t);
-    }
-
-    private static Color LerpColor(Color a, Color b, double t)
-        => Color.FromArgb(
-            (byte)Math.Round(a.A + (b.A - a.A) * t),
-            (byte)Math.Round(a.R + (b.R - a.R) * t),
-            (byte)Math.Round(a.G + (b.G - a.G) * t),
-            (byte)Math.Round(a.B + (b.B - a.B) * t));
+    // age0 = FreshColor (золото), age>=1 = OldLinesColor. TextColor в фейде не
+    // участвует — ручки Fresh/Old полностью задают ленту (регрессия 2.7.0 лерпила
+    // к TextColor: при чёрном TextColor старшие строки уходили в тёмное).
+    // Плавность переходу даёт DimByAge (альфа старших строк), лерп цвета убран.
+    private static Color AgeColor(int age, Color fresh, Color old)
+        => age <= 0 ? fresh : old;
 
     // ─── Позиционирование ─────────────────────────────────────────────────
 
@@ -474,8 +552,8 @@ public partial class KaraokeWindow : Window
     // Высота полосы: HeightPct>0 → % высоты рабочей области для ВСЕХ позиций
     // (у Left/Right это высота вертикальной полосы, WidthPct остаётся шириной).
     // HeightPct=0 → autoH: Top/Bottom — StripHeight по шрифту/строкам, Left/Right — 70%.
-    // OpacityMask _topFadeMask задан относительными координатами (0→0.24), поэтому
-    // верх гасится пропорционально при любой высоте полосы.
+    // OpacityMask _topFadeMask висит на LinesPanel с относительными координатами
+    // (0→0.24): верх гасится пропорционально высоте ленты при любой высоте полосы.
     private double BandHeight(double waHeight, double autoH)
     {
         int pct = (int)Clamp(_cfg.HeightPct, 0, 100);

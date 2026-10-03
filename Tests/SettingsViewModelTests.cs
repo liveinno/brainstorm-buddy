@@ -43,4 +43,21 @@ public class SettingsViewModelTests
         var vm = new SettingsViewModel(config);
         Assert.Equal(vm.Presets[0], vm.SelectedPreset);
     }
+
+    // Спека 2.7.2: лимит токенов ответа зажат в 50..4096 — UI не должен уметь
+    // сохранить значение ниже 50 (clamp в сеттере, поле MaxTokensBox коммитит сюда).
+    [Theory]
+    [InlineData(30, 50)]
+    [InlineData(0, 50)]
+    [InlineData(-5, 50)]
+    [InlineData(50, 50)]
+    [InlineData(800, 800)]
+    [InlineData(99999, 4096)]
+    public void MaxResponseTokens_ClampedTo50_4096(int input, int expected)
+    {
+        var vm = new SettingsViewModel(new AppConfig());
+        vm.MaxResponseTokens = input;
+        Assert.Equal(expected, vm.MaxResponseTokens);
+        Assert.Equal(expected, vm.Config.Advanced.MaxResponseTokens);
+    }
 }

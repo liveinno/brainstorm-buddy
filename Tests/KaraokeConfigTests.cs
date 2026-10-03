@@ -21,6 +21,7 @@ public class KaraokeConfigTests
         Assert.Equal("#FFFFFFFF", config.TextColor);
         Assert.Equal("#FF4ADE80", config.AccentColor);
         Assert.Equal("#FFFFE9A8", config.FreshColor);
+        Assert.Equal("#FFFFFFFF", config.OldLinesColor);
         Assert.Equal("#FF0A1622", config.BackgroundColor);
         Assert.Equal(0.78, config.BackgroundOpacity);
         Assert.True(config.ShowBackground);
@@ -55,6 +56,22 @@ public class KaraokeConfigTests
         var back = JsonSerializer.Deserialize<AppConfig>(json)!;
         Assert.Equal("Ctrl+Shift+K", back.Hotkeys.ToggleKaraoke);
     }
+
+    [Fact]
+    public void HotkeysConfig_ShowTrayIcon_Default()
+    {
+        // Хоткей возврата иконки трея — дефолт Ctrl+Shift+T, не коллидирует
+        // с H/O/S/P/K и зашитыми L/Y/C.
+        var config = new AppConfig();
+        Assert.Equal("Ctrl+Shift+T", config.Hotkeys.ShowTrayIcon);
+        Assert.False(config.Ui.HideTrayIcon);
+
+        var json = JsonSerializer.Serialize(config);
+        var back = JsonSerializer.Deserialize<AppConfig>(json)!;
+        Assert.Equal("Ctrl+Shift+T", back.Hotkeys.ShowTrayIcon);
+        Assert.False(back.Ui.HideTrayIcon);
+    }
+
 
     [Fact]
     public void KaraokeConfig_SaveLoad_RoundTrips()

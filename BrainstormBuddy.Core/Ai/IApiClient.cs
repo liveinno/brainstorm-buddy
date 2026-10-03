@@ -8,6 +8,12 @@ public record AskResult(string? Content, int PromptTokens, int CompletionTokens,
     /// (401/402/404/429/сеть). Отличает реальную ошибку от «модель вернула пусто».</summary>
     public string? Error { get; init; }
     public static AskResult Failed(string error) => new(null, 0, 0, 0) { Error = error };
+
+    /// <summary>Модель осознанно промолчала: пустой content при finish_reason="stop"
+    /// (промпт суфлёра сам требует тишины на small talk/шуме). Это НЕ ошибка и НЕ
+    /// обрезка лимитом — показывать нейтрально, без красной плашки.</summary>
+    public bool IsSilent { get; init; }
+    public static AskResult Silent => new(null, 0, 0, 0) { IsSilent = true };
 }
 
 /// <summary>Подсистема, о здоровье которой сообщает клиент.</summary>
@@ -25,7 +31,10 @@ public sealed record CheckStepResult(string Name, bool Ok, string Detail);
 public interface IApiClient
 {
     Task<string?> TranscribeAsync(byte[] wavAudio, CancellationToken ct = default);
-    Task<AskResult> AskAsync(string userText, string systemPrompt, int maxTokens, List<ChatMessage> history, CancellationToken ct = default);
+    /// <summary>onDelta != null → запрос уходит со stream:true и колбэк получает
+    /// каждую дельту текста (SSE); провайдер/прокси без SSE → обычный буферный путь,
+    /// колбэк не вызывается. null → поведение как раньше.</summary>
+    Task<AskResult> AskAsync(string userText, string systemPrompt, int maxTokens, List<ChatMessage> history, CancellationToken ct = default, Action<string>? onDelta = null);
     Task<bool> CheckConnectionAsync(CancellationToken ct = default);
 
     /// <summary>Реальная проверка LLM для кнопки «Проверить подключение»: ключ/URL (GET /models)

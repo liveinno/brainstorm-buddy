@@ -170,7 +170,8 @@ public class ConfigLoader
 
         // 6) Схема 5: авто-калибровка порога — ВЫКЛ у всех (решение владельца по живым замерам:
         //    на обычных микрофонах шум ~0, ручной порог предсказуемее). Порог: старый дефолт
-        //    0.01 → 0.001 (ловит тихую речь/видео); кастомное значение юзера не трогаем.
+        //    0.01 → актуальный дефолт 0.004 (выше шумового пола, ловит тихую речь/видео);
+        //    кастомное значение юзера не трогаем.
         if (c.SchemaVersion < 5)
         {
             if (c.Audio.AutoCalibrateThreshold)
@@ -180,8 +181,8 @@ public class ConfigLoader
             }
             if (Math.Abs(c.Audio.RmsThreshold - 0.01) < 1e-9)
             {
-                _logger.Info("Migration: RmsThreshold 0.01 (старый дефолт) → 0.001", "Config");
-                c.Audio.RmsThreshold = 0.001;
+                _logger.Info("Migration: RmsThreshold 0.01 (старый дефолт) → 0.004", "Config");
+                c.Audio.RmsThreshold = 0.004;
             }
         }
 
@@ -230,8 +231,8 @@ public class ConfigLoader
         }
         if (config.Audio.RmsThreshold <= 0)
         {
-            _logger.Warn("Invalid RmsThreshold, using 0.001", "Config");
-            config.Audio.RmsThreshold = 0.001;
+            _logger.Warn("Invalid RmsThreshold, using 0.004", "Config");
+            config.Audio.RmsThreshold = 0.004;
         }
         if (config.Api.RequestTimeoutSeconds <= 0)
         {

@@ -118,7 +118,7 @@ public partial class App : Application
         if (!createdNew)
         {
             System.Windows.MessageBox.Show(
-                "BrainstormBuddy уже запущен — ищите его в трее (иконка у часов).",
+                "BrainstormBuddy уже запущен — ищите его в трее (иконка у часов), или нажмите Ctrl+Shift+T (если значок скрыт).",
                 "BrainstormBuddy", MessageBoxButton.OK, MessageBoxImage.Information);
             _singleInstanceMutex?.Dispose();
             _singleInstanceMutex = null;
@@ -421,9 +421,10 @@ public partial class App : Application
                 var y = HotkeyManager.Register("Ctrl+Shift+Y", "llmpause");
                 var c = HotkeyManager.Register("Ctrl+Shift+C", "screenshot");
                 var k = HotkeyManager.Register(Config.Hotkeys.ToggleKaraoke, "karaoke");
+                var tt = HotkeyManager.Register(Config.Hotkeys.ShowTrayIcon, "showtray");
 
-                Logger.Info($"Hotkeys: toggle={t}, opacity={o}, settings={s}, logs={l}, pause={p}, llmpause={y}, screenshot={c}, karaoke={k}", "UI");
-                if (!(t && o && s && l && p && y && c && k))
+                Logger.Info($"Hotkeys: toggle={t}, opacity={o}, settings={s}, logs={l}, pause={p}, llmpause={y}, screenshot={c}, karaoke={k}, showtray={tt}", "UI");
+                if (!(t && o && s && l && p && y && c && k && tt))
                     Notifier.ShowWarning("Горячие клавиши", "Не удалось зарегистрировать некоторые горячие клавиши. Возможно, они заняты.");
 
                 // Применить текущий ClickThrough из конфига
@@ -505,6 +506,24 @@ public partial class App : Application
         }
         SettingsVm.NotifyKaraokeEnabledChanged();
         SaveConfigSafe();
+    }
+
+    /// <summary>
+    /// Хоткей «showtray» (Ctrl+Shift+T): возвращает значок в трей, когда HideTrayIcon скрыл его.
+    /// Сбрасывает флаг HideTrayIcon в конфиге — иконка остаётся видимой после рестарта;
+    /// чекбокс в настройках обновляется через VM (биндинг к Config).
+    /// </summary>
+    public void ShowTrayIcon()
+    {
+        TrayIcon.Visible = true;
+        if (Config.Ui.HideTrayIcon)
+        {
+            Config.Ui.HideTrayIcon = false;
+            SettingsVm.NotifyHideTrayIconChanged();
+            SaveConfigSafe();
+        }
+        Logger.Info("Tray icon restored via hotkey", "UI");
+        Notifier.ShowInfo("Трей", "Значок BrainstormBuddy снова в трее");
     }
 
     // Безопасно сохранить текущий конфиг (используется визардом и др.).
@@ -605,6 +624,21 @@ public partial class App : Application
             Body = "Отсюда открывается окно распознавания готовых записей (mp4, webm и др.): " +
                    "транскрипт с тайм-кодами, AI-саммари, история и экспорт.",
             Target = () => s.OpenFileTranscriptionBtn
+        },
+        new CoachStep
+        {
+            Title = "Стриминг ответа",
+            Body = "Ответ ИИ печатается побуквенно, прямо по мере генерации — видно, что ассистент уже отвечает. " +
+                   "По умолчанию выключено: часть шлюзов в режиме стрима отвечает заметно медленнее.",
+            Target = () => s.StreamLlmCheck
+        },
+        new CoachStep
+        {
+            Title = "Караоке-лента",
+            Body = "Полоса-телесуфлёр поверх всех окон: вопросы и подсказки крупно и всегда на виду. " +
+                   "Включается чекбоксом на этой вкладке или горячей клавишей Ctrl+Shift+K; " +
+                   "цвета, шрифт и положение полосы настраиваются здесь же. Кнопкой «Предпросмотр» посмотришь ленту вживую.",
+            Target = () => s.KaraokePreviewButton
         },
         new CoachStep
         {
@@ -1539,8 +1573,22 @@ public partial class App : Application
         {
             List<ChatMessage> historySnapshot;
             lock (_historyLock) { historySnapshot = new List<ChatMessage>(_conversationHistory); }
+            var stream = Config.Advanced.StreamLlmAnswers;
+            var gotDelta = false;
+            if (stream) _karaoke?.BeginStreamLine("answer");
+            var sw = Stopwatch.StartNew();
             var result = await ApiClient.AskAsync(label, Config.Advanced.SystemPrompt,
-                Config.Advanced.MaxResponseTokens, historySnapshot, CancellationToken.None);
+                Config.Advanced.MaxResponseTokens, historySnapshot, CancellationToken.None,
+                stream ? (Action<string>)(d =>
+                {
+                    gotDelta = true;
+                    _overlay?.AppendAnswerDelta(d);
+                    _karaoke?.AppendToStreamLine(d);
+                }) : null);
+            sw.Stop();
+            if (stream) _karaoke?.EndStreamLine();
+            var secretAnswer = result.Content;
+            Logger.Info($"Secret ask done in {sw.ElapsedMilliseconds}ms: '{(secretAnswer ?? "<null>").Substring(0, Math.Min(80, (secretAnswer ?? "<null>").Length))}'", "Answer");
             if (!string.IsNullOrWhiteSpace(result.Content))
             {
                 await Dispatcher.InvokeAsync(() =>
@@ -1548,7 +1596,7 @@ public partial class App : Application
                     _overlay?.MarkAnswered(result.Content, DateTime.Now, 0);
                     _overlay?.SetStatus(T("L_Listening"));
                     // Секретные ответы обходят AnswerWorkerLoop — пушим ответ в караоке здесь.
-                    _karaoke?.PushLine("answer", result.Content);
+                    if (!gotDelta) _karaoke?.PushLine("answer", result.Content);
                 });
                 lock (_historyLock)
                 {
@@ -1764,6 +1812,9 @@ public partial class App : Application
             if (Config.Karaoke.Enabled && !_karaoke.IsVisible) _karaoke.Show();
             else if (!Config.Karaoke.Enabled && _karaoke.IsVisible) _karaoke.Hide();
         }
+
+        // Значок трея: скрытие/возврат применяется на лету, без рестарта.
+        TrayIcon.Visible = !Config.Ui.HideTrayIcon;
         ApplyEndpointModeLive();   // ДО UpdateConfig: в ручном режиме порог тишины применится из конфига
         AudioEngine.UpdateConfig(Config.Audio);
         Logger.Configure(Config.Logging);
@@ -1817,6 +1868,9 @@ public partial class App : Application
                 case "karaoke":
                     ToggleKaraoke();
                     break;
+                case "showtray":
+                    ShowTrayIcon();
+                    break;
             }
         });
     }
@@ -1828,8 +1882,13 @@ public partial class App : Application
             IsPaused = false;
             try
             {
-                AudioEngine.Start();
-                Logger.Info("Audio resumed", "Audio");
+                // Start() в фоне: создание WasapiLoopbackCapture/waveInOpen — синхронный
+                // COM, на битом аудиодрайвере блокирует UI-поток до watchdog-kill.
+                _ = Task.Run(() =>
+                {
+                    try { AudioEngine.Start(); Logger.Info("Audio resumed", "Audio"); }
+                    catch (Exception ex) { Logger.Error("Failed to resume audio", ex, "Audio"); }
+                });
             }
             catch (Exception ex)
             {
@@ -1843,19 +1902,25 @@ public partial class App : Application
         else
         {
             IsPaused = true;
-            try
+            // Флашим открытые фразы ДО остановки захвата: иначе недоговорённая фраза
+            // замерзает в буфере на всю паузу и после возобновления уезжает в STT одним
+            // куском-переростком (живой лог: фраза 27с висела минуту → чанк 57.4с).
+            FlushOpenUtterances();
+            // Stop() уходит в фон: NAudio StopRecording джойнит capture-поток, который
+            // на зависшем виртуальном аудиодрайвере (VM) может не выйти — UI-поток
+            // блокировался насмерть, и UiWatchdog убивал приложение (2026-10-01).
+            _ = Task.Run(() =>
             {
-                // Флашим открытые фразы ДО остановки захвата: иначе недоговорённая фраза
-                // замерзает в буфере на всю паузу и после возобновления уезжает в STT одним
-                // куском-переростком (живой лог: фраза 27с висела минуту → чанк 57.4с).
-                FlushOpenUtterances();
-                AudioEngine.Stop();
-                Logger.Info("Audio paused", "Audio");
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("Failed to pause audio", ex, "Audio");
-            }
+                try
+                {
+                    AudioEngine.Stop();
+                    Logger.Info("Audio paused", "Audio");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("Failed to pause audio", ex, "Audio");
+                }
+            });
             _overlay?.RefreshAudioPauseButton();
             Notifier.ShowInfo("Пауза", "Захват аудио остановлен");
         }
@@ -1972,7 +2037,8 @@ public partial class App : Application
         TrayIcon = new NotifyIcon
         {
             Text = "BrainstormBuddy",
-            Visible = true
+            // Значок может быть скрыт настройкой HideTrayIcon — возврат хоткеем ShowTrayIcon.
+            Visible = !Config.Ui.HideTrayIcon
         };
         TrayIcon.Icon = LoadTrayIcon();
 
@@ -2355,7 +2421,17 @@ public partial class App : Application
                     // ── Одиночный LLM ── (снимок истории берём СЕЙЧАС — предыдущие ответы уже в истории, FIFO)
                     List<ChatMessage> historySnapshot;
                     lock (_historyLock) { historySnapshot = new List<ChatMessage>(_conversationHistory); }
-                    var askResult = await ApiClient.AskAsync(labeledText, Config.Advanced.SystemPrompt, Config.Advanced.MaxResponseTokens, historySnapshot, ct);
+                    var stream = Config.Advanced.StreamLlmAnswers;
+                    var gotDelta = false;
+                    if (stream) _karaoke?.BeginStreamLine("answer");
+                    var askResult = await ApiClient.AskAsync(labeledText, Config.Advanced.SystemPrompt, Config.Advanced.MaxResponseTokens, historySnapshot, ct,
+                        stream ? (Action<string>)(d =>
+                        {
+                            gotDelta = true;
+                            _overlay?.AppendAnswerDelta(pair, d);
+                            _karaoke?.AppendToStreamLine(d);
+                        }) : null);
+                    if (stream) _karaoke?.EndStreamLine();
                     var askEnd = DateTime.Now;
                     var askMs = (askEnd - askStart).TotalMilliseconds;
 
@@ -2382,8 +2458,20 @@ public partial class App : Application
                         }
                         QaLogger?.Log(labeledText, answer!, "OK", job.SttMs, askMs, job.AudioSeconds, Config.Api.ChatModel);
                         _overlay?.MarkAnswered(pair, answer!, askEnd, askMs);
-                        _karaoke?.PushLine("answer", answer!);
+                        if (!gotDelta) _karaoke?.PushLine("answer", answer!);
                         await Dispatcher.InvokeAsync(() => { _overlay?.SetTimelineState(TimelineState.Received); UpdateTokenDisplay(); }); // зелёный: LLM ответил
+                    }
+                    else if (askResult?.IsSilent == true)
+                    {
+                        // Осознанное молчание модели (finish_reason=stop при пустом
+                        // content): промпт суфлёра сам требует тишины на small talk.
+                        // Нейтральный статус как у мульти-агентов, НЕ красная плашка.
+                        Logger.Info($"LLM silent (stop, empty content) in {askMs:F0}ms", "Answer");
+                        _totalPromptTokens += askResult.PromptTokens;
+                        _totalCompletionTokens += askResult.CompletionTokens;
+                        QaLogger?.Log(labeledText, "[молчание]", "SILENT", job.SttMs, askMs, job.AudioSeconds, Config.Api.ChatModel);
+                        _overlay?.MarkAnswered(pair, T("L_ModelSilent"), askEnd, askMs);
+                        await Dispatcher.InvokeAsync(UpdateTokenDisplay);
                     }
                     else if (!string.IsNullOrEmpty(askResult?.Error))
                     {
@@ -2394,11 +2482,13 @@ public partial class App : Application
                     }
                     else
                     {
-                        // 200, но контент пуст (частый случай reasoning-моделей: всё ушло в «мысли»,
-                        // мало токенов). Объясняем причину, а не просто «пустой ответ».
-                        Logger.Warn("Empty answer from LLM (200, no content)", "Answer");
+                        // 200, но контент пуст и это НЕ осознанное молчание — лимит
+                        // съеден рассуждениями (finish_reason=length) даже после
+                        // авто-ретрая с 1024. Юзер лимит из GUI не меняет — просто
+                        // «модель не ответила», без мёртвого совета про токены.
+                        Logger.Warn("Empty answer from LLM (200, no content, limit exhausted)", "Answer");
                         QaLogger?.Log(labeledText, "[пустой ответ]", "EMPTY", job.SttMs, askMs, job.AudioSeconds, Config.Api.ChatModel);
-                        _overlay?.MarkFailed(pair, "модель вернула пустой ответ — увеличьте лимит токенов или смените модель (reasoning-модели «съедают» ответ)", askEnd, askMs);
+                        _overlay?.MarkFailed(pair, T("L_ModelNoAnswer"), askEnd, askMs);
                     }
                 }
                 catch (OperationCanceledException) { throw; }

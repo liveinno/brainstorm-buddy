@@ -202,6 +202,10 @@ class Program
                 var regress = new OverlayRegressionScenario();
                 await regress.RunAsync(launcher, vision, report);
 
+                // Караоке-лента: предпросмотр + проверка цветов (золото/белые)
+                var karaoke = new KaraokeDemoScenario();
+                await karaoke.RunAsync(launcher, vision, report);
+
                 var settingsScenario = new SettingsWindowScenario(targetTab);
                 await settingsScenario.RunAsync(launcher, vision, report);
 

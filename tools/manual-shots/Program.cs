@@ -29,6 +29,7 @@ class Shots
     static string InstallerPath = "";
     static readonly string ConfigPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BrainstormBuddy", "config.json");
     static readonly string ConfigBackup = ConfigPath + ".manualshots.bak";
+    static bool ConfigPatched;
     static Process? AppProc;
     static bool WeLaunchedApp;
     static int AppPid = -1;
@@ -65,7 +66,14 @@ class Shots
         N.SetProcessDpiAwarenessContext(new IntPtr(-4));
 
         try { RunAppShots(); } catch (Exception ex) { Console.WriteLine("APP-SHOTS FAILED: " + ex); }
-        try { if (File.Exists(ConfigBackup)) File.Move(ConfigBackup, ConfigPath, true); } catch { }
+        finally
+        {
+            // Порядок важен: СНАЧАЛА убиваем поднятый нами процесс (пока жив — его
+            // SaveConfigSafe при выходе может перезаписать config.json подменённой
+            // караоке-секцией уже ПОСЛЕ нашего restore), потом откатываем конфиг.
+            KillLaunchedApp();
+            RestoreConfig();
+        }
         if (Want("installer") && InstallerPath != "" && File.Exists(InstallerPath))
         {
             try { RunInstallerShots(); } catch (Exception ex) { Console.WriteLine("INSTALLER-SHOTS FAILED: " + ex); }
@@ -91,7 +99,9 @@ class Shots
             if (!File.Exists(ExePath)) { Console.WriteLine("exe missing: " + ExePath); return; }
             if (File.Exists(ConfigPath))
             {
-                File.Copy(ConfigPath, ConfigBackup, true);
+                // Не затираем бэкап, если он остался от прошлого неудачного прогона — там и есть
+                // самый свежий «чистый» конфиг юзера.
+                if (!File.Exists(ConfigBackup)) File.Copy(ConfigPath, ConfigBackup);
                 // Демо-караоке для мануала: чёрный текст на белой полосе (как просил юзер),
                 // золотая свежая строка, остальные — градиент в серый.
                 // Ключ апи и прочий конфиг юзера не трогаем — только секцию Karaoke.
@@ -112,6 +122,7 @@ class Shots
                         ["ShowQuestions"] = true, ["ShowUserLines"] = true,
                     };
                     File.WriteAllText(ConfigPath, root.ToJsonString());
+                    ConfigPatched = true;
                 }
                 catch (Exception e) { Console.WriteLine("karaoke config patch failed: " + e.Message); }
             }
@@ -346,6 +357,45 @@ class Shots
             else { Console.WriteLine("exit item not found; leaving app running"); Keyboard.Press(VirtualKeyShort.ESCAPE); }
         }
         catch (Exception e) { Console.WriteLine("exit: " + e.Message); }
+    }
+
+    // Если мы запускали app — добиваем процесс, чтобы гарантировать: никакой отложенный
+    // SaveConfigSafe не перезапишет config.json после restore. Прицепленный к чужому
+    // (не наш) экземпляр процесс не трогаем — там конфиг и не подменялся.
+    static void KillLaunchedApp()
+    {
+        if (!WeLaunchedApp || AppProc == null) return;
+        try
+        {
+            if (!AppProc.HasExited)
+            {
+                AppProc.Kill(entireProcessTree: true);
+                AppProc.WaitForExit(10000);
+            }
+            Console.WriteLine("app killed for config restore: exited=" + AppProc.HasExited);
+        }
+        catch (Exception e) { Console.WriteLine("kill app failed: " + e.Message); }
+    }
+
+    // Откат подменённой караоке-секции. Только если в ЭТОМ прогоне реально патчили
+    // (ConfigPatched): залёпушный .bak от прошлого неудачного запуска не должен
+    // затирать текущий конфиг юзера. Ретраи — файл может быть ещё занят умирающим
+    // процессом/антивирусом. Провал НЕ глотаем молча: бэкап остаётся на диске.
+    static void RestoreConfig()
+    {
+        if (!ConfigPatched || !File.Exists(ConfigBackup)) return;
+        for (int i = 0; i < 10; i++)
+        {
+            try
+            {
+                File.Copy(ConfigBackup, ConfigPath, true);
+                File.Delete(ConfigBackup);
+                Console.WriteLine("config restored from backup");
+                return;
+            }
+            catch { Thread.Sleep(400); }
+        }
+        Console.WriteLine("CONFIG RESTORE FAILED — ручной откат: " + ConfigBackup + " -> " + ConfigPath);
     }
 
     static AutomationElement? FindTrayIcon(UIA3Automation uia)

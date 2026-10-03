@@ -80,6 +80,8 @@ public class ConfigLoaderTests
 
             Assert.NotNull(config);
             Assert.Equal(0.90, config.Ui.WindowOpacity);
+            // Дефолт порога речи для новых установок (требование владельца): 0.004
+            Assert.Equal(0.004, config.Audio.RmsThreshold);
             Assert.Equal(ConfigLoader.CurrentSchemaVersion, config.SchemaVersion);
             Assert.True(File.Exists(path), "Default config file should be created");
         }
@@ -224,6 +226,34 @@ public class ConfigLoaderTests
 
             var loaded = loader.Load();
             Assert.Equal("round-trip-key", loaded.Api.ApiKey);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+            var bak = path + ".bak";
+            if (File.Exists(bak)) File.Delete(bak);
+        }
+    }
+
+    [Fact]
+    public void ConfigLoader_ReasoningEffortOverride_RoundTrip()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bsb_test_{Guid.NewGuid()}.json");
+        try
+        {
+            var logger = new LoggingService(Path.Combine(Path.GetTempPath(), "bsb_test"));
+            var loader = new ConfigLoader(path, logger);
+
+            // Явный override переживает save→load.
+            var config = new AppConfig();
+            config.Api.ReasoningEffortOverride = "high";
+            loader.Save(config);
+            Assert.Equal("high", loader.Load().Api.ReasoningEffortOverride);
+
+            // Поле опциональное: null (дефолт «по профилю») не материализуется при загрузке.
+            config.Api.ReasoningEffortOverride = null;
+            loader.Save(config);
+            Assert.Null(loader.Load().Api.ReasoningEffortOverride);
         }
         finally
         {

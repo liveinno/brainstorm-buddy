@@ -103,20 +103,8 @@ public class AudioCaptureEngine : IDisposable
         catch (Exception ex) { _logger.Warn($"Device watcher init failed: {ex.Message}", "Audio"); }
     }
 
-    private void StopDeviceWatcher()
-    {
-        try
-        {
-            if (_deviceEnum != null && _deviceNotifications != null)
-                _deviceEnum.UnregisterEndpointNotificationCallback(_deviceNotifications);
-            _deviceEnum?.Dispose();
-        }
-        catch { /* best-effort */ }
-        _deviceEnum = null;
-        _deviceNotifications = null;
-    }
 
-    // Колбэки WASAPI приходят на COM-потоке — здесь только лёгкая работа + рестарт захвата.
+    // Колбэки WASAPI приходят на COM-потоке — тяжёлой работы здесь быть не должно:
     private sealed class DeviceNotificationClient : IMMNotificationClient
     {
         private readonly AudioCaptureEngine _owner;
@@ -124,12 +112,17 @@ public class AudioCaptureEngine : IDisposable
 
         public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
         {
+            // COM-колбэк нельзя грузить: UnregisterEndpointNotificationCallback в
+            // StopDeviceWatcher ждёт завершения in-flight колбэков, а тяжёлый
+            // RestartLoopback (StopRecording-join + пересоздание WASAPI) их держал —
+            // UI-поток в Stop() стоял до watchdog-kill (2026-10-01). Уходим на worker.
             if (flow == DataFlow.Render && role == Role.Multimedia)
-                _owner.HandleDefaultRenderChanged(defaultDeviceId);
+                Task.Run(() => _owner.HandleDefaultRenderChanged(defaultDeviceId));
         }
         public void OnDeviceStateChanged(string deviceId, DeviceState newState)
         {
-            if (newState == DeviceState.Active) _owner.HandleDeviceArrived(deviceId);
+            if (newState == DeviceState.Active)
+                Task.Run(() => _owner.HandleDeviceArrived(deviceId));
         }
         public void OnDeviceAdded(string pwstrDeviceId) { }
         public void OnDeviceRemoved(string deviceId) { }
@@ -138,6 +131,10 @@ public class AudioCaptureEngine : IDisposable
 
     private void HandleDefaultRenderChanged(string deviceId)
     {
+        // Отложенный колбэк (см. Task.Run в DeviceNotificationClient) может прийти
+        // после Stop()/Dispose — не воскрешаем мёртвый захват.
+        if (_disposed || !_started) return;
+
         // Юзер явно выбрал устройство в настройках → оно неприкосновенно: автоследование
         // за сменой системного дефолта работает ТОЛЬКО в режиме «По умолчанию» (пустой Id).
         // Лог оставляем для диагностики, событие (тост) не шлём.
@@ -176,9 +173,13 @@ public class AudioCaptureEngine : IDisposable
     /// <summary>Перезапуск loopback-захвата на ТЕКУЩЕМ дефолтном устройстве вывода.</summary>
     public void RestartLoopback()
     {
-        try { SafeStopRecording(_loopbackCapture); _loopbackCapture?.Dispose(); } catch { }
+        if (_disposed || !_started) return; // сталевый COM-колбэк после Stop() — не воскрешать
+        var old = _loopbackCapture;
         _loopbackCapture = null;
         while (_loopbackQueue.TryDequeue(out _)) { }
+        // Тот же риск, что и в Stop(): StopRecording может зависнуть на битом
+        // драйвере — снимаем девайс в фоне, а новый захват стартуем сразу.
+        _ = Task.Run(() => { try { SafeStopRecording(old); old?.Dispose(); } catch { } });
         TryStartLoopback();
     }
 
@@ -187,19 +188,50 @@ public class AudioCaptureEngine : IDisposable
         _logger.Info("Audio.Stop() called", "Audio");
         _started = false;
 
-        StopDeviceWatcher();
         _mixerCts?.Cancel();
-        try { _mixerTask?.Wait(1000); } catch { }
 
-        try { SafeStopRecording(_loopbackCapture); _loopbackCapture?.Dispose(); } catch (Exception ex) { _logger.Warn($"Loopback stop error: {ex.Message}", "Audio"); }
-        try { SafeStopRecording(_micCapture); _micCapture?.Dispose(); } catch (Exception ex) { _logger.Warn($"Mic stop error: {ex.Message}", "Audio"); }
+        var loopback = _loopbackCapture;
+        var mic = _micCapture;
+        // Обнуляем до остановки: колбэки OnLoopbackData/OnMicData сверяются с этими
+        // полями и перестают трогать WaveFormat ещё до завершения StopRecording.
         _loopbackCapture = null;
         _micCapture = null;
 
         while (_micQueue.TryDequeue(out _)) { }
         while (_loopbackQueue.TryDequeue(out _)) { }
 
-        _logger.Info("Audio stopped.", "Audio");
+        // Снапшотим вотчер в локалы и обнуляем поля СРАЗУ: фоновый unregister иначе
+        // гонялся бы с StartDeviceWatcher() при быстрой пауза→резюм и занулял бы
+        // свежий enumerator.
+        var watcherEnum = _deviceEnum;
+        var watcherClient = _deviceNotifications;
+        _deviceEnum = null;
+        _deviceNotifications = null;
+
+        // ВСЯ блокирующая часть — в одном фоновом таске с дедлайном:
+        //  - UnregisterEndpointNotificationCallback ждёт завершения in-flight
+        //    COM-колбэков, а те на битом драйвере могут не вернуться;
+        //  - NAudio StopRecording джойнит capture-поток — тоже может зависнуть.
+        // Синхронный вариант на UI-потоке умирал до watchdog-kill (2026-10-01).
+        // Зависший таск просто бросается — поток фоновый, выходу не мешает.
+        var stopTask = Task.Run(() =>
+        {
+            try
+            {
+                if (watcherEnum != null && watcherClient != null)
+                    watcherEnum.UnregisterEndpointNotificationCallback(watcherClient);
+                watcherEnum?.Dispose();
+            }
+            catch { /* best-effort */ }
+            try { _mixerTask?.Wait(1000); } catch { }
+            try { SafeStopRecording(loopback); loopback?.Dispose(); }
+            catch (Exception ex) { _logger.Warn($"Loopback stop error: {ex.Message}", "Audio"); }
+            try { SafeStopRecording(mic); mic?.Dispose(); }
+            catch (Exception ex) { _logger.Warn($"Mic stop error: {ex.Message}", "Audio"); }
+            _logger.Info("Audio stopped.", "Audio");
+        });
+        if (!stopTask.Wait(3000))
+            _logger.Warn("Audio stop timed out after 3s — hung driver abandoned in background", "Audio");
     }
 
     private static void SafeStopRecording(object? capture)

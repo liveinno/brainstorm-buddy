@@ -152,6 +152,9 @@ public partial class SettingsWindow : Window
         UpdateGpuPanelVisibility();
         UpdateWhisperGpuPanelVisibility();
 
+        // Лимит токенов ответа (VM клампит 50..4096 — показываем уже клампнутое).
+        MaxTokensBox.Text = _vm.MaxResponseTokens.ToString();
+
         // Провайдер LLM: профиль по сохранённому ProviderId (или угадывание по BaseUrl для старых конфигов).
         InitProviderSelection();
 
@@ -781,6 +784,11 @@ public partial class SettingsWindow : Window
     // Ведём отдельный _appliedProviderId: «какой профиль реально применили к полям».
     private string? _appliedProviderId;
 
+    // Тэг выбранного пункта ReasoningEffortCombo ("inherit"|""|"low"|"medium"|"high").
+    // Обновляем ДО присвоения SelectedValue — иначе SelectionChanged при
+    // ApplyProviderSelection перезаписывает только что прочитанное значение обратно.
+    private string? _appliedEffort;
+
     // Выбор провайдера → подставить BaseUrl/модель-пресет, показать приватность/редактор.
     private void OnLlmProviderChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -846,6 +854,9 @@ public partial class SettingsWindow : Window
             LlmProviderPrivacyNote.Visibility = Visibility.Collapsed;
         }
 
+        // Reasoning effort: строка видна только для openai-chat (где поле reasoning поддерживается).
+        UpdateReasoningEffortUi(profile);
+
         // Псевдо-профиль реестра (Id="custom", не запись CustomProviders) удалять нельзя — прячем ✕.
         LlmProviderDeleteBtn.Visibility = (profile.IsBuiltIn || IsPseudoCustomProvider(profile))
             ? Visibility.Collapsed : Visibility.Visible;
@@ -855,6 +866,75 @@ public partial class SettingsWindow : Window
             ShowProviderEditor(profile, isNew: false);
         else if (profile.IsBuiltIn && !_providerEditIsNew)
             HideProviderEditor();
+    }
+
+    // Поле OpenAiClient шлёт "reasoning" только при Protocol=="openai-chat" — строку прячем
+    // для остальных протоколов. Built-in-профиль → глобальный Config.Api.ReasoningEffortOverride
+    // (null = брать значение профиля); custom-профиль → его собственное profile.ReasoningEffort.
+    private void UpdateReasoningEffortUi(LlmProviderProfile profile)
+    {
+        ReasoningEffortRow.Visibility = profile.Protocol == "openai-chat"
+            ? Visibility.Visible : Visibility.Collapsed;
+        var effort = profile.IsBuiltIn
+            ? _vm.Config.Api.ReasoningEffortOverride
+            : profile.ReasoningEffort;
+        _appliedEffort = effort switch
+        {
+            null => "inherit",
+            "" or "low" or "medium" or "high" => effort,
+            _ => "inherit", // неизвестное значение в конфиге — показываем «по профилю», не затираем
+        };
+        ReasoningEffortCombo.SelectedValue = _appliedEffort;
+        // Лейбл "(по профилю)" при смене провайдера тот же, а значение за ним другое —
+        // дёргаем INPC, чтобы биндинги на ReasoningEffortUi перечитали.
+        _vm.NotifyReasoningEffortChanged();
+    }
+
+    // Смена пункта комбо: "inherit" → null (дефолт профиля), "" → не слать поле reasoning.
+    private void OnReasoningEffortChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        var tag = ReasoningEffortCombo.SelectedValue as string;
+        if (tag == _appliedEffort) return; // программный SelectedValue из UpdateReasoningEffortUi
+        _appliedEffort = tag;
+        string? eff = tag == "inherit" ? null : tag;
+        var profile = LlmProviderCombo.SelectedItem as LlmProviderProfile;
+        if (profile == null || profile.IsBuiltIn)
+        {
+            _vm.Config.Api.ReasoningEffortOverride = eff;
+            _vm.NotifyReasoningEffortChanged();
+        }
+        else
+        {
+            // У custom-профиля null = «наследовать глобальный override».
+            profile.ReasoningEffort = eff!;
+            _vm.SaveCustomProvider(profile);
+        }
+    }
+
+    // Лимит токенов ответа: применяем по Enter/уходу фокуса; мусор → откат к текущему значению.
+    private void OnMaxTokensCommit(object sender, RoutedEventArgs e) => CommitMaxTokens();
+
+    private void OnMaxTokensKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Enter) return;
+        CommitMaxTokens();
+        e.Handled = true;
+    }
+
+    private void CommitMaxTokens()
+    {
+        if (!IsLoaded) return;
+        if (int.TryParse(MaxTokensBox.Text, out int v))
+        {
+            _vm.MaxResponseTokens = v;
+            // Сеттер VM клампит 50..4096 — показываем фактическое значение.
+            MaxTokensBox.Text = _vm.MaxResponseTokens.ToString();
+        }
+        else
+        {
+            MaxTokensBox.Text = _vm.MaxResponseTokens.ToString();
+        }
     }
 
     // «＋» — новый custom-провайдер (черновик; в конфиг попадёт только по «Сохранить»).
@@ -964,6 +1044,9 @@ public partial class SettingsWindow : Window
         _vm.SaveCustomProvider(p);
         _providerEditIsNew = false;
         _vm.ProviderId = p.Id; // SelectedValue обновит комбо → ApplyProviderSelection откроет редактор заново
+        // Протокол в редакторе могли поменять (combo-провайдер остался тем же →
+        // ApplyProviderSelection не сработает) — обновить видимость/значение effort-строки.
+        UpdateReasoningEffortUi(p);
         App.Current.Notifier.ShowInfo("Провайдер", $"«{p.Name}» сохранён");
         App.Current.Logger.Info($"Settings: saved custom provider '{p.Id}' (new={wasNew})", "UI");
     }

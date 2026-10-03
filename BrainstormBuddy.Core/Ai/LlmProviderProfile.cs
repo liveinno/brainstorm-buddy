@@ -21,6 +21,7 @@ public sealed class LlmProviderProfile
     public string ModelsPath { get; set; } = "/models";
     public string ChatPath { get; set; } = "/chat/completions";
     public string ContentPath { get; set; } = "choices[0].message.content";
+    public string DeltaPath { get; set; } = "choices[0].delta.content";
     public string UsagePath { get; set; } = "usage";
     public List<string> ModelPresets { get; set; } = new();
     public string PrivacyNote { get; set; } = "";
@@ -32,6 +33,7 @@ public sealed class LlmProviderProfile
         Id = Id, Name = Name, Protocol = Protocol, BaseUrl = BaseUrl, AuthKind = AuthKind,
         ExtraHeaders = new List<KeyValuePair<string, string>>(ExtraHeaders),
         ModelsPath = ModelsPath, ChatPath = ChatPath, ContentPath = ContentPath,
+        DeltaPath = DeltaPath,
         UsagePath = UsagePath, ModelPresets = new List<string>(ModelPresets),
         PrivacyNote = PrivacyNote, ReasoningEffort = ReasoningEffort, IsBuiltIn = IsBuiltIn
     };

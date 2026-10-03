@@ -15,8 +15,9 @@
          скрывается, остаётся плавающий текст), поверх — лента строк LinesPanel,
          прижатая к низу. Лента сдвигается TranslateTransform'ом (slide-in снизу),
          старые строки гаснут по возрасту через Opacity. ClipToBounds обрезает
-         выходящие за полосу строки; OpacityMask задаёт мягкое затухание у верха
-         полосы, как mask-image в прототипе karaoke-overlay-v1. -->
+         выходящие за полосу строки; OpacityMask на LinesPanel задаёт мягкое
+         затухание верхних 24% контента ленты, как mask-image в прототипе
+         karaoke-overlay-v1 (на Strip маска масштабировалась бы от высоты окна). -->
     <Grid>
         <Border x:Name="BgLayer"
                 CornerRadius="20"
