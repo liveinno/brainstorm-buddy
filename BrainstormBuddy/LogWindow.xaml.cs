@@ -20,6 +20,11 @@ namespace BrainstormBuddy;
         _logger = logger;
         InitializeComponent();
 
+        // Дизайнерские иконки BuddySettings с pressed-артом.
+        PressedIconSwap.Wire(ClearBtn, "BuddySettings.Icon.Delete.Default");
+        PressedIconSwap.Wire(CopyBtn, "BuddySettings.Icon.Copy.Default");
+        PressedIconSwap.Wire(OpenFolderBtn, "BuddySettings.Icon.BrowseFolder.Default");
+
         // Подписываемся на новые логи
         _logger.LogAppended += OnLogAppended;
 
@@ -169,7 +174,7 @@ namespace BrainstormBuddy;
 
     private void UpdateCountText()
     {
-        CountText.Text = $"Записей: {LogList.Items.Count}";
+        CountText.Text = string.Format((string)FindResource("L_Log_CountFmt"), LogList.Items.Count);
     }
 
     private static Brush LevelBrush(LogLevel level) => level switch

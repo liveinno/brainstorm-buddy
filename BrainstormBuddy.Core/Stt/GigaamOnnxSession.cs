@@ -1,6 +1,6 @@
+using BrainstormBuddy.Services;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-
 namespace BrainstormBuddy.Stt;
 
 /// <summary>Режим вычислений STT.</summary>
@@ -16,7 +16,8 @@ public sealed class GigaamOnnxSession : IDisposable
     private readonly InferenceSession _session;
     public string ActiveProvider { get; }
 
-    public GigaamOnnxSession(string modelPath, SttAccel accel = SttAccel.Cpu, int gpuDevice = 0)
+    public GigaamOnnxSession(string modelPath, SttAccel accel = SttAccel.Cpu, int gpuDevice = 0,
+                             LoggingService? logger = null)
     {
         var opts = new SessionOptions { GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
         ActiveProvider = "CPU";
@@ -31,9 +32,12 @@ public sealed class GigaamOnnxSession : IDisposable
                 opts.AppendExecutionProvider_DML(gpuDevice);
                 ActiveProvider = $"DirectML:{gpuDevice}";
             }
-            catch
+            catch (Exception ex)
             {
-                // нет DX12/драйвера/устройства — тихо остаёмся на CPU
+                // нет DX12/драйвера/устройства — остаёмся на CPU. Причина в логах: раньше тихий
+                // catch прятал dll-конфликт (чужой onnxruntime.dll без DML-EP →
+                // EntryPointNotFoundException) и «GPU недоступно» возникало бесследно.
+                logger?.Warn($"DirectML недоступен, откат на CPU (device={gpuDevice}): {ex.Message}", "Ai");
                 ActiveProvider = "CPU";
             }
         }

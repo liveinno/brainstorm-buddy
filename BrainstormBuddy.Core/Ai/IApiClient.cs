@@ -13,17 +13,32 @@ public record AskResult(string? Content, int PromptTokens, int CompletionTokens,
     /// (промпт суфлёра сам требует тишины на small talk/шуме). Это НЕ ошибка и НЕ
     /// обрезка лимитом — показывать нейтрально, без красной плашки.</summary>
     public bool IsSilent { get; init; }
+
+    /// <summary>Запрос отменён токеном (пользователь отменил / закрытие приложения /
+    /// cancel-токен memory-воркера). Отмена — НЕ ошибка и НЕ молчание: memory/UI по этому
+    /// флагу не показывают красную плашку и не считают попытку провалом.</summary>
+    public bool Canceled { get; init; }
+    public static AskResult AsCanceled => new(null, 0, 0, 0) { Canceled = true };
+
+    /// <summary>Ответ обрезан лимитом токенов (finish_reason="length"). Вызывающий
+    /// (MeetingSummarizer) по этому флагу досылает «продолжи с места обрыва» —
+    /// визуальный суффикс «…» в Content при этом остаётся как раньше.</summary>
+    public bool WasTruncated { get; init; }
     public static AskResult Silent => new(null, 0, 0, 0) { IsSilent = true };
 }
 
 /// <summary>Подсистема, о здоровье которой сообщает клиент.</summary>
 public enum ApiComponent { Stt, Llm }
 
+/// <summary>Структурная причина недоступности STT: UI локализует деталь по ней
+/// (RU-литералы в Message остаются для логов). None — не STT-ошибка/здоров.</summary>
+public enum SttHealthReason { None, ServerError, Timeout, Unreachable }
+
 /// <summary>
 /// Событие смены доступности STT/LLM. Клиент шлёт его ТОЛЬКО при переходе
 /// (доступен ↔ недоступен), чтобы UI не спамился на каждый чанк.
 /// </summary>
-public record ApiHealthEventArgs(ApiComponent Component, bool Healthy, string Message);
+public record ApiHealthEventArgs(ApiComponent Component, bool Healthy, string Message, int? HttpStatus = null, SttHealthReason Reason = SttHealthReason.None);
 /// <summary>Один шаг пошаговой проверки LLM («Проверить подключение»): имя шага
 /// (URL/Auth/Models/Chat), успех и человекочитаемая деталь/ошибка.</summary>
 public sealed record CheckStepResult(string Name, bool Ok, string Detail);
@@ -33,8 +48,13 @@ public interface IApiClient
     Task<string?> TranscribeAsync(byte[] wavAudio, CancellationToken ct = default);
     /// <summary>onDelta != null → запрос уходит со stream:true и колбэк получает
     /// каждую дельту текста (SSE); провайдер/прокси без SSE → обычный буферный путь,
-    /// колбэк не вызывается. null → поведение как раньше.</summary>
-    Task<AskResult> AskAsync(string userText, string systemPrompt, int maxTokens, List<ChatMessage> history, CancellationToken ct = default, Action<string>? onDelta = null);
+    /// колбэк не вызывается. null → поведение как раньше.
+    /// background=true → фоновый вызов (memory-пайплайн и т.п.): ошибки идут в лог
+    /// и в exchange-события, но НЕ дёргают HealthChanged — баннер «LLM недоступен»
+    /// рисуется только по ответам юзеру.
+    /// requestTimeout — дедлайн одной попытки (linked CTS); null → Api.RequestTimeoutSeconds.
+    /// HttpClient.Timeout у клиента InfiniteTimeSpan: дедлайны задаются только здесь.</summary>
+    Task<AskResult> AskAsync(string userText, string systemPrompt, int maxTokens, List<ChatMessage> history, CancellationToken ct = default, Action<string>? onDelta = null, bool background = false, TimeSpan? requestTimeout = null);
     Task<bool> CheckConnectionAsync(CancellationToken ct = default);
 
     /// <summary>Реальная проверка LLM для кнопки «Проверить подключение»: ключ/URL (GET /models)

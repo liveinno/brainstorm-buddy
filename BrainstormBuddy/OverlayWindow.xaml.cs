@@ -19,13 +19,11 @@ public enum TimelineState { Idle, Recording, Sending, Received, ChunkSent }
 public partial class OverlayWindow : Window
 {
     private bool _clickThroughApplied;
-    private bool _excludeFromCaptureApplied;
     private bool _screenCaptureVisible;
     private UiConfig _uiConfig = new();
     private bool _initialized;
     private DispatcherTimer _blinkTimer;
     private bool _blinkOn;
-    private bool _recBlink;
     private bool _llmBlink;
     private QaPair? _sendingItem;
 
@@ -55,18 +53,43 @@ public partial class OverlayWindow : Window
     private static readonly SolidColorBrush _brushDarkRed = FreezeBrush(new SolidColorBrush(Color.FromRgb(0x8F, 0x33, 0x3C)));  // REC dot (off-фаза блинка)
     private static readonly SolidColorBrush _brushBlue = FreezeBrush(new SolidColorBrush(Color.FromRgb(0x6F, 0x8C, 0xFF)));     // LLM dot #6f8cff
     private static readonly SolidColorBrush _brushDarkBlue = FreezeBrush(new SolidColorBrush(Color.FromRgb(0x3D, 0x4A, 0x99))); // LLM dot (off-фаза блинка)
-    private static readonly SolidColorBrush _brushRulerTick = FreezeBrush(new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)));
-    private static readonly SolidColorBrush _brushRulerLabel = FreezeBrush(new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66)));
+    private static readonly SolidColorBrush _brushRulerTick = FreezeBrush(new SolidColorBrush(Color.FromRgb(0x6D, 0x7F, 0x9E)));  // TextFaint — делители линейки
+    private static readonly SolidColorBrush _brushRulerLabel = FreezeBrush(new SolidColorBrush(Color.FromRgb(0x9F, 0xB0, 0xCC))); // TextMuted — подписи времени
     private static readonly System.Windows.Media.FontFamily _rulerFont = new("Cascadia Mono, Consolas");
 
     private static SolidColorBrush FreezeBrush(SolidColorBrush b) { b.Freeze(); return b; }
 
     public ObservableCollection<QaPair> History { get; } = new();
+    /// <summary>Локализатор строк (App.T) — установлен в конструкторе.</summary>
+    private Func<string, string> _localizer = key => key;
 
     public OverlayWindow()
     {
         InitializeComponent();
+
+        // Дизайнерские pressed-иконки BuddyV2: зажатая кнопка показывает Icon*Pressed-арт.
+        PressedIconSwap.Wire(AutoScrollButton, "IconAutoScroll");
+        PressedIconSwap.Wire(SettingsButton, "IconSettings");
+        PressedIconSwap.Wire(MinimizeButton, "IconMinimize");
+        PressedIconSwap.Wire(MaximizeButton, "IconMaximize");
+        PressedIconSwap.Wire(HideButton, "IconClose");
+        PressedIconSwap.Wire(ExportTransBtn, "IconExport");
+        PressedIconSwap.Wire(ExportSummaryBtn, "IconAiProtocol");
+        PressedIconSwap.Wire(ScreenShotButton, "IconScreenshot");
+        PressedIconSwap.Wire(CloakButton, "IconCloak");
+        PressedIconSwap.Wire(EraseButton, "IconErase");
+        PressedIconSwap.Wire(MicMuteButton, "IconMic");
+        PressedIconSwap.Wire(LlmOffButton, "IconLlm");
+        PressedIconSwap.Wire(SpeakerMuteButton, "IconSpeaker");
+        PressedIconSwap.Wire(MemoryButton, "IconMemory");
+        PressedIconSwap.Wire(LiveSendBtn, "IconSendNow");
+        PressedIconSwap.Wire(SlowSpeechBtn, "BuddyExtra.Icon.SpeechSlow.Default");
+        PressedIconSwap.Wire(ResetSpeedBtn, "BuddyExtra.Icon.SpeechReset.Default");
+        PressedIconSwap.Wire(FastSpeechBtn, "BuddyExtra.Icon.SpeechFast.Default");
+
+        Title = StealthModeService.DisplayName; // стелс-alias в заголовке (Task Manager/Alt-Tab)
         HistoryList.ItemsSource = History;
+        _localizer = key => App.Current.T(key);
         _blinkTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _blinkTimer.Tick += OnBlinkTick;
         _blinkTimer.Start();
@@ -86,7 +109,97 @@ public partial class OverlayWindow : Window
 
     // Фиолетовая отсечка «чанк ушёл в STT» (инженерная фича): MainLoop дёргает PulseChunkMarker
     // с фонового потока, ближайший тик таймлайна рисует один столбик на всю высоту. Удобно на
-    // длинной речи: видно, ушло ли уже что-то в распознавание.
+
+    // ===== Память: чип-индикатор + алиас спикера (спека memory.txt) =====
+
+    /// <summary>
+    /// Обновить чип памяти в нижней панели: цвет = состояние (0 off / 1 read /
+    /// 2 write / 3 read+write), текст-подсказка локализована.
+    /// </summary>
+    public void RefreshMemoryButton()
+    {
+        if (MemoryButton == null) return;
+        var state = App.Current.GetMemoryIndicatorState();
+        var ringKey = state switch
+        {
+            3 => "SuccessBrush",
+            1 or 2 => "WarnBrush",
+            _ => (string?)null,
+        };
+        var tipKey = state switch
+        {
+            3 => "L_MemToggle_On",
+            1 => "L_MemToggle_ReadOnly",
+            2 => "L_MemToggle_WriteOnly",
+            _ => "L_MemToggle_Off",
+        };
+        try
+        {
+            // Кольцо на рамке чипа: off — без кольца, read/write-only — золото, on — зелёное.
+            SetStateRing(MemoryButton, ringKey);
+        }
+        catch (Exception ex) { App.Current.Logger.Error("RefreshMemoryButton failed", ex, "UI"); }
+        MemoryButton.ToolTip = _localizer(tipKey);
+    }
+
+    /// <summary>Клик по чипу памяти — быстрый тогл UseMemory для текущей встречи.</summary>
+    private void OnMemoryClick(object sender, RoutedEventArgs e) => App.Current.ToggleMeetingMemory();
+
+    /// <summary>
+    /// Контекстное меню чипа спикера → «Назначить имя…»: простой ввод → алиас
+    /// per-meeting (App.SetSpeakerAlias). DataContext меню = SpeakerChipVm (Tag на чипе).
+    /// </summary>
+    private void OnAssignSpeakerNameClick(object sender, RoutedEventArgs e)
+    {
+        if ((sender as MenuItem)?.DataContext is not SpeakerChipVm chip)
+            return;
+        var speakerId = chip.Id;
+        var prompt = string.Format(_localizer("L_MemAssignNamePrompt"), speakerId);
+        var name = PromptTextInput(prompt, chip.Alias ?? speakerId);
+        if (string.IsNullOrWhiteSpace(name)) return;
+        App.Current.SetSpeakerAlias(speakerId, name);
+        // App.SetSpeakerAlias обновляет только пузыри, где спикер доминантный
+        // (p.SpeakerId == speakerId); в мульти-спикерных пузырях он может быть
+        // вторичным — поэтому чипы всех пар обновляем здесь напрямую.
+        foreach (var p in History)
+            p.ApplySpeakerAlias(speakerId, name);
+    }
+
+    /// <summary>Минимальный ввод строки: тема приложения + TextBox + OK/Отмена (Enter/Esc).</summary>
+    private string? PromptTextInput(string prompt, string initial)
+    {
+        var dlg = new Window
+        {
+            Title = "Brainstorm Buddy",
+            Width = 340, SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ResizeMode = ResizeMode.NoResize,
+            Background = TryFindResource("PanelBrush") as System.Windows.Media.Brush,
+            Foreground = TryFindResource("TextBrush") as System.Windows.Media.Brush,
+            FontFamily = TryFindResource("UiFontFamily") as System.Windows.Media.FontFamily,
+        };
+        var sp = new StackPanel { Margin = new Thickness(12) };
+        sp.Children.Add(new TextBlock { Text = prompt, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
+            FontSize = 14, LineHeight = 21 });
+        var tb = new System.Windows.Controls.TextBox { Text = initial, Margin = new Thickness(0, 0, 0, 8),
+            FontSize = 14, Padding = new Thickness(12, 8, 12, 8) };
+        sp.Children.Add(tb);
+        var row = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, HorizontalAlignment = System.Windows.HorizontalAlignment.Right };
+        var ok = new System.Windows.Controls.Button { Content = _localizer("L_Msg_Ok"), Width = 72, Margin = new Thickness(0, 0, 6, 0), IsDefault = true,
+            FontSize = 14, FontWeight = FontWeights.Medium };
+        var cancel = new System.Windows.Controls.Button { Content = _localizer("L_Msg_Cancel"), Width = 72, IsCancel = true,
+            FontSize = 14, FontWeight = FontWeights.Medium };
+        row.Children.Add(ok);
+        row.Children.Add(cancel);
+        sp.Children.Add(row);
+        dlg.Content = sp;
+        string? result = null;
+        ok.Click += (s, e2) => { result = tb.Text; dlg.DialogResult = true; };
+        dlg.ShowDialog();
+        return result;
+    }
+    // Маркер чанка на таймлайне: пульс при enqueue — во время длинной речи: видно,
+    // ушло ли уже что-то в распознавание.
     private volatile bool _chunkMarkerPending;
     public void PulseChunkMarker() => _chunkMarkerPending = true;
 
@@ -116,6 +229,9 @@ public partial class OverlayWindow : Window
 
     private void OnTimelineTick(object? sender, EventArgs e)
     {
+        // См. OnBlinkTick: поздний тик на закрывающемся окне не должен трогать
+        // уже мёртвые визуалы/битмап.
+        if (!IsLoaded || _timelineBitmap == null) return;
         try
         {
             float rms = App.Current.GetCurrentRms();
@@ -257,10 +373,10 @@ public partial class OverlayWindow : Window
                     {
                         Text = "", // filled by UpdateRuler
                         Foreground = _brushRulerLabel,
-                        FontSize = 9,
-                        FontFamily = _rulerFont,
+                        FontSize = 12,
+                        FontFamily = TryFindResource("MonoFont") as System.Windows.Media.FontFamily ?? _rulerFont,
                     };
-                    Canvas.SetTop(label, 3);
+                    Canvas.SetTop(label, 2);
                     TimelineRuler.Children.Add(label);
                     _rulerLabels[i] = label;
                 }
@@ -282,6 +398,20 @@ public partial class OverlayWindow : Window
         double w = TimelineRuler.ActualWidth;
         if (w <= 0) w = 600;
 
+        // Шаг подписей по реальной ширине текста: на узком оверлее "HH:mm:ss"
+        // шире шага тиков (w/12) — без прореживания метки слипаются. Центруем
+        // по измеренной ширине, а не фикс-отступом −26.
+        var labelStep = 1;
+        var tickGap = w / 12.0;
+        var labelW = _rulerLabels[0]?.DesiredSize.Width ?? 0;
+        if (labelW <= 0)
+        {
+            // Measure не прогнан (холодный старт) — берём худший случай MonoFont 12.
+            labelW = 8 * 12 * 0.62;
+        }
+        while (labelStep < 12 && labelW + 8 > tickGap * labelStep)
+            labelStep++;
+
         for (int i = 0; i < 12; i++)
         {
             if (_rulerTicks[i] == null || _rulerLabels[i] == null) continue;
@@ -289,9 +419,12 @@ public partial class OverlayWindow : Window
             double x = w - (sec / totalSec) * w;
             bool visible = x >= 0 && x <= w;
             _rulerTicks[i].Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-            _rulerLabels[i].Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-            Canvas.SetLeft(_rulerTicks[i], x);
-            Canvas.SetLeft(_rulerLabels[i], x - 16);
+            var label = _rulerLabels[i];
+            var lw = label.DesiredSize.Width > 0 ? label.DesiredSize.Width : labelW;
+            bool labelVisible = visible && (11 - i) % labelStep == 0; // свежий (правый) край всегда подписан
+            label.Visibility = labelVisible ? Visibility.Visible : Visibility.Collapsed;
+            if (labelVisible)
+                Canvas.SetLeft(label, Math.Max(0, x - lw / 2));
         }
     }
 
@@ -318,8 +451,11 @@ public partial class OverlayWindow : Window
 
     public void SetActivePresets(ObservableCollection<NamedPrompt> presets, string activeName)
     {
+        // Имя показывает NamedPrompt.ToString() — DisplayMemberPath не нужен и опасен:
+        // в прод-логах ловили InvalidOperationException «Нельзя одновременно задать значения
+        // DisplayMemberPath и ItemTemplate» (сеттер бросает, когда ItemTemplate уже задан).
+        // Тот же приём — у ScenarioConfig/LlmProviderProfile (ToString => Name).
         PresetSelector.ItemsSource = presets;
-        PresetSelector.DisplayMemberPath = "Name";
         var found = presets.FirstOrDefault(p => p.Name == activeName);
         if (found == null) found = presets.FirstOrDefault();
         PresetSelector.SelectedItem = found;
@@ -341,6 +477,7 @@ public partial class OverlayWindow : Window
         ApplyPosition(ui.WindowPosition);
         UpdateBorder();
         UpdateFontSize();
+        UpdateBubblePadding();
         ApplyEngineerMode();
 
         SourceInitialized += OnSourceInitialized;
@@ -353,7 +490,6 @@ public partial class OverlayWindow : Window
                 if (Environment.GetEnvironmentVariable("BUDDY_CAPTURE_VISIBLE") != "1")
                 {
                     applyExclude(this);
-                    _excludeFromCaptureApplied = true;
                     _screenCaptureVisible = false;
                 }
                 else
@@ -476,10 +612,10 @@ public partial class OverlayWindow : Window
         }
     }
 
-    private void OnAudioPauseClick(object sender, RoutedEventArgs e)
+    private void OnMicMuteClick(object sender, RoutedEventArgs e)
     {
-        App.Current.TogglePause();
-        RefreshAudioPauseButton();
+        App.Current.ToggleMicMute();
+        RefreshMicMuteButton();
     }
 
     private void OnLlmPauseClick(object sender, RoutedEventArgs e)
@@ -513,27 +649,58 @@ public partial class OverlayWindow : Window
         App.Current.ResetConversation();
     }
 
-    public void ToggleCloak()
+    public void ToggleCloak() => SetCloak(!_clickThroughApplied);
+
+    /// <summary>
+    /// Применить/снять click-through. Единственная точка смены плаща: вызывается
+    /// хоткеями/двойным кликом по хэндлу (ToggleCloak), при старте и при
+    /// ApplyUiConfig — чтобы чекбокс в настройках снимал плащ без рестарта.
+    /// Идемпотентен: повторный вызов с тем же значением ничего не делает.
+    /// </summary>
+    public void SetCloak(bool on)
     {
-        if (_clickThroughApplied)
+        if (on == _clickThroughApplied)
         {
-            WindowHelper.RemoveClickThrough(this);
-            _clickThroughApplied = false;
-            CloakButton.Content = FindResource("IconCloak");
-            CloakButton.Background = Brushes.Transparent;
-            CloakButton.Opacity = 1.0;
-            CloakButton.ToolTip = "Сквозной режим: выключен (клики обрабатываются)";
-            App.Current.Logger.Info("Overlay: cloak OFF (interactive)", "UI");
+            RefreshCloakUi();
+            return;
         }
-        else
+        if (on)
         {
             WindowHelper.ApplyClickThrough(this);
             _clickThroughApplied = true;
-            CloakButton.Content = FindResource("IconCloak");
+        }
+        else
+        {
+            WindowHelper.RemoveClickThrough(this);
+            _clickThroughApplied = false;
+        }
+        RefreshCloakUi();
+        App.Current.Logger.Info($"Overlay: cloak {(on ? "ON (click-through)" : "OFF (interactive)")}", "UI");
+    }
+
+    private void RefreshCloakUi()
+    {
+        bool on = _clickThroughApplied;
+        PressedIconSwap.UpdateKey(CloakButton, "IconCloak");
+        if (on)
+        {
             CloakButton.SetResourceReference(BackgroundProperty, "HoverBrush");
             CloakButton.Opacity = 0.6;
-            CloakButton.ToolTip = "Сквозной режим: включен (клики проходят насквозь)";
-            App.Current.Logger.Info("Overlay: cloak ON (click-through)", "UI");
+        }
+        else
+        {
+            CloakButton.Background = Brushes.Transparent;
+            CloakButton.Opacity = 1.0;
+        }
+        CloakButton.ToolTip = _localizer(on ? "L_Ovl_CloakOn" : "L_Ovl_CloakOff");
+        // Баннер-индикатор: в сквозном режиме кнопки оверлея недоступны мышью,
+        // поэтому баннер текстовый и показывает путь снятия через хоткей/трей.
+        CloakBanner.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        if (on)
+        {
+            var hk = App.Current.Config?.Hotkeys?.OpenSettings;
+            if (string.IsNullOrWhiteSpace(hk)) hk = "Ctrl+Shift+S";
+            CloakBannerBody.Text = string.Format(_localizer("L_Ovl_CloakBannerFmt"), hk);
         }
     }
 
@@ -600,6 +767,33 @@ public partial class OverlayWindow : Window
         _dismissedTarget = _noticeTarget;
     }
 
+    // Ссылка «ответ обрезан» под пузырём ответа — настройки на вкладке «Оверлей»
+    // (поле Ui.MaxAnswerChars подсвечивается золотой рамкой).
+    private void OnTruncatedHintClick(object sender, RoutedEventArgs e)
+    {
+        App.Current.OpenSettingsAndHighlight("overlay");
+    }
+
+    // Лимит длины ответа LLM (Ui.MaxAnswerChars, 0 = без обрезки): обрезка с «…»
+    // + флаг IsAnswerTruncated (под пузырём показывается строка-ссылка в настройки).
+    // Применяется только к финальному тексту ответа; во время стриминга дельты
+    // идут без обрезки (финализация — MarkAnswered). Плейсхолдеры/ошибки
+    // устанавливаются напрямую через item.Answer и лимитом не затрагиваются.
+    private void ApplyAnswerCharLimit(QaPair item, string? answer)
+    {
+        var max = App.Current.Config.Ui.MaxAnswerChars;
+        if (answer != null && max > 0 && answer.Length > max)
+        {
+            item.Answer = answer.Substring(0, max) + "…";
+            item.IsAnswerTruncated = true;
+        }
+        else
+        {
+            item.Answer = answer ?? string.Empty;
+            item.IsAnswerTruncated = false;
+        }
+    }
+
     // Золотистый тост аудио-устройств: 25 секунд и сам исчезает; крестиком — сразу.
     private DispatcherTimer? _deviceToastTimer;
 
@@ -628,6 +822,37 @@ public partial class OverlayWindow : Window
     {
         _deviceToastTimer?.Stop();
         DeviceToast.Visibility = Visibility.Collapsed;
+    }
+
+    // Зелёный тост памяти («LLM добавил факт в память»): 5 секунд и сам исчезает;
+    // повторный вызов перезапускает таймер, крестик — сразу.
+    private DispatcherTimer? _memoryToastTimer;
+
+    /// <summary>Показать зелёный тост «в память добавлено». Вызывать в UI-потоке.</summary>
+    public void ShowMemoryToast(string title, string body)
+    {
+        MemoryToastTitle.Text = title;
+        MemoryToastBody.Text = body;
+        MemoryToast.Visibility = Visibility.Visible;
+        if (_memoryToastTimer == null)
+        {
+            _memoryToastTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+            _memoryToastTimer.Tick += MemoryToastTimerTick;
+        }
+        _memoryToastTimer.Stop();
+        _memoryToastTimer.Start();
+    }
+
+    private void MemoryToastTimerTick(object? s, EventArgs e)
+    {
+        _memoryToastTimer?.Stop();
+        MemoryToast.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnMemoryToastClose(object sender, RoutedEventArgs e)
+    {
+        _memoryToastTimer?.Stop();
+        MemoryToast.Visibility = Visibility.Collapsed;
     }
 
     private void OnMinimizeClick(object sender, RoutedEventArgs e)
@@ -659,8 +884,8 @@ public partial class OverlayWindow : Window
             WindowHelper.RemoveExcludeFromCapture(this);
             WindowHelper.RemoveClickThrough(this);
             ScreenShotButton.Opacity = 1.0;
-            ScreenShotButton.Resources["IconBrush"] = FindResource("WarnBrush"); // жёлтый = режим скриншота активен
-            ScreenShotButton.ToolTip = "Окно видно в захвате экрана — щёлкните чтобы скрыть (Ctrl+Shift+C)";
+            SetStateRing(ScreenShotButton, "WarnBrush"); // золотое кольцо = режим скриншота активен
+            ScreenShotButton.ToolTip = _localizer("L_Ovl_ScreenshotOff");
             App.Current.Logger.Info("Overlay: screen capture VISIBLE (for screenshots)", "UI");
         }
         else
@@ -668,8 +893,8 @@ public partial class OverlayWindow : Window
             WindowHelper.ApplyExcludeFromCapture(this);
             if (_clickThroughApplied) WindowHelper.ApplyClickThrough(this);
             ScreenShotButton.Opacity = 1.0;
-            ScreenShotButton.Resources.Remove("IconBrush"); // вернуть штатный цвет иконки
-            ScreenShotButton.ToolTip = "Режим скриншота: показать окно для захвата (Ctrl+Shift+C)";
+            SetStateRing(ScreenShotButton, null); // вернуть штатный вид
+            ScreenShotButton.ToolTip = _localizer("L_Ovl_ScreenshotOn");
             App.Current.Logger.Info("Overlay: screen capture HIDDEN", "UI");
         }
     }
@@ -688,13 +913,13 @@ public partial class OverlayWindow : Window
         AutoScrollButton.Opacity = 1.0;
         if (_autoScroll)
         {
-            AutoScrollButton.Resources["IconBrush"] = FindResource("WarnBrush");
-            AutoScrollButton.ToolTip = "Автоскролл: ВКЛ (щёлкните чтобы выключить)";
+            SetStateRing(AutoScrollButton, "WarnBrush");
+            AutoScrollButton.ToolTip = _localizer("L_Ovl_AutoScrollOn");
         }
         else
         {
-            AutoScrollButton.Resources.Remove("IconBrush");
-            AutoScrollButton.ToolTip = "Автоскролл: ВЫКЛ (щёлкните чтобы включить)";
+            SetStateRing(AutoScrollButton, null);
+            AutoScrollButton.ToolTip = _localizer("L_Ovl_AutoScrollOff");
         }
     }
 
@@ -811,9 +1036,9 @@ public partial class OverlayWindow : Window
     {
         try
         {
-            ExportIconHost.Content = FindResource("IconExportDone");
+            PressedIconSwap.UpdateKey(ExportTransBtn, "IconExportDone");
             await Task.Delay(1500);
-            ExportIconHost.Content = FindResource("IconExport");
+            PressedIconSwap.UpdateKey(ExportTransBtn, "IconExport");
         }
         catch (Exception ex) { App.Current.Logger.Error("ShowExportDoneCheckmark failed", ex, "UI"); }
     }
@@ -866,25 +1091,53 @@ public partial class OverlayWindow : Window
         catch (Exception ex) { App.Current?.Logger?.Error("CopyToClipboard failed", ex, "UI"); }
     }
 
-    // Пауза аудио живёт на микрофоне в нижней панели: жёлтая иконка = на паузе.
-    public void RefreshAudioPauseButton()
+    // Семантическая смена иконки кнопки нижней пилюли (вкл/выкл-вариант): через
+    // PressedIconSwap.UpdateKey — заодно переключается и Icon*Pressed-арт зажатия.
+    private void SetButtonIcon(System.Windows.Controls.Button btn, string iconKey)
+    {
+        PressedIconSwap.UpdateKey(btn, iconKey);
+    }
+
+    // Активное состояние state-кнопок = кольцо на рамке Bd внутри шаблона.
+    // Старый механизм (IconBrush-тинт) мёртв на BuddyV2-иконках с baked-цветом;
+    // кольцо читается на любом глифе. brushKey=null → кольцо снять.
+    private void SetStateRing(System.Windows.Controls.Button btn, string? brushKey)
+    {
+        if (btn.Template.FindName("Bd", btn) is not Border bd) return;
+        if (brushKey == null)
+        {
+            bd.ClearValue(Border.BorderBrushProperty);
+            bd.ClearValue(Border.BorderThicknessProperty);
+        }
+        else
+        {
+            bd.SetResourceReference(Border.BorderBrushProperty, brushKey);
+            bd.BorderThickness = new Thickness(0.75);
+        }
+    }
+
+    // «Мик выкл» на нижней панели: золотая иконка = микрофон заглушён (динамик живёт).
+    // Полная пауза аудио (Ctrl+Shift+P) здесь не отображается — см. UpdateCombinedStatus.
+    public void RefreshMicMuteButton()
     {
         try
         {
-            if (MicPauseButton == null) return;
-            if (App.Current.IsPaused)
+            if (MicMuteButton == null) return;
+            if (App.Current.Config.Ui.MicMuted)
             {
-                MicPauseButton.Resources["IconBrush"] = FindResource("WarnBrush"); // микрофон жёлтый = аудио на паузе
-                MicPauseButton.ToolTip = "Аудио на паузе — щёлкните, чтобы возобновить (Ctrl+Shift+P)";
+                SetStateRing(MicMuteButton, "WarnBrush"); // золотое кольцо = заглушён
+                SetButtonIcon(MicMuteButton, "IconMicOff");
+                MicMuteButton.ToolTip = _localizer("L_Ovl_MicMuted");
             }
             else
             {
-                MicPauseButton.Resources.Remove("IconBrush"); // вернуть штатный цвет иконки
-                MicPauseButton.ToolTip = "Поставить аудио на паузу (Ctrl+Shift+P)";
+                SetButtonIcon(MicMuteButton, "IconMic");
+                SetStateRing(MicMuteButton, null); // вернуть штатный вид
+                MicMuteButton.ToolTip = FindResource("L_TT_MicMute");
             }
             UpdateCombinedStatus();
         }
-        catch (Exception ex) { App.Current.Logger.Error("RefreshAudioPauseButton failed", ex, "UI"); }
+        catch (Exception ex) { App.Current.Logger.Error("RefreshMicMuteButton failed", ex, "UI"); }
     }
 
     // LLM-пауза больше не имеет иконки в шапке (убрана по фидбеку). Функция доступна по
@@ -895,7 +1148,7 @@ public partial class OverlayWindow : Window
         catch (Exception ex) { App.Current.Logger.Error("RefreshLlmPauseButton failed", ex, "UI"); }
     }
 
-    // «LLM выкл» (чистый транскрибатор): активное состояние — золотая иконка, как у микрофона.
+    // «LLM выкл» (чистый транскрибатор): активное состояние — золотое кольцо, как у микрофона.
     public void RefreshLlmOffButton()
     {
         try
@@ -903,19 +1156,21 @@ public partial class OverlayWindow : Window
             if (LlmOffButton == null) return;
             if (App.Current.Config.Ui.LlmDisabled)
             {
-                LlmOffButton.Resources["IconBrush"] = FindResource("WarnBrush"); // золотой = LLM выключен
-                LlmOffButton.ToolTip = "LLM выключен — чистый транскрибатор (щёлкните, чтобы включить)";
+                SetStateRing(LlmOffButton, "WarnBrush"); // золотое кольцо = LLM выключен
+                SetButtonIcon(LlmOffButton, "IconLlmOff");
+                LlmOffButton.ToolTip = _localizer("L_Ovl_LlmOffActive");
             }
             else
             {
-                LlmOffButton.Resources.Remove("IconBrush"); // вернуть штатный цвет иконки
+                SetButtonIcon(LlmOffButton, "IconLlm");
+                SetStateRing(LlmOffButton, null); // вернуть штатный вид
                 LlmOffButton.ToolTip = FindResource("L_TT_LlmOff");
             }
         }
         catch (Exception ex) { App.Current.Logger.Error("RefreshLlmOffButton failed", ex, "UI"); }
     }
 
-    // «Динамик выкл» (мьют loopback): активное состояние — та же золотая подсветка.
+    // «Динамик выкл» (мьют loopback): активное состояние — та же золотая рамка.
     public void RefreshSpeakerMuteButton()
     {
         try
@@ -923,23 +1178,45 @@ public partial class OverlayWindow : Window
             if (SpeakerMuteButton == null) return;
             if (App.Current.Config.Ui.LoopbackMuted)
             {
-                SpeakerMuteButton.Resources["IconBrush"] = FindResource("WarnBrush"); // золотой = динамик заглушен
-                SpeakerMuteButton.ToolTip = "Динамик выключен — звук системы не распознаётся (щёлкните, чтобы включить)";
+                SetStateRing(SpeakerMuteButton, "WarnBrush"); // золотое кольцо = динамик заглушен
+                SetButtonIcon(SpeakerMuteButton, "IconSpeakerOff");
+                SpeakerMuteButton.ToolTip = _localizer("L_Ovl_SpeakerMuted");
             }
             else
             {
-                SpeakerMuteButton.Resources.Remove("IconBrush");
+                SetButtonIcon(SpeakerMuteButton, "IconSpeaker");
+                SetStateRing(SpeakerMuteButton, null);
                 SpeakerMuteButton.ToolTip = FindResource("L_TT_SpeakerMute");
             }
         }
         catch (Exception ex) { App.Current.Logger.Error("RefreshSpeakerMuteButton failed", ex, "UI"); }
     }
 
-    private void UpdateCombinedStatus()
+    // Статусная строка теперь единая: приоритетное состояние резолвит App
+    // (OverlayStatusResolver) — здесь только триггерим пересчёт.
+    private void UpdateCombinedStatus() => App.Current.RefreshOverlayStatus();
+
+    // В строке может жить транзиентный текст (OCR-слежение, «Отправлено…», протокол,
+    // вспышка FlashStatus) — резолвленный «Готов…» не должен затирать его мгновенно.
+    // Ставится SetStatus/FlashStatus, снимается при первом же реальном применении статуса.
+    private bool _transientHold;
+
+    /// <summary>Применить резолвленный статус: строка StatusText + плашка пустого состояния.</summary>
+    public void ApplyStatus(BrainstormBuddy.Services.OverlayStatus st)
     {
-        if (App.Current.IsPaused) { StatusText.Text = App.Current.T("L_St_AudioPaused"); return; }
-        if (App.Current.IsLlmPaused) { StatusText.Text = App.Current.T("L_St_LlmPaused"); return; }
-        StatusText.Text = App.Current.T("L_Listening");
+        if (!Dispatcher.CheckAccess()) { Dispatcher.Invoke(() => ApplyStatus(st)); return; }
+        if (!_transientHold || st.IsError)
+        {
+            StatusText.Text = st.Title;
+            var brushKey = st.IsError && TryFindResource("WarnBrush") != null ? "WarnBrush"
+                : st.IsError ? "AccentBrush" : "TextMutedBrush";
+            StatusText.SetResourceReference(ForegroundProperty, brushKey);
+            _transientHold = false;
+        }
+        // Плашка холодного старта — не статус-строка: обновляем всегда.
+        ColdStartTitle.Text = st.Title;
+        if (st.Detail != null) { ColdStartBody.Text = st.Detail; ColdStartBody.Visibility = Visibility.Visible; }
+        else { ColdStartBody.Text = ""; ColdStartBody.Visibility = Visibility.Collapsed; }
     }
 
     public void SetStatus(string text)
@@ -950,22 +1227,25 @@ public partial class OverlayWindow : Window
             if (App.Current.IsPaused) return;
             if (App.Current.IsLlmPaused) return;
             StatusText.Text = text;
+            StatusText.SetResourceReference(ForegroundProperty, "TextMutedBrush");
+            _transientHold = true;
         });
     }
 
-    // Кратко подсветить статус (напр. «✓ сохранено …») зелёным и вернуть «Слушаю…».
+    // Кратко подсветить статус (напр. «✓ сохранено …») зелёным и вернуть резолвленное состояние.
     private int _flashToken;
     public void FlashStatus(string text, int seconds = 4)
     {
         Dispatcher.Invoke(async () =>
         {
+            _transientHold = true;
             var myToken = ++_flashToken;
             StatusText.Text = text;
             StatusText.SetResourceReference(ForegroundProperty, "SuccessBrush");
             await Task.Delay(seconds * 1000);
             if (myToken != _flashToken) return; // перезаписано новым flash — не трогаем
-            StatusText.SetResourceReference(ForegroundProperty, "TextMutedBrush");
-            StatusText.Text = (string)FindResource("L_Listening");
+            _transientHold = false;
+            App.Current.RefreshOverlayStatus(); // вернуть резолвленный статус (сам выставит цвет)
         });
     }
 
@@ -974,7 +1254,8 @@ public partial class OverlayWindow : Window
         QaPair? item = null;
         Dispatcher.Invoke(() =>
         {
-            item = new QaPair { Question = question, Answer = answer, Status = QaStatus.Answered };
+            item = new QaPair { Question = question, Status = QaStatus.Answered };
+            ApplyAnswerCharLimit(item, answer);
             History.Add(item);
             lock (_fullHistory) _fullHistory.Add(item);
             while (History.Count > 30) History.RemoveAt(0);
@@ -986,9 +1267,11 @@ public partial class OverlayWindow : Window
     // transcriptOnly («LLM выкл»): пузырь чистого транскрибатора — без строки «ожидание»,
     // сразу Answered с пустым ответом (блок «ОТВЕТ» прячет AnswerSectionVisibility),
     // LLM-блинк не зажигаем — отправки не будет.
+    // ocrLatencyMs > 0 → источник OCR (экран): под вопросом показываем «OCR Xs»,
+    // а STT-времена должны приходить null (STT в этом потоке не участвовал).
     public QaPair AddSendingItem(string question, double audioSeconds,
-        DateTime chunkReadyAt, DateTime sttSentAt, DateTime sttReceivedAt, double sttLatencyMs,
-        bool transcriptOnly = false)
+        DateTime chunkReadyAt, DateTime? sttSentAt, DateTime? sttReceivedAt, double sttLatencyMs,
+        bool transcriptOnly = false, double ocrLatencyMs = 0, string? speakerId = null)
     {
         QaPair? item = null;
         Dispatcher.Invoke(() =>
@@ -1003,7 +1286,12 @@ public partial class OverlayWindow : Window
                 SttSentAt = sttSentAt,
                 SttReceivedAt = sttReceivedAt,
                 SttLatencyMs = sttLatencyMs,
+                OcrLatencyMs = ocrLatencyMs,
+                SpeakerId = speakerId,
             };
+            // Чипы всех спикеров пузыря: метки «[S<n>]» из текста + доминантный.
+            item.SetSpeakers(question, speakerId, App.Current.GetSpeakerAlias);
+            item.SpeakerAlias = App.Current.GetSpeakerAlias(speakerId);
             History.Add(item);
             lock (_fullHistory) _fullHistory.Add(item);
             while (History.Count > 30) History.RemoveAt(0);
@@ -1146,13 +1434,12 @@ public partial class OverlayWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
-            item.Answer = answerText;
+            ApplyAnswerCharLimit(item, answerText);
             item.HrdAdvice = hrdAdvice;
             item.StressDefense = stressDefense;
             item.LlmReceivedAt = DateTime.Now;
             item.Status = QaStatus.Answered;
             item.OnPropertyChanged("LlmReceivedText");
-            item.OnPropertyChanged("LlmLatencyText");
             item.OnPropertyChanged("TotalLatencyText");
             item.OnPropertyChanged("LatencyBrush");
             _llmBlink = History.Any(h => h.Status == QaStatus.Sending);
@@ -1172,12 +1459,11 @@ public partial class OverlayWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
-            item.Answer = answer;
+            ApplyAnswerCharLimit(item, answer);
             item.LlmReceivedAt = llmReceivedAt;
             item.LlmLatencyMs = llmLatencyMs;
             item.Status = QaStatus.Answered;
             item.OnPropertyChanged("LlmReceivedText");
-            item.OnPropertyChanged("LlmLatencyText");
             item.OnPropertyChanged("TotalLatencyText");
             item.OnPropertyChanged("LatencyBrush");
             _llmBlink = History.Any(h => h.Status == QaStatus.Sending);
@@ -1219,12 +1505,12 @@ public partial class OverlayWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
-            item.Answer = $"[ошибка] {error}";
+            item.Answer = string.Format(_localizer("L_Ovl_ErrorFmt"), error);
+            item.IsAnswerTruncated = false; // ошибка — не «обрезанный ответ», подсказку не показываем
             item.LlmReceivedAt = llmReceivedAt;
             item.LlmLatencyMs = llmLatencyMs;
             item.Status = QaStatus.Failed;
             item.OnPropertyChanged("LlmReceivedText");
-            item.OnPropertyChanged("LlmLatencyText");
             item.OnPropertyChanged("TotalLatencyText");
             item.OnPropertyChanged("LatencyBrush");
             _llmBlink = History.Any(h => h.Status == QaStatus.Sending);
@@ -1325,6 +1611,8 @@ public partial class OverlayWindow : Window
 
     private void OnBlinkTick(object? sender, EventArgs e)
     {
+        // На границе закрытия тик может проскочить до отработки OnClosed — гасим.
+        if (!IsLoaded) return;
         _blinkOn = !_blinkOn;
         try
         {
@@ -1363,7 +1651,12 @@ public partial class OverlayWindow : Window
         ApplyPosition(ui.WindowPosition);
         UpdateBorder();
         UpdateFontSize();
+        UpdateBubblePadding();
         ApplyEngineerMode();
+        // Синк click-through с конфигом: снятие галки «Сквозной режим» в настройках
+        // (Save → ApplyLiveConfigChanges → сюда) должно снимать плащ без рестарта,
+        // а включённая галка — ставить его при сохранении настроек.
+        SetCloak(ui.ClickThrough);
         App.Current.Logger.Info($"Overlay.ApplyUiConfig: opacity={ui.WindowOpacity:F2}, position={ui.WindowPosition}, fontSize={ui.FontSize}, engineer={ui.EngineerMode}", "UI");
     }
 
@@ -1384,10 +1677,30 @@ public partial class OverlayWindow : Window
         // Обновляем App-ресурсы — DynamicResource-биндинги в шаблоне подхватят вживую.
         double baseSize = _uiConfig.FontSize <= 0 ? 15 : _uiConfig.FontSize;
         App.Current.Resources["OverlayAnswerFontSize"] = baseSize;
-        App.Current.Resources["OverlayQuestionFontSize"] = Math.Max(9, baseSize - 1.5);
+        // Высота строки ответа: round(F × 1.45) по спецификации волны 01
+        App.Current.Resources["OverlayAnswerLineHeight"] = Math.Round(baseSize * 1.45);
+        // Вопрос: Inter 14/20 при дефолтном F=15 → сдвиг -1 даёт 14; line-height 20/14 пропорционально
+        double questionSize = Math.Max(9, baseSize - 1);
+        App.Current.Resources["OverlayQuestionFontSize"] = questionSize;
+        App.Current.Resources["OverlayQuestionLineHeight"] = Math.Round(questionSize * 20.0 / 14.0);
         // Тех-строка rec/STT/LLM (справа от «ОТВЕТ») — вкл/выкл по Ui.ShowTimingLine
         App.Current.Resources["TimingLineVisibility"] =
             _uiConfig.ShowTimingLine ? Visibility.Visible : Visibility.Collapsed;
+        // Тех-метки STT/OCR/аудио у вопроса (точка-статус + mono-строка) — отдельный
+        // флаг Ui.ShowQuestionTimingLine; speaker-чипы им не глушатся.
+        App.Current.Resources["QuestionTimingLineVisibility"] =
+            _uiConfig.ShowQuestionTimingLine ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // Внутренние отступы текста в пузырях вопроса/ответа — настройка Ui.BubblePadding (px).
+    // Пропорция исходного макета: горизонталь = padding*1.25, вертикаль = padding
+    // (при дефолте 12 → 15,12 — близко к бывшим 15,11/16,14, визуально без изменений).
+    // App-ресурс + DynamicResource в QaPairTemplate → применяется вживую и при создании баблов.
+    private void UpdateBubblePadding()
+    {
+        double p = _uiConfig.BubblePadding;
+        if (p < 0) p = 12;
+        App.Current.Resources["OverlayBubblePadding"] = new Thickness(p * 1.25, p, p * 1.25, p);
     }
 
     private void ApplyPosition(string position)
@@ -1439,6 +1752,19 @@ public partial class OverlayWindow : Window
             _uiConfig.WindowPositionY = Top;
         }
     }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        // Окно при выходе приложения умирает вместе с диспетчером без явного Close
+        // из App.OnExit — тики 500мс-таймеров успевали влететь в разрушенное
+        // состояние (NRE в OnBlinkTick/OnTimelineTick → FATAL в логе shutdown).
+        // Отписываемся ДО base, пока диспетчер ещё принимает отмену.
+        _blinkTimer.Stop();
+        _blinkTimer.Tick -= OnBlinkTick;
+        _timelineTimer.Stop();
+        _timelineTimer.Tick -= OnTimelineTick;
+        base.OnClosed(e);
+    }
 }
 
 public enum QaStatus { Pending, Sending, Answered, Failed }
@@ -1451,6 +1777,7 @@ public class QaPair : INotifyPropertyChanged
     private QaStatus _status = QaStatus.Pending;
     private bool _isFocused;
     private bool _answerStreaming;
+    private string? _speakerId;
 
     // === Тайминги (локальное время юзера, DateTime.Now) ===
     public DateTime? ChunkReadyAt { get; set; }    // когда VAD выдал чанк
@@ -1460,7 +1787,18 @@ public class QaPair : INotifyPropertyChanged
     public DateTime? LlmReceivedAt { get; set; }    // когда LLM ответ пришёл
     public double SttLatencyMs { get; set; }        // STT: от POST до ответа
     public double LlmLatencyMs { get; set; }        // LLM: от POST до ответа
+    public double OcrLatencyMs { get; set; }        // OCR: полный проход (захват+препроц+движок)
     public double AudioChunkSeconds { get; set; }   // длина аудио чанка (rec время)
+    /// <summary>Идентификатор спикера диаризации ("S1".."S8", "S?" = не определён, null = фича выкл).</summary>
+    public string? SpeakerId
+    {
+        get => _speakerId;
+        set
+        {
+            _speakerId = value;
+            OnPropertyChanged();
+        }
+    }
 
     public string Question { get => _question; set { _question = value; OnPropertyChanged(); } }
     // Ответ нормализуем: схлопываем 2+ пустых строк в один перенос — иначе модель шлёт
@@ -1505,6 +1843,112 @@ public class QaPair : INotifyPropertyChanged
     public Visibility AnswerSectionVisibility =>
         _status == QaStatus.Answered && string.IsNullOrEmpty(_answer) ? Visibility.Collapsed : Visibility.Visible;
 
+    /// <summary>Финальный ответ превысил Ui.MaxAnswerChars и обрезан — под баблём
+    /// видна строка-ссылка «увеличьте лимит символов» (открывает настройки на вкладке «Оверлей»).</summary>
+    public bool IsAnswerTruncated
+    {
+        get => _isAnswerTruncated;
+        set { _isAnswerTruncated = value; OnPropertyChanged(); OnPropertyChanged(nameof(AnswerTruncatedVisibility)); }
+    }
+    private bool _isAnswerTruncated;
+    public Visibility AnswerTruncatedVisibility =>
+        _isAnswerTruncated ? Visibility.Visible : Visibility.Collapsed;
+
+    // === Speaker chips (диаризация) ===
+    /// <summary>
+    /// Все спикеры пузыря в порядке появления: метки «[S1]»…«[S<n>]» из текста вопроса
+    /// (внутричанковая разметка) + доминантный <see cref="SpeakerId"/>, если он не вошёл.
+    /// </summary>
+    public IReadOnlyList<string> SpeakerIds { get; private set; } = Array.Empty<string>();
+
+    /// <summary>Чипы спикеров под вопросом — по одному на каждый id кроме «S?».</summary>
+    public IReadOnlyList<SpeakerChipVm> SpeakerChips { get; private set; } = Array.Empty<SpeakerChipVm>();
+
+    /// <summary>Строка чипов видима, только если есть хоть один реально определённый спикер («S?» не считается).</summary>
+    public Visibility SpeakerChipsVisibility =>
+        SpeakerIds.Count > 0 && SpeakerIds.Any(id => id != "S?") ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>Алиас доминантного спикера («S1» → «Иван»); назначается из контекстного меню чипа.</summary>
+    public string? SpeakerAlias
+    {
+        get => _speakerAlias;
+        set
+        {
+            _speakerAlias = value;
+            OnPropertyChanged();
+            // Доминантный чип этого пузыря следует за алиасом (SetSpeakerAlias обновляет пары через это свойство).
+            if (!string.IsNullOrEmpty(SpeakerId))
+                ApplySpeakerAlias(SpeakerId, value);
+        }
+    }
+    private string? _speakerAlias;
+
+    /// <summary>Применить алиас ко всем чипам пузыря с этим id (доминантному и вторичным).</summary>
+    public void ApplySpeakerAlias(string speakerId, string? alias)
+    {
+        foreach (var chip in SpeakerChips)
+            if (chip.Id == speakerId)
+                chip.Alias = alias;
+    }
+
+    // Детерминированная палитра: один спикер — один цвет в течение всей сессии
+    // (S-номера сбрасываются ResetConversation'ом вместе с кластером).
+    private static readonly Brush[] SpeakerPalette =
+    {
+        new SolidColorBrush(Color.FromRgb(0x60, 0xA5, 0xFA)), // S1 blue
+        new SolidColorBrush(Color.FromRgb(0xF4, 0x72, 0xB6)), // S2 pink
+        new SolidColorBrush(Color.FromRgb(0x34, 0xD3, 0x99)), // S3 green
+        new SolidColorBrush(Color.FromRgb(0xFB, 0xBF, 0x24)), // S4 amber
+        new SolidColorBrush(Color.FromRgb(0xA7, 0x8B, 0xFA)), // S5 violet
+        new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)), // S6 red
+        new SolidColorBrush(Color.FromRgb(0x22, 0xD3, 0xEE)), // S7 cyan
+        new SolidColorBrush(Color.FromRgb(0xFB, 0x92, 0x3C)), // S8 orange
+    };
+    private static readonly Brush SpeakerBrushFallback = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF));
+
+    /// <summary>Цвет чипа по id спикера: «S1»→палитра[0] и т.д., нераспознанный id → серый.</summary>
+    public static Brush SpeakerBrushFor(string? id)
+    {
+        if (!string.IsNullOrEmpty(id) && id[0] == 'S'
+            && int.TryParse(id[1..], out var n) && n >= 1)
+            return SpeakerPalette[(n - 1) % SpeakerPalette.Length];
+        return SpeakerBrushFallback;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex SpeakerTagRe = new(@"\[S(\d+)\]");
+
+    /// <summary>
+    /// Заполняет SpeakerIds/SpeakerChips: уникальные метки «[S<n>]» из question в порядке
+    /// появления + доминантный id, если задан и не вошёл. «[Микрофон]»/«[Динамик]»/«[screen]»/
+    /// «[музыка]» не матчатся (только S+цифры); «S?» чипом не становится.
+    /// </summary>
+    public void SetSpeakers(string? question, string? dominantSpeakerId, Func<string, string?>? aliasResolver = null)
+    {
+        List<string>? ids = null;
+        if (!string.IsNullOrEmpty(question))
+        {
+            foreach (System.Text.RegularExpressions.Match m in SpeakerTagRe.Matches(question))
+            {
+                var id = "S" + m.Groups[1].Value;
+                ids ??= new List<string>();
+                if (!ids.Contains(id)) ids.Add(id);
+            }
+        }
+        if (!string.IsNullOrEmpty(dominantSpeakerId)
+            && (ids == null || !ids.Contains(dominantSpeakerId)))
+        {
+            (ids ??= new List<string>()).Add(dominantSpeakerId);
+        }
+        SpeakerIds = ids ?? (IReadOnlyList<string>)Array.Empty<string>();
+
+        var chips = new List<SpeakerChipVm>(SpeakerIds.Count);
+        foreach (var id in SpeakerIds)
+        {
+            if (id == "S?") continue; // «спикер не определён» — чип не показываем
+            chips.Add(new SpeakerChipVm(id, aliasResolver?.Invoke(id)));
+        }
+        SpeakerChips = chips;
+    }
     public Brush StatusBrush => _status switch
     {
         QaStatus.Sending => new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6)),
@@ -1525,7 +1969,7 @@ public class QaPair : INotifyPropertyChanged
 
     public string SttLatencyText => SttLatencyMs > 0 ? $"STT {SttLatencyMs/1000:F1}s" : "";
 
-    public string LlmLatencyText => LlmLatencyMs > 0 ? $"LLM {LlmLatencyMs/1000:F1}s" : "";
+    public string OcrLatencyText => OcrLatencyMs > 0 ? $"OCR {OcrLatencyMs/1000:F1}s" : "";
 
     public string TotalLatencyText
     {
@@ -1593,5 +2037,36 @@ public class QaPair : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public void OnPropertyChanged([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name ?? string.Empty));
+}
+
+/// <summary>
+/// Чип спикера под пузырём вопроса (внутричанковая диаризация): Id («S1»),
+/// Text — алиас ?? id, Brush — детерминированный цвет из палитры QaPair.
+/// </summary>
+public class SpeakerChipVm : INotifyPropertyChanged
+{
+    public SpeakerChipVm(string id, string? alias)
+    {
+        Id = id;
+        _alias = alias;
+        Brush = QaPair.SpeakerBrushFor(id);
+    }
+
+    public string Id { get; }
+    public Brush Brush { get; }
+
+    /// <summary>Ручной алиас спикера; при смене обновляет Text чипа.</summary>
+    public string? Alias
+    {
+        get => _alias;
+        set { _alias = value; OnPropertyChanged(); OnPropertyChanged(nameof(Text)); }
+    }
+    private string? _alias;
+
+    public string Text => _alias ?? Id;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged([CallerMemberName] string? name = null)
         => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name ?? string.Empty));
 }

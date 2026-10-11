@@ -164,8 +164,11 @@ public class AgentOrchestrator
             if (lastErr != null && string.IsNullOrWhiteSpace(text))
                 return new AgentResponse(agent.Id, agent.Name, agent.Color, "", false, sw.ElapsedMilliseconds, lastErr);
 
-            // [SILENT] считаем и когда модель добавила его в начало ответа с пояснением
-            var isSilent = text.Trim() == SilentToken || text.TrimStart().StartsWith(SilentToken, StringComparison.Ordinal);
+            // [SILENT] считаем и когда модель добавила его в начало ответа с пояснением.
+            // Плюс литеральные маркеры молчания (2.16.0): «(empty)», «пустой ответ», «(空)»
+            // — та же семантика, что [SILENT], иначе мусор уходит в пузырь.
+            var isSilent = text.Trim() == SilentToken || text.TrimStart().StartsWith(SilentToken, StringComparison.Ordinal)
+                || LlmAnswerSanitizer.IsSilentMarkerAnswer(text);
 
             // Дедуп: если ответ почти дословно повторяет прошлый ответ ЭТОГО агента — это
             // залипание, а не осмысленный ответ. Глушим в [SILENT].

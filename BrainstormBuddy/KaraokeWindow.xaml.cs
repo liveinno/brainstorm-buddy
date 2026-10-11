@@ -12,13 +12,17 @@ using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using BrainstormBuddy.Config;
 using BrainstormBuddy.Native;
+using Application = System.Windows.Application;
 
 namespace BrainstormBuddy;
 
 /// <summary>
 /// Караоке-оверлей (телесуфлёр): полупрозрачная полоса с лентой подсказок.
-/// Новые строки въезжают снизу (TranslateTransform ленты), старые уплывают вверх
-/// и гаснут по возрасту. Референс — karaoke-overlay-v1-teleprompter.html.
+/// Строки прибиты к нижнему краю полосы (свежая реплика у нижней кромки —
+/// у взгляда, история нарастает вверх); полоса резиновая — высота окна едет
+/// за контентом до потолка StripHeight (пустая лента схлопывается в 0);
+/// при переполнении лента скроллится вверх (Canvas.Top ленты → -(overflow)),
+/// старшие строки гаснут по возрасту.
 ///
 /// Env-хуки (см. контракт §6):
 ///   BUDDY_CAPTURE_VISIBLE=1 — не применять exclude-from-capture (окно видно на скриншотах);
@@ -32,15 +36,19 @@ public partial class KaraokeWindow : Window
     // Затухание по возрасту (как в прототипе): age → opacity.
     private static readonly double[] AgeOpacity = { 1.0, 0.72, 0.48, 0.28, 0.14, 0.06 };
 
-    // Мягкое затухание верха ленты (аналог mask-image в прототипе). Вешается на
-    // LinesPanel, а не на Strip: RelativeToBoundingBox берёт 24% от высоты ленты,
-    // а не всего окна — иначе на полноэкранной полосе верх затирался на сотни px.
-    private static readonly LinearGradientBrush _topFadeMask = Freeze(
+    // Затухание верха ленты (аналог mask-image в прототипе). Вешается на LinesPanel,
+    // а не на Strip: RelativeToBoundingBox берёт 24% от высоты контента ленты —
+    // при скролле маска движется вместе со строками и гасит только верхние строки.
+    // Альфа верхнего стопа = MinHistoryOpacity (старшие строки остаются читаемыми);
+    // при HistoryFade=false маска снимается совсем (ApplyFadeMask в ApplyConfig).
+    private const double TopFadePortion = 0.24;
+
+    private static LinearGradientBrush TopFadeMask(double minOpacity) => Freeze(
         new LinearGradientBrush(
             new GradientStopCollection
             {
-                new GradientStop(Colors.Transparent, 0.0),
-                new GradientStop(Colors.Black, 0.24)
+                new GradientStop(Color.FromScRgb((float)Clamp(minOpacity, 0.0, 1.0), 0f, 0f, 0f), 0.0),
+                new GradientStop(Colors.Black, TopFadePortion)
             },
             new System.Windows.Point(0, 0), new System.Windows.Point(0, 1)));
 
@@ -63,24 +71,21 @@ public partial class KaraokeWindow : Window
 
     // Кисти строк: _textBrush — единый цвет при AgeColorFade=false (TextColor);
     // _ageBrushes[age] — цвет по возрасту при фейде (золото FreshColor на age0,
-    // старшие строки — OldLinesColor; TextColor в фейде не участвует).
+    // старшие строки — OldLinesColor; TextColor в фейде не участвует);
+    // _questionBrush — реплики собеседника (роль "question"), розовый акцент
+    // вне зависимости от возраста/фейда — их надо отличать от ответов.
     // Пересобираются в ApplyConfig — на push лишь выбор из кэша, без аллокаций.
     // Все кисти заморожены.
     private Brush _textBrush = FrozenBrush(null, Colors.White);
+    private Brush _questionBrush = FrozenBrush(null, Color.FromArgb(0xFF, 0xF2, 0x7A, 0x8A));
     private Brush[] _ageBrushes = Array.Empty<Brush>();
 
-    // Демо-лента: 8 русских подсказок, роли по кругу answer/question/user.
+    // Демо-лента: 8 подсказок из ресурсов (локализуемые), роли по кругу answer/question/user.
     private static readonly string[] DemoRoles = { "answer", "question", "user" };
-    private static readonly string[] DemoHints =
+    private static readonly string[] DemoHintKeys =
     {
-        "Подчеркните опыт с WASAPI loopback и низколатентным аудио — это ваше ключевое отличие.",
-        "Можно ответить так: буфер держит 10 секунд контекста и отправляет в модель только последний вопрос собеседника.",
-        "Упомяните, что VAD отсекает тишину, поэтому токены не тратятся на паузы.",
-        "Если спросят про приватность: аудио не пишется на диск, буфер живёт только в памяти.",
-        "Короткий вариант: оверлей click-through, не перехватывает фокус и не виден на демонстрации экрана.",
-        "Стоит добавить цифру: сквозная задержка от слова до подсказки — около полутора секунд.",
-        "Спросите в ответ, какой у них сейчас стек распознавания речи — это покажет экспертность.",
-        "Сворачивайте тему: предложите показать живое демо прямо на этом звонке."
+        "L_Kar_Demo1", "L_Kar_Demo2", "L_Kar_Demo3", "L_Kar_Demo4",
+        "L_Kar_Demo5", "L_Kar_Demo6", "L_Kar_Demo7", "L_Kar_Demo8"
     };
 
     private KaraokeConfig _cfg = new();
@@ -99,6 +104,17 @@ public partial class KaraokeWindow : Window
     private LineEntry? _streamEntry;
     private bool _streamSuppressed;
 
+    // Текущая цель позиции ленты (Canvas.Top LinesPanel): >0 — контент ниже
+    // вьюпорта, прижат к нижнему краю (пустота сверху); <0 — лента сдвинута
+    // вверх при переполнении (старшие строки ушли за верхний край). Хранится,
+    // чтобы LayoutUpdated-реконсиляция не сбивала бегущую анимацию скролла.
+    private double _panelTargetY;
+    // Ширина ленты при последнем замере строк. Если окно/боковой якорь поменяли
+    // ширину после первого Measure, DesiredSize строк зависает на старой ширине
+    // (StackPanel не перевешивает, пока не изменится его собственный constraint).
+    // Отслеживаем ActualWidth и при смене инвалидируем measure — см. OnLayoutUpdated.
+    private double _lastPanelWidth = -1;
+
     /// <summary>Строка ленты: VM (текст/роль/возраст) + созданный для неё UI.</summary>
     private sealed class LineEntry
     {
@@ -112,8 +128,14 @@ public partial class KaraokeWindow : Window
     public KaraokeWindow()
     {
         InitializeComponent();
-        LinesPanel.OpacityMask = _topFadeMask;
+        ApplyFadeMask(); // OpacityMask зависит от HistoryFade/MinHistoryOpacity
         BgLayer.BorderBrush = _borderBrush;
+        // Любой проход layout (Show, ресайс, рост ленты от пушей/стрим-дельт,
+        // удаление строк, рестайл) — подгоняем высоту окна под контент и
+        // реконсилим скролл. LayoutUpdated, а не SizeChanged: RenderSize ленты
+        // при переполнении упирается в вьюпорт и перестаёт расти, а DesiredSize
+        // (содержимое за краем) продолжает меняться — ловим каждый проход.
+        LayoutUpdated += (_, _) => OnLayoutUpdated();
         // Демо-тик ~1.5с; без per-frame таймеров — все анимации на composition thread.
         _demoTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
         _demoTimer.Tick += OnDemoTick;
@@ -141,6 +163,36 @@ public partial class KaraokeWindow : Window
             Show();
             StartDemo();
         }
+    }
+
+    /// <summary>Окно сейчас показано (Show() был после последнего Hide()).
+    /// Единственный источник истины о видимости: WPF IsVisible у прозрачного
+    /// неактивированного окна врёт (false при нулевой высоте и до первого
+    /// рендера) — тогл по IsVisible требовал двух нажатий хоткея: первое шло
+    /// по ветке «показать» и Clear() затирал ленту. Ставится в Show()/Hide(),
+    /// сбрасывается в OnClosed.</summary>
+    public bool IsShown { get; private set; }
+
+    // Shadowing, не override: Window.Show()/Hide() невиртуальные. Все вызовы
+    // идут по ссылке типа KaraokeWindow (_karaoke в App, PreviewKaraoke) —
+    // флаг не разойдётся с реальным состоянием.
+    public new void Show()
+    {
+        IsShown = true; // до base.Show(): layout при показе уже видит флаг
+        base.Show();
+    }
+
+    public new void Hide()
+    {
+        IsShown = false; // до base.Hide(): синхронные колбэки уже видят «скрыто»
+        base.Hide();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        IsShown = false;
+        _demoTimer.Stop(); // иначе тикающий таймер диспетчера держит окно живым
+        base.OnClosed(e);
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -193,21 +245,32 @@ public partial class KaraokeWindow : Window
         RebuildAgeBrushes();
 
         LinesPanel.Margin = new Thickness(Clamp(cfg.InnerPadding, 0, 80));
+        // Ширина ленты = ширина окна МИНУС горизонтальный паддинг. Раньше Width
+        // биндился к Strip.ActualWidth, а Margin добавлялся снаружи — лента
+        // выходила за правый край окна на 2*InnerPadding и текст резался
+        // (баг «текст уехал вправо, слева пустота»).
+        SyncPanelWidth();
 
-        // Рестайл уже показанных строк; затухание по возрасту — с учётом DimByAge.
+        // OpacityMask верхнего фейда: снимается при HistoryFade=false, альфа верха
+        // масштабируется MinHistoryOpacity — иначе верх ленты гаснет внезависимости
+        // от выключенного димминга (регрессия: «строки светлого, а верх тёмный»).
+        ApplyFadeMask();
+
+        // Рестайл уже показанных строк; затухание по возрасту — с учётом HistoryFade.
         foreach (var entry in _lines)
         {
             StyleLine(entry);
             if (!entry.Removing)
             {
-                double target = cfg.DimByAge ? AgeOpacity[Math.Min(entry.Vm.Age, AgeOpacity.Length - 1)] : 1.0;
+                double target = EffectiveOpacity(entry.Vm.Age);
                 entry.Vm.Opacity = target;
                 AnimateOpacity(entry.Root, target);
             }
         }
 
+        ApplyPosition(); // ширина/якорь + резиновая высота под контент (через UpdateElasticHeight)
+        SnapScroll();    // высоты строк могли измениться (шрифт/перенос) — к низу мгновенно
         ApplyNativeModes();
-        ApplyPosition();
     }
 
     /// <summary>
@@ -233,7 +296,7 @@ public partial class KaraokeWindow : Window
     // буферизованное. Демо/предпросмотр не задевает — StartDemo/PushLine идут после Show().
     private bool CanShowRole(string role)
     {
-        if (!IsVisible) return false;
+        if (!IsShown) return false;
         return role switch
         {
             "answer" => _cfg.ShowAnswers,
@@ -308,8 +371,32 @@ public partial class KaraokeWindow : Window
             && string.IsNullOrWhiteSpace(entry.Vm.Text)
             && _lines.Remove(entry))
         {
-            LinesPanel.Children.Remove(entry.Root);
+            RemoveLine(entry);
             RefreshAges(); // маркер/возраст соседей пересчитываются под новый хвост
+        }
+    }
+
+    /// <summary>Стриминг (SSE): ВЫКИНУТЬ стрим-строку целиком — ответ отменён.
+    /// Отличие от EndStreamLine (которая убирает лишь пустую строку): снимает
+    /// строку даже с текстом — для случая «модель стримом написала маркер
+    /// молчания» («(empty)», «(空)», «…»), который на уровне Core считается
+    /// осознанной тишиной и не должен оставаться в ленте (2.16.1).</summary>
+    public void DropStreamLine()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(DropStreamLine));
+            return;
+        }
+
+        var entry = _streamEntry;
+        _streamEntry = null;
+        _streamSuppressed = false;
+
+        if (entry != null && !entry.Removing && _lines.Remove(entry))
+        {
+            RemoveLine(entry);
+            RefreshAges();
         }
     }
 
@@ -326,8 +413,9 @@ public partial class KaraokeWindow : Window
         LinesPanel.Children.Clear();
         _streamEntry = null;
         _streamSuppressed = false;
-        LinesTransform.BeginAnimation(TranslateTransform.YProperty, null);
-        LinesTransform.Y = 0;
+        SetPanelY(0);
+        _panelTargetY = 0;
+        UpdateElasticHeight(); // пустая лента → полоса схлопывается до нулевой высоты
     }
 
     /// <summary>Демо-режим: цикл по 8 русским подсказкам, роли по кругу. Без фильтрации —
@@ -344,8 +432,11 @@ public partial class KaraokeWindow : Window
 
     private void OnDemoTick(object? sender, EventArgs e)
     {
+        if (!IsShown) return; // скрытая полоса молчит: не копим ленту в фоне
         int i = _demoIndex++;
-        AddLineCore(DemoRoles[i % DemoRoles.Length], DemoHints[i % DemoHints.Length]);
+        var hint = Application.Current?.TryFindResource(DemoHintKeys[i % DemoHintKeys.Length]) as string
+                   ?? DemoHintKeys[i % DemoHintKeys.Length];
+        AddLineCore(DemoRoles[i % DemoRoles.Length], hint);
     }
 
     // ─── Лента строк ──────────────────────────────────────────────────────
@@ -375,28 +466,49 @@ public partial class KaraokeWindow : Window
         root.Children.Add(tb);
         StyleLine(entry);
 
-        // Замер до добавления — нужна высота новой строки для сдвига ленты.
-        double stripWidth = Strip.ActualWidth > 0 ? Strip.ActualWidth : Width;
-        if (double.IsNaN(stripWidth) || stripWidth <= 0) stripWidth = 800;
+        // Замер до добавления — нужна высота новой строки для сдвига/подъёма
+        // ленты. Ширину берём по факту у ленты; ВАЖНО: LinesPanel.ActualWidth уже
+        // ЧИСТАЯ от Margin — второй раз паддинг вычитать нельзя (иначе TextBlock
+        // мерится уже финала → DesiredSize завышен → снизу дыра/лишний скролл).
+        // Фолбэк на Width/Strip.ActualWidth — это ширина СТРИПА до margin, там
+        // паддинг вычитаем один раз.
         double pad = LinesPanel.Margin.Left + LinesPanel.Margin.Right;
-        root.Measure(new System.Windows.Size(Math.Max(stripWidth - pad, 1), double.PositiveInfinity));
+        double measureW;
+        if (LinesPanel.ActualWidth > 0) measureW = LinesPanel.ActualWidth;
+        else if (Strip.ActualWidth > 0) measureW = Strip.ActualWidth - pad;
+        else measureW = (double.IsNaN(Width) ? 800 : Width) - pad;
+        root.Measure(new System.Windows.Size(Math.Max(measureW, 1), double.PositiveInfinity));
         double newLineHeight = root.DesiredSize.Height;
 
         _lines.Add(entry);
         LinesPanel.Children.Add(root);
 
-        // Slide-in: лента мгновенно сдвинута вниз на высоту новой строки
-        // (накопление Y сохраняет незавершённый сдвиг при частых пушах),
-        // затем плавно возвращается к 0 — вся лента скользит вверх.
-        double startY = LinesTransform.Y + newLineHeight;
-        LinesTransform.BeginAnimation(TranslateTransform.YProperty, null);
-        LinesTransform.Y = startY;
-        var slide = new DoubleAnimation(startY, 0.0, SlideDuration)
+        // Полоса резиновая: приращение под контент до потолка; над потолком —
+        // скролл вверх (targetY < 0). Если выросли (якорь Bottom/центр дал
+        // компенсацию в UpdateElasticHeight → Y > 0) либо переполнение —
+        // единый слайд ленты к целевому Y; это и есть телесуфлёр-эффект.
+        UpdateElasticHeight();
+
+        double targetY = TargetPanelY();
+        if (Math.Abs(targetY - PanelY) > 0.5)
         {
-            EasingFunction = _easeOut,
-            FillBehavior = FillBehavior.HoldEnd
-        };
-        LinesTransform.BeginAnimation(TranslateTransform.YProperty, slide);
+            AnimatePanelTo(PanelY, targetY);
+        }
+        else
+        {
+            // Скролл не нужен (окно приросло вниз от верхнего якоря): строка
+            // проявляется opacity-фейдом (RefreshAges) и лёгким подъёмом —
+            // без сдвига остальных строк (они и так на своих местах).
+            SetPanelY(targetY);
+            _panelTargetY = targetY;
+            var rise = new DoubleAnimation(Math.Min(newLineHeight, 40), 0.0, SlideDuration)
+            {
+                EasingFunction = _easeOut
+            };
+            var riseTransform = new TranslateTransform();
+            riseTransform.BeginAnimation(TranslateTransform.YProperty, rise);
+            root.RenderTransform = riseTransform;
+        }
 
         RefreshAges();
         TrimExcess();
@@ -412,9 +524,9 @@ public partial class KaraokeWindow : Window
             var entry = _lines[k];
             int age = n - 1 - k;
             entry.Vm.Age = age;
-            entry.Tb.Foreground = BrushForAge(age); // цвет по возрасту: золото → OldLinesColor
+            entry.Tb.Foreground = BrushFor(entry, age); // роль question розовая; прочие: золото → OldLinesColor
 
-            double target = _cfg.DimByAge ? AgeOpacity[Math.Min(age, AgeOpacity.Length - 1)] : 1.0;
+            double target = EffectiveOpacity(age);
             entry.Vm.Opacity = target;
 
             if (entry.Removing) continue;
@@ -423,10 +535,151 @@ public partial class KaraokeWindow : Window
         }
     }
 
-    /// <summary>Строки сверх MaxLines гаснут и удаляются по завершении анимации.</summary>
+    // ─── Скролл ленты (верхняя привязка) ─────────────────────────────────
+
+    // Суммарная высота контента ленты, включая строки, ещё догорающие после
+    // TrimExcess (они занимают место в layout до физического удаления из Children —
+    // иначе на время фейд-аута лента «проседала» бы и нижняя строка клиповалась).
+    // Высота строки для расчётов: после первого arrange — реальный RenderSize
+    // (DesiredSize мог замериться по временной ширине до появления окна и
+    // завысить контент → лишний скролл + пустота снизу; регрессия на Left/Right).
+    private static double LineHeight(UIElement child)
+    {
+        double h = child.RenderSize.Height;
+        return h > 0 ? h : child.DesiredSize.Height;
+    }
+
+    private double PanelContentHeight()
+    {
+        double h = 0;
+        foreach (UIElement child in LinesPanel.Children)
+            h += LineHeight(child);
+        return h;
+    }
+
+    // Целевой Canvas.Top ленты. Якорь задаёт KaraokeConfig.ContentAnchor:
+    // Bottom (дефолт) — контент ПРИЖАТ К НИЗУ: нижний край контента (без нижнего
+    // margin) у нижнего края полосы (без нижнего padding'а). Контент короче
+    // вьюпорта → t>0 — пустота остаётся СВЕРХУ (свежая строка у нижней кромки —
+    // у взгляда; клэмп Min(t,0) давал верхний якорь и дыру снизу).
+    // Top — верхний якорь: Canvas.Top=0, контент начинается сразу под верхним
+    // padding'ом (Canvas.Top позиционирует край margin-box, ink = t + Margin.Top),
+    // пустота уходит вниз — для высокой полосы (HeightPct=100) с короткой лентой.
+    // Переполнение → t<0 — скролл вверх одинаково при любом якоре: свежая строка
+    // у нижней кромки, старшие уезжают за верх. Вьюпорт = Window.Height: именно
+    // её назначает UpdateElasticHeight синхронно, в отличие от Strip.ActualHeight,
+    // которая догоняет layout'ом кадром позже.
+    private double TargetPanelY()
+    {
+        double v = Height;
+        if (double.IsNaN(v)) v = Strip.ActualHeight;
+        if (double.IsNaN(v) || v <= 0) v = 200; // окно ещё не отмерено — безопасный фолбэк
+        var m = LinesPanel.Margin;
+        double bottom = v - m.Bottom - m.Top - PanelContentHeight();
+        // Верхний якорь = Canvas.Top 0 (ink у верхнего padding'а); при переполнении
+        // bottom < 0 → тот же скролл к нижней кромке.
+        return string.Equals(_cfg.ContentAnchor, "Top", StringComparison.OrdinalIgnoreCase)
+            ? Math.Min(0.0, bottom)
+            : bottom;
+    }
+
+    // Скролл ленты — layout-позиция верха LinesPanel внутри Strip-Canvas
+    // (Canvas.Top), а НЕ RenderTransform: при большом отрицательном сдвиге
+    // трансформного скролла WPF терял прорисовку детей StackPanel (лента
+    // визуально становилась пустой при переполнении полосы).
+    private double PanelY => Canvas.GetTop(LinesPanel);
+
+    private void SetPanelY(double v)
+    {
+        LinesPanel.BeginAnimation(Canvas.TopProperty, null);
+        Canvas.SetTop(LinesPanel, v);
+    }
+
+    // Запуск скролл-анимации ленты from → to с запоминанием цели (см. _panelTargetY).
+    private void AnimatePanelTo(double from, double to)
+    {
+        var anim = new DoubleAnimation(from, to, SlideDuration)
+        {
+            EasingFunction = _easeOut,
+            FillBehavior = FillBehavior.HoldEnd,
+        };
+        LinesPanel.BeginAnimation(Canvas.TopProperty, anim);
+        _panelTargetY = to;
+    }
+
+    // Мгновенная посадка ленты на целевой скролл (конец фейд-аута строки,
+    // ApplyConfig): удалённая строка освобождает место сверху — сдвиг цели на её
+    // высоту ровно компенсирует layout-скок, видимые строки остаются на месте.
+    private void SnapScroll()
+    {
+        double t = TargetPanelY();
+        if (Math.Abs(t - PanelY) < 0.5) { _panelTargetY = t; return; }
+        SetPanelY(t);
+        _panelTargetY = t;
+    }
+
+    // Плавная реконсиляция скролла при изменении размеров (растущая стрим-строка,
+    // смена высоты полосы). Не дёргаемся, если уже едем к актуальной цели — иначе
+    // постоянные BeginAnimation из LayoutUpdated душили бы пуш-анимацию.
+    private void ReconcileScroll()
+    {
+        if (_lines.Count == 0) return;
+        double t = TargetPanelY();
+        if (Math.Abs(t - _panelTargetY) > 0.5 && Math.Abs(t - PanelY) > 0.5)
+            AnimatePanelTo(PanelY, t);
+        else
+            _panelTargetY = t;
+    }
+
+    // Физическое удаление строки из ленты с компенсацией скролла: строка уносит
+    // свою высоту h — строки НИЖЕ неё поднимаются на h, +h к Y держит их на месте
+    // (в том же dispatcher-ходе, до рендера — без кадра-глючка). Затем анимация
+    // к новой цели закрывает освободившееся место (строки «сжимаются» вверх).
+    // Для последней строки сдвигать нечего — при переполнении лишь пришиваем низ.
+    private void RemoveLine(LineEntry entry)
+    {
+        double h = LineHeight(entry.Root);
+        int idx = LinesPanel.Children.IndexOf(entry.Root);
+        LinesPanel.Children.Remove(entry.Root);
+        // Резина первая: пересчитывает Height/Top и компенсирует Y на сдвиг
+        // якоря — компенсацию ниже (+h за освободившееся место) считаем уже
+        // от скорректированного Y.
+        UpdateElasticHeight();
+        if (h <= 0 || idx < 0) return;
+        double y = PanelY + h;
+        double t = TargetPanelY();
+        if (Math.Abs(y - t) > 0.5)
+            AnimatePanelTo(y, t);
+        else
+        {
+            SetPanelY(t);
+            _panelTargetY = t;
+        }
+    }
+
+    // Целевая прозрачность строки по возрасту: HistoryFade=false → всегда 1.0;
+    // иначе таблица AgeOpacity линейно масштабируется так, чтобы самая старая
+    // строка не опускалась ниже MinHistoryOpacity (читаемость истории).
+    private double EffectiveOpacity(int age)
+    {
+        if (!_cfg.HistoryFade) return 1.0;
+        double a = AgeOpacity[Math.Min(Math.Max(age, 0), AgeOpacity.Length - 1)];
+        double floor = Clamp(_cfg.MinHistoryOpacity, 0.0, 1.0);
+        return floor + a * (1.0 - floor);
+    }
+
+    // Верхний фейд-маск: HistoryFade=false → маска снята (все строки полной яркости);
+    // иначе градиент с альфой верха = MinHistoryOpacity (самая старая строка не
+    // уходит в ноль, как при исходной маске Transparent→Black).
+    private void ApplyFadeMask()
+        => LinesPanel.OpacityMask = _cfg.HistoryFade ? TopFadeMask(_cfg.MinHistoryOpacity) : null;
+
+    /// <summary>Строки сверх лимита гаснут и удаляются по завершении анимации.
+    /// Лимит = min(MaxLines, HistoryLineCount+1): свежая строка + не более
+    /// HistoryLineCount старших над ней (высокая полоса не «съедает» историю).</summary>
     private void TrimExcess()
     {
-        int excess = _lines.Count - Math.Max(_cfg.MaxLines, 1);
+        int excess = _lines.Count - Math.Min(Math.Max(_cfg.MaxLines, 1), Math.Max(_cfg.HistoryLineCount, 0) + 1);
         if (excess <= 0) return;
 
         var doomed = _lines.GetRange(0, excess);
@@ -438,9 +691,8 @@ public partial class KaraokeWindow : Window
             {
                 FillBehavior = FillBehavior.HoldEnd
             };
-            var root = entry.Root;
-            fadeOut.Completed += (_, _) => LinesPanel.Children.Remove(root);
-            root.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+            fadeOut.Completed += (_, _) => RemoveLine(entry);
+            entry.Root.BeginAnimation(UIElement.OpacityProperty, fadeOut);
         }
     }
 
@@ -449,8 +701,10 @@ public partial class KaraokeWindow : Window
         var tb = entry.Tb;
         double fs = Clamp(_cfg.FontSize, 12, 64);
         tb.FontSize = fs;
-        tb.FontWeight = FontWeights.SemiBold;
-        tb.Foreground = BrushForAge(entry.Vm.Age);
+        tb.FontWeight = FontWeights.Regular;
+        tb.LineHeight = Math.Round(fs * 1.4);
+        tb.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+        tb.Foreground = BrushFor(entry, entry.Vm.Age);
         tb.TextWrapping = _cfg.WordWrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
         tb.TextAlignment = string.Equals(_cfg.TextAlignment, "Center", StringComparison.OrdinalIgnoreCase)
             ? TextAlignment.Center
@@ -475,12 +729,15 @@ public partial class KaraokeWindow : Window
     }
 
     // Пересборка кистей строк: вызывается из ApplyConfig (зависит от
-    // TextColor/FreshColor/OldLinesColor), не на каждый push.
-    // При AgeColorFade=false в RefreshAges/StyleLine берётся _textBrush.
+    // TextColor/FreshColor/OldLinesColor/QuestionColor), не на каждый push.
+    // При AgeColorFade=false в RefreshAges/StyleLine берётся _textBrush
+    // (для роли "question" — всегда _questionBrush).
     private void RebuildAgeBrushes()
     {
         var text = ParseColor(_cfg.TextColor, Colors.White);
         _textBrush = Freeze(new SolidColorBrush(text));
+
+        _questionBrush = FrozenBrush(_cfg.QuestionColor, Color.FromArgb(0xFF, 0xF2, 0x7A, 0x8A));
 
         var fresh = ParseColor(_cfg.FreshColor, Color.FromArgb(0xFF, 0xFF, 0xE9, 0xA8));
         // Битый/пустой hex → фолбэк на дефолт (золото/белый) через ParseColor.
@@ -491,69 +748,171 @@ public partial class KaraokeWindow : Window
         _ageBrushes = brushes;
     }
 
-    // Кисть строки по возрасту: градиент при AgeColorFade, иначе единый TextColor.
-    private Brush BrushForAge(int age)
-        => _cfg.AgeColorFade && _ageBrushes.Length > 0
-            ? _ageBrushes[Math.Min(Math.Max(age, 0), _ageBrushes.Length - 1)]
-            : _textBrush;
+    // Кисть строки: роль "question" → _questionBrush (реплика собеседника должна
+    // отличаться от ответа при любом фейде); остальные — градиент по возрасту
+    // при AgeColorFade, иначе единый TextColor.
+    private Brush BrushFor(LineEntry entry, int age)
+        => entry.Vm.Role == "question"
+            ? _questionBrush
+            : (_cfg.AgeColorFade && _ageBrushes.Length > 0
+                ? _ageBrushes[Math.Min(Math.Max(age, 0), _ageBrushes.Length - 1)]
+                : _textBrush);
 
     // age0 = FreshColor (золото), age>=1 = OldLinesColor. TextColor в фейде не
     // участвует — ручки Fresh/Old полностью задают ленту (регрессия 2.7.0 лерпила
     // к TextColor: при чёрном TextColor старшие строки уходили в тёмное).
-    // Плавность переходу даёт DimByAge (альфа старших строк), лерп цвета убран.
+    // Плавность переходу даёт HistoryFade (альфа старших строк), лерп цвета убран.
     private static Color AgeColor(int age, Color fresh, Color old)
         => age <= 0 ? fresh : old;
 
-    // ─── Позиционирование ─────────────────────────────────────────────────
+    // ─── Позиционирование + резиновая высота ─────────────────────────────
+
+    // Потолок/высота: auto-режим — FontSize*1.38*min(MaxLines,4) + 2*InnerPadding
+    // (Top/Bottom), для вертикальных якорей — 70% рабочей области. HeightPct>0
+    // задаёт ЖЁСТКУЮ высоту полосы в % экрана (см. UpdateElasticHeight).
+    private double CeilingHeight(Rect wa)
+    {
+        double fs = Clamp(_cfg.FontSize, 12, 64);
+        double pad = Clamp(_cfg.InnerPadding, 0, 80);
+        double autoH = IsSidePosition() ? wa.Height * 0.7 : StripHeight(fs, pad);
+        return BandHeight(wa.Height, autoH);
+    }
+
+    // Якорь Bottom → Top отсчитывается от низа (полоса прирастает ВВЕРХ);
+    // Top → от верха (Top фиксирован — растёт вниз); Left/Right → вертикальный
+    // центр (прирастает симметрично от середины, Left/Right не трогаем).
+    private double ComputeTop(Rect wa, double h)
+    {
+        double margin = Clamp(_cfg.MarginPx, 0, 200);
+        var pos = (_cfg.Position ?? "Bottom").Trim();
+        if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
+            return wa.Top + margin;
+        if (IsSidePosition())
+            return wa.Top + (wa.Height - h) / 2;
+        return wa.Bottom - margin - h; // Bottom (и дефолт)
+    }
+
+    private bool IsSidePosition()
+    {
+        var pos = (_cfg.Position ?? "Bottom").Trim();
+        return pos.Equals("Left", StringComparison.OrdinalIgnoreCase)
+            || pos.Equals("Right", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Высота полосы: HeightPct>0 → ЖЁСТКАЯ высота (% рабочей области — юзер задал
+    // размер прямоугольника сам; внутри работает «Якорь текста»: короткая лента
+    // у нижней или верхней кромки). HeightPct=0 → резиновая авто-высота:
+    // Height = min(потолок, контент ленты + оба padding'а).
+    // Пустая лента (нет строк вообще — включая догорающие) схлопывается в ноль:
+    // «пустого прямоугольника» на экране нет; окно остаётся живым hwnd и
+    // развернётся на первой же строке (Visibility не трогаем — гейт
+    // CanShowRole по IsShown продолжает работать как раньше).
+    // При смене высоты пересчитываем якорь (ComputeTop) и компенсируем
+    // Canvas.Top ленты на сдвиг окна — видимые строки не дёргаются.
+    private void UpdateElasticHeight()
+    {
+        var wa = SystemParameters.WorkArea;
+        var m = LinesPanel.Margin;
+        double padV = m.Top + m.Bottom;
+        double ceiling = Math.Max(CeilingHeight(wa), 1.0);
+        double targetH = LinesPanel.Children.Count == 0
+            ? 0.0
+            : _cfg.HeightPct > 0
+                ? ceiling
+                : Clamp(PanelContentHeight() + padV, 0.0, ceiling);
+
+        double cur = double.IsNaN(Height) ? Strip.ActualHeight : Height;
+        if (double.IsNaN(cur) || cur < 0) cur = 0;
+        double newTop = ComputeTop(wa, targetH);
+        if (Math.Abs(targetH - cur) > 0.5)
+        {
+            double dTop = double.IsNaN(Top) ? 0.0 : newTop - Top;
+            Height = targetH;
+            CompensateScrollShift(dTop);
+            Top = newTop;
+        }
+        else if (double.IsNaN(Top) || Math.Abs(Top - newTop) > 0.5)
+        {
+            Top = newTop; // якорь/отступ сменили при той же высоте (или Top ещё не задан)
+        }
+    }
+
+    // Окно поднялось/опустилось на dTop из-за прироста/сжатия резиновой высоты —
+    // сдвигаем ленту обратно, чтобы контент остался на экранном месте (компенсация
+    // в том же dispatcher-ходе, до рендера — без кадра-гличка). Бегущую анимацию
+    // Y гасим: скролл пересчитается от нового вьюпорта (SnapScroll/ReconcileScroll
+    // либо AnimatePanelTo из пуша — вызов идёт сразу следом).
+    private void CompensateScrollShift(double dTop)
+    {
+        if (Math.Abs(dTop) < 0.5) return;
+        SetPanelY(PanelY - dTop);
+    }
+
+    // Layout-проход по любой причине (стрим-дельта удлинила строку, фейд-аут
+    // освободил место, Show/изменение размеров): резина подгоняет вьюпорт,
+    // скролл дожимает ленту к нижнему краю.
+    private void OnLayoutUpdated()
+    {
+        if (!IsShown) return; // скрытое окно не пересчитывает layout/скролл
+        // Лента поменяла ширину (смена WidthPct/позиции, ресайс) — строки, чей
+        // DesiredSize был замерен на старой ширине, иначе зависают (StackPanel
+        // перевешивает детей только при смене собственного constraint). Трекаем
+        // ActualWidth и инвалидируем measure — точные высоты без дыр снизу.
+        double pw = LinesPanel.ActualWidth;
+        if (pw > 0 && _lastPanelWidth >= 0 && Math.Abs(pw - _lastPanelWidth) > 0.5)
+            LinesPanel.InvalidateMeasure();
+        if (pw > 0) _lastPanelWidth = pw;
+        SyncPanelWidth();
+        UpdateElasticHeight();
+        ReconcileScroll();
+    }
+
+    // Лента ДОЛЖНА быть уже стрипа на горизонтальный паддинг: Margin снаружи
+    // добавляется к Width, иначе лента выходит за правый край окна и текст
+    // режется (регрессия «текст уехал вправо за кулисы»). Strip.ActualWidth=0
+    // до первого layout — тогда ставим NaN и дожмём на следующем проходе.
+    private void SyncPanelWidth()
+    {
+        double sw = Strip.ActualWidth;
+        if (sw <= 0)
+        {
+            LinesPanel.Width = double.NaN;
+            return;
+        }
+        double pad = LinesPanel.Margin.Left + LinesPanel.Margin.Right;
+        double w = Math.Max(1, sw - pad);
+        if (!w.Equals(LinesPanel.Width)) LinesPanel.Width = w;
+    }
 
     private void ApplyPosition()
     {
         var wa = SystemParameters.WorkArea;
-        double fs = Clamp(_cfg.FontSize, 12, 64);
-        double pad = Clamp(_cfg.InnerPadding, 0, 80);
         double margin = Clamp(_cfg.MarginPx, 0, 200);
         double width = wa.Width * Clamp(_cfg.WidthPct, 20, 100) / 100.0;
 
+        Width = width;
         var pos = (_cfg.Position ?? "Bottom").Trim();
-        if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
-        {
-            Width = width;
-            Height = BandHeight(wa.Height, StripHeight(fs, pad));
-            Left = wa.Left + (wa.Width - Width) / 2;
-            Top = wa.Top + margin;
-        }
-        else if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
-        {
-            Width = width;
-            Height = BandHeight(wa.Height, wa.Height * 0.7);
+        if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
             Left = wa.Left + margin;
-            Top = wa.Top + (wa.Height - Height) / 2;
-        }
         else if (pos.Equals("Right", StringComparison.OrdinalIgnoreCase))
-        {
-            Width = width;
-            Height = BandHeight(wa.Height, wa.Height * 0.7);
             Left = wa.Right - width - margin;
-            Top = wa.Top + (wa.Height - Height) / 2;
-        }
-        else // Bottom
-        {
-            Width = width;
-            Height = BandHeight(wa.Height, StripHeight(fs, pad));
-            Left = wa.Left + (wa.Width - Width) / 2;
-            Top = wa.Bottom - margin - Height;
-        }
+        else
+            Left = wa.Left + (wa.Width - width) / 2; // Top/Bottom — по центру
+
+        UpdateElasticHeight(); // высота под контент + вертикальный якорь (Top)
     }
 
-    // Фиксированная высота полосы: FontSize*1.38*min(MaxLines,4) + 2*InnerPadding (контракт §3).
+    // Потолок резиновой высоты для Top/Bottom: FontSize*1.38*min(MaxLines,4) + 2*InnerPadding (контракт §3).
     private double StripHeight(double fs, double pad)
         => fs * 1.38 * Math.Min(Math.Max(_cfg.MaxLines, 1), 4) + 2 * pad;
 
-    // Высота полосы: HeightPct>0 → % высоты рабочей области для ВСЕХ позиций
-    // (у Left/Right это высота вертикальной полосы, WidthPct остаётся шириной).
-    // HeightPct=0 → autoH: Top/Bottom — StripHeight по шрифту/строкам, Left/Right — 70%.
-    // OpacityMask _topFadeMask висит на LinesPanel с относительными координатами
-    // (0→0.24): верх гасится пропорционально высоте ленты при любой высоте полосы.
+    // Высота полосы: HeightPct>0 → ЖЁСТКАЯ высота в % высоты рабочей области
+    // для ВСЕХ позиций (у Left/Right — высота вертикальной полосы, WidthPct —
+    // ширина; короткая лента внутри кладётся «Якорем текста»).
+    // HeightPct=0 → autoH: Top/Bottom — StripHeight по шрифту/строкам,
+    // Left/Right — 70%. OpacityMask верхнего фейда висит на LinesPanel
+    // с относительными координатами (0→0.24): верх гасится пропорционально
+    // высоте ленты при любой высоте полосы.
     private double BandHeight(double waHeight, double autoH)
     {
         int pct = (int)Clamp(_cfg.HeightPct, 0, 100);

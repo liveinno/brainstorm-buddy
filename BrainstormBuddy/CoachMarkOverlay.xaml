@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         WindowStyle="None" AllowsTransparency="True" Background="#01000000"
         ShowInTaskbar="False" ResizeMode="NoResize"
-        Title="BrainstormBuddy — обучение" FontFamily="Segoe UI"
+        Title="{DynamicResource L_Tour_Title}" FontFamily="{DynamicResource UiFontFamily}"
         TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType">
     <!-- Background #01000000 = практически невидимо, но ловит клики (никакого затемнения экрана). -->
     <Window.Resources>
@@ -15,7 +15,8 @@
             <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="12,6"/>
-            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="Medium"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -42,7 +43,7 @@
         <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Background" Value="{StaticResource CoachGold}"/>
             <Setter Property="Foreground" Value="#12182A"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontWeight" Value="Medium"/>
             <Setter Property="BorderBrush" Value="{StaticResource CoachGold}"/>
         </Style>
     </Window.Resources>
@@ -64,17 +65,17 @@
                 <DropShadowEffect Color="#000000" BlurRadius="26" ShadowDepth="3" Opacity="0.55"/>
             </Border.Effect>
             <StackPanel>
-                <TextBlock x:Name="TitleText" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"
+                <TextBlock x:Name="TitleText" Style="{StaticResource SectionTitleText}" TextWrapping="Wrap"
                            Foreground="{StaticResource CoachGold}"/>
-                <TextBlock x:Name="BodyText" Margin="0,7,0,14" FontSize="13" TextWrapping="Wrap"
+                <TextBlock x:Name="BodyText" Margin="0,7,0,14" Style="{StaticResource BodyText}" TextWrapping="Wrap"
                            Foreground="{DynamicResource TextBrush}"/>
                 <DockPanel>
                     <TextBlock x:Name="StepText" DockPanel.Dock="Left" VerticalAlignment="Center"
-                               FontSize="11.5" Foreground="{DynamicResource TextDimBrush}"/>
+                               Style="{StaticResource MetaText}" Foreground="{DynamicResource TextDimBrush}"/>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button x:Name="SkipBtn" Content="Пропустить" Click="OnSkip"/>
-                        <Button x:Name="BackBtn" Content="Назад" Click="OnBack" Margin="8,0,0,0"/>
-                        <Button x:Name="NextBtn" Content="Далее" Style="{StaticResource PrimaryButton}"
+                        <Button x:Name="SkipBtn" Content="{DynamicResource L_Tour_Skip}" Click="OnSkip"/>
+                        <Button x:Name="BackBtn" Content="{DynamicResource L_Tour_Back}" Click="OnBack" Margin="8,0,0,0"/>
+                        <Button x:Name="NextBtn" Content="{DynamicResource L_Tour_Next}" Style="{StaticResource PrimaryButton}"
                                 Click="OnNext" Margin="8,0,0,0"/>
                     </StackPanel>
                 </DockPanel>

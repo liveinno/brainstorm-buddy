@@ -20,6 +20,14 @@
     <SolidColorBrush x:Key="BorderBrush" Color="#dfe4ec"/>
     <SolidColorBrush x:Key="HoverBrush" Color="#eceff5"/>
 
+    <!-- Волна 08: светлые аналоги — граница полей видима на белом (#8b93a8 ≈ 3:1),
+         primary — тот же насыщенный синий с белым текстом, selected — мягкий синий. -->
+    <SolidColorBrush x:Key="InputBorderBrush" Color="#8b93a8"/>
+    <SolidColorBrush x:Key="ActionPrimaryBrush" Color="#4f5fd5"/>
+    <SolidColorBrush x:Key="ActionPrimaryHoverBrush" Color="#5563e6"/>
+    <SolidColorBrush x:Key="ActionPrimaryPressedBrush" Color="#414fb8"/>
+    <SolidColorBrush x:Key="SelectedRowBrush" Color="#d9e1f5"/>
+
     <RadialGradientBrush x:Key="WindowBgBrush" Center="0.5,0" GradientOrigin="0.5,0" RadiusX="1.3" RadiusY="0.9">
         <GradientStop Color="#ffffff" Offset="0"/>
         <GradientStop Color="#f4f6fa" Offset="0.55"/>

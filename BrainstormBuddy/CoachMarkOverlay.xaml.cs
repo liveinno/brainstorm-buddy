@@ -127,7 +127,7 @@ public partial class CoachMarkOverlay : Window
         BodyText.Text = step.Body;
         StepText.Text = $"{_idx + 1} / {_steps.Count}";
         BackBtn.Visibility = _idx > 0 ? Visibility.Visible : Visibility.Collapsed;
-        NextBtn.Content = _idx == _steps.Count - 1 ? "Готово" : "Далее";
+        NextBtn.Content = (string)FindResource(_idx == _steps.Count - 1 ? "L_Tour_Done" : "L_Tour_Next");
         Callout.Visibility = Visibility.Visible;
 
         Rect? r = GetElementRect(el);

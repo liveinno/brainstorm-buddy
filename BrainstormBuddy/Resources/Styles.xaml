@@ -8,37 +8,65 @@
     <Style TargetType="Window" x:Key="DarkWindow">
         <Setter Property="Background" Value="{DynamicResource BgBrush}"/>
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-        <Setter Property="FontFamily" Value="Segoe UI"/>
+        <Setter Property="FontFamily" Value="{DynamicResource UiFontFamily}"/>
     </Style>
 
     <Style TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
     </Style>
 
-    <!-- TextBox со скруглёнными углами (дизайн-система: inputs rounded-md 8px) -->
-    <Style TargetType="TextBox">
+    <!-- ===== Поля ввода =====
+         TextBoxBaseStyle (03A): единая база для implicit TextBox и ключей
+         InputText/MultilineInputText/MonoInputText (ранее ключи жили в
+         Typography.xaml БЕЗ BasedOn → белые системные редакторы, репорт H01).
+         Геометрия: MinHeight 36, padding 12,8 однострочный / 12,10
+         многострочный, радиус 8, граница 1.
+         Отступ применяется ОДИН раз — как Padding внутреннего Bd (дефолтный
+         шаблон WPF); Margin={TemplateBinding Padding} на PART_ContentHost
+         дублировал отступ → поле мерилось 48.94 вместо 36 (репорт H03).
+         Фокус — внутренняя рамка AccentSoftBrush 2px поверх 1px-бордера:
+         контент не сдвигается. AcceptsReturn → ScrollViewer Stretch:
+         текст сверху, область прокрутки заполняет высоту. -->
+    <Style x:Key="TextBoxBaseStyle" TargetType="TextBox">
+        <Setter Property="FontFamily" Value="{StaticResource UiFontFamily}"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontWeight" Value="Normal"/>
         <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
-        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}"/>
         <Setter Property="BorderThickness" Value="1"/>
-        <Setter Property="Padding" Value="8,5"/>
+        <Setter Property="Padding" Value="12,8"/>
+        <Setter Property="MinHeight" Value="36"/>
         <Setter Property="CaretBrush" Value="{DynamicResource TextBrush}"/>
         <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TextBox">
-                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="8">
-                        <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
-                                      VerticalAlignment="Center"/>
-                    </Border>
+                    <Grid>
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          VerticalAlignment="Center"/>
+                        </Border>
+                        <Border x:Name="FocusRing" BorderBrush="{DynamicResource AccentSoftBrush}"
+                                BorderThickness="2" CornerRadius="8" IsHitTestVisible="False"
+                                Visibility="Collapsed"/>
+                    </Grid>
                     <ControlTemplate.Triggers>
+                        <Trigger Property="AcceptsReturn" Value="True">
+                            <Setter Property="Padding" Value="12,10"/>
+                            <Setter TargetName="PART_ContentHost" Property="VerticalAlignment" Value="Stretch"/>
+                        </Trigger>
                         <Trigger Property="IsFocused" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            <Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/>
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource TextDimBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -46,32 +74,479 @@
         </Setter>
     </Style>
 
+    <!-- Неявный TextBox = базовый стиль (03A, спека §4.1). -->
+    <Style TargetType="TextBox" BasedOn="{StaticResource TextBoxBaseStyle}"/>
+
+    <!-- Ключи волны 01 перенесены сюда из Typography.xaml (спека 03A §4.1:
+         там они не наследовали шаблон → белые редакторы). Названия ключей
+         сохранены для существующих ссылок. -->
+    <Style x:Key="InputText" TargetType="TextBox" BasedOn="{StaticResource TextBoxBaseStyle}">
+        <Setter Property="FontFamily" Value="{StaticResource UiFontFamily}"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontWeight" Value="Normal"/>
+        <Setter Property="Padding" Value="{StaticResource InputPadding}"/>
+        <Setter Property="Height" Value="36"/>
+        <Setter Property="MinHeight" Value="36"/>
+    </Style>
+
+    <!-- Многострочный вариант: перенос, Enter, авто-скролл — из стиля,
+         чтобы сайты не забывали их (репорт H07 по ResumeSummaryBox).
+         Height=Auto снимает однострочные 36 родителя. -->
+    <Style x:Key="MultilineInputText" TargetType="TextBox" BasedOn="{StaticResource InputText}">
+        <Setter Property="Padding" Value="{StaticResource MultilineInputPadding}"/>
+        <Setter Property="VerticalContentAlignment" Value="Top"/>
+        <Setter Property="AcceptsReturn" Value="True"/>
+        <Setter Property="TextWrapping" Value="Wrap"/>
+        <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+        <Setter Property="Height" Value="Auto"/>
+    </Style>
+
+    <Style x:Key="MonoInputText" TargetType="TextBox" BasedOn="{StaticResource InputText}">
+        <Setter Property="FontFamily" Value="{DynamicResource MonoFont}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontWeight" Value="Normal"/>
+        <Setter Property="Padding" Value="{StaticResource MultilineInputPadding}"/>
+        <Setter Property="Height" Value="Auto"/>
+    </Style>
+
+    <!-- PasswordBox: та же геометрия поля (36, r8, padding 12,8, рамка фокуса 2px внутри). -->
     <Style TargetType="PasswordBox">
         <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
-        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
-        <Setter Property="Padding" Value="6,4"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="12,8"/>
+        <Setter Property="MinHeight" Value="36"/>
+        <Setter Property="CaretBrush" Value="{DynamicResource TextBrush}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="PasswordBox">
+                    <Grid>
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          VerticalAlignment="Center"/>
+                        </Border>
+                        <Border x:Name="FocusRing" BorderBrush="{DynamicResource AccentSoftBrush}"
+                                BorderThickness="2" CornerRadius="8" IsHitTestVisible="False"
+                                Visibility="Collapsed"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsFocused" Value="True">
+                            <Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource TextDimBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
+    <!-- ComboBoxItem: тёмные пункты вместо Aero (серый текст на голубом hover/selected).
+         Selected = SelectedRowBrush + левая акцентная полоса 3px; Hover = HoverBrush. -->
+    <Style TargetType="ComboBoxItem">
+        <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+        <Setter Property="Padding" Value="10,5"/>
+        <Setter Property="MinHeight" Value="28"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Grid>
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}" CornerRadius="8">
+                            <ContentPresenter TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <!-- Волна 08: левая полоса AccentBrush 3px у выбранного пункта. -->
+                        <Border x:Name="SelBar" Width="3" HorizontalAlignment="Left"
+                                Margin="3,6,0,6" CornerRadius="1.5"
+                                Background="{DynamicResource AccentBrush}"
+                                IsHitTestVisible="False" Visibility="Collapsed"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="ComboBoxItem.IsHighlighted" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                        </Trigger>
+                        <Trigger Property="ComboBoxItem.IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SelectedRowBrush}"/>
+                            <Setter TargetName="SelBar" Property="Visibility" Value="Visible"/>
+                            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ComboBox: поле и popup со скруглением r10 (пилюли дизайн-системы).
+         Шаблон раньше жил локально в окнах; вынесен сюда — без него default WPF
+         chrome рисует ОСТРЫЕ углы (репорт по PresetSelector/LevelFilter).
+         Клик в любом месте поля открывает список: ToggleButton ColumnSpan=2 ПОД
+         текстом (AGENTS.md §ComboBox). PART_EditableTextBox — контракт для
+         IsEditable=True (модель LLM в настройках пишется руками). -->
     <Style TargetType="ComboBox">
         <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
-        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
-        <Setter Property="Padding" Value="6,4"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="12,8"/>
+        <Setter Property="MinHeight" Value="36"/>
+        <Setter Property="FontFamily" Value="{StaticResource UiFontFamily}"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontWeight" Value="Normal"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Grid x:Name="TemplateRoot" SnapsToDevicePixels="True">
+                        <Grid.ColumnDefinitions>
+                            <!-- Резерв справа 28 под стрелку 12x12 (волна 02). -->
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="28"/>
+                        </Grid.ColumnDefinitions>
+                        <Border x:Name="Bd" Grid.ColumnSpan="2"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8"/>
+                        <Border x:Name="FocusRing" Grid.ColumnSpan="2"
+                                BorderBrush="{DynamicResource AccentSoftBrush}"
+                                BorderThickness="2" CornerRadius="8" IsHitTestVisible="False"
+                                Visibility="Collapsed"/>
+                        <ToggleButton x:Name="ToggleButton" Grid.Column="0" Grid.ColumnSpan="2"
+                                      IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                      Focusable="False" ClickMode="Press">
+                            <ToggleButton.Template>
+                                <ControlTemplate TargetType="ToggleButton">
+                                    <Border Background="Transparent">
+                                        <Image x:Name="ChevronImg" Source="{DynamicResource BuddySettings.Icon.ChevronDown.Default}"
+                                               Width="12" Height="12" Margin="0,0,8,0"
+                                               HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <!-- Открытый дропдаун = «нажатое» состояние шеврона (pressed-арт набора). -->
+                                        <Trigger Property="IsChecked" Value="True">
+                                            <Setter TargetName="ChevronImg" Property="Source"
+                                                    Value="{DynamicResource BuddySettings.Icon.ChevronDown.Pressed}"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </ToggleButton.Template>
+                        </ToggleButton>
+                        <!-- Текст ограничен колонкой 0: под стрелку (колонка 1) не залезает. -->
+                        <ContentPresenter x:Name="ContentSite" Grid.Column="0"
+                                          IsHitTestVisible="False"
+                                          Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                          Margin="{TemplateBinding Padding}"
+                                          VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                        <!-- 03A: Collapsed вместо Hidden — Hidden сохранял место и
+                             MinHeight=36 редактора + Margin 12,8 раздували поле до 52 DIP
+                             (репорт H02). MinHeight=0/Padding=0: внутренняя часть не
+                             наследует минимумы/отступы поля формы. -->
+                        <TextBox x:Name="PART_EditableTextBox" Grid.Column="0"
+                                 Margin="{TemplateBinding Padding}" Padding="0"
+                                 MinHeight="0"
+                                 Visibility="Collapsed" BorderThickness="0"
+                                 Background="Transparent"
+                                 Foreground="{TemplateBinding Foreground}"
+                                 VerticalAlignment="Center"/>
+                        <Popup x:Name="PART_Popup" Placement="Bottom"
+                               AllowsTransparency="True"
+                               IsOpen="{TemplateBinding IsDropDownOpen}"
+                               PopupAnimation="Slide">
+                            <Border Background="{DynamicResource PanelBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="8"
+                                    MinWidth="{TemplateBinding ActualWidth}"
+                                    MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                <ScrollViewer CanContentScroll="True" SnapsToDevicePixels="True">
+                                    <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                            <Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                        </Trigger>
+                        <!-- Editable: тогл сжимается до колонки стрелки, поле ввода видно. -->
+                        <Trigger Property="IsEditable" Value="True">
+                            <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="ContentSite" Property="Visibility" Value="Collapsed"/>
+                            <Setter TargetName="ToggleButton" Property="Grid.Column" Value="1"/>
+                            <Setter TargetName="ToggleButton" Property="Grid.ColumnSpan" Value="1"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
+    <!-- Кнопки (волна 02/03A): Height 36 (не MinHeight — минимум у контрола
+         клампил явные Height=24/32 малых кнопок до 36, репорт H04; явная Height
+         локала/BasedOn всегда выигрывает у сеттера стиля), padding 14,7, r8,
+         граница 1. Hover → HoverBrush; Pressed → BgBrush; Disabled → Opacity .45.
+         Фокус — рамка AccentSoftBrush 2px внутри (FocusRing поверх Bd, контент не
+         сдвигается); стандартный пунктирный FocusVisualStyle не отключён. -->
     <Style TargetType="Button">
         <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
         <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
         <Setter Property="BorderThickness" Value="1"/>
-        <Setter Property="Padding" Value="10,5"/>
+        <Setter Property="Padding" Value="14,7"/>
+        <Setter Property="Height" Value="36"/>
+        <Setter Property="FontFamily" Value="{StaticResource UiFontFamily}"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontWeight" Value="Medium"/>
         <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid>
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <Border x:Name="FocusRing" BorderBrush="{DynamicResource AccentSoftBrush}"
+                                BorderThickness="2" CornerRadius="8" IsHitTestVisible="False"
+                                Visibility="Collapsed"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BgBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
+    <!-- Компактная кнопка (волна 02/03A): Height 30 — переопределяет базовые 36;
+         padding 10,4 (спека §8). -->
+    <Style x:Key="CompactButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Padding" Value="10,4"/>
+        <Setter Property="Height" Value="30"/>
+        <Setter Property="MinHeight" Value="30"/>
+        <Setter Property="FontSize" Value="13"/>
+    </Style>
+
+    <!-- Кнопка только с иконкой (волна 02): 32x32, зона клика не меньше 32x32.
+         Изображение внутри ограничивать 20x20 в месте использования. -->
+    <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Width" Value="32"/>
+        <Setter Property="Height" Value="32"/>
+        <Setter Property="MinWidth" Value="32"/>
+        <Setter Property="MinHeight" Value="32"/>
+        <Setter Property="Padding" Value="6"/>
+        <Setter Property="Margin" Value="4,0,0,0"/>
+    </Style>
+
+    <!-- Primary Button (волна 08): сплошной ActionPrimaryBrush #4f5fd5 с белым текстом;
+         hover/pressed — ActionPrimaryHover/PressedBrush. Свой шаблон, т.к. триггеры
+         базового Button рисовали бы HoverBrush/BgBrush. Фокус — AccentSoftBrush 2px. -->
+    <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid>
+                        <Border x:Name="Bd" Background="{DynamicResource ActionPrimaryBrush}"
+                                BorderBrush="{DynamicResource ActionPrimaryBrush}"
+                                BorderThickness="1" CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <Border x:Name="FocusRing" BorderBrush="{DynamicResource AccentSoftBrush}"
+                                BorderThickness="2" CornerRadius="8" IsHitTestVisible="False"
+                                Visibility="Collapsed"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ActionPrimaryHoverBrush}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ActionPrimaryHoverBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ActionPrimaryPressedBrush}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ActionPrimaryPressedBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Primary Action Button (волна 08): градиент заменён сплошным ActionPrimaryBrush
+         #4f5fd5 + белый текст; hover/pressed — ActionPrimaryHover/PressedBrush.
+         Фокус — AccentSoftBrush 2px; pressed-скейл 0.95 сохранён. -->
+    <Style x:Key="PrimaryActionButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Foreground" Value="#ffffff"/>
+        <Setter Property="Padding" Value="14,7"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid>
+                        <Border x:Name="Bd" Background="{DynamicResource ActionPrimaryBrush}"
+                                CornerRadius="10" Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <Border x:Name="FocusRing" BorderBrush="{DynamicResource AccentSoftBrush}"
+                                BorderThickness="2" CornerRadius="10" IsHitTestVisible="False"
+                                Visibility="Collapsed"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ActionPrimaryHoverBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ActionPrimaryPressedBrush}"/>
+                            <Setter TargetName="Bd" Property="RenderTransform">
+                                <Setter.Value>
+                                    <ScaleTransform ScaleX="0.95" ScaleY="0.95"/>
+                                </Setter.Value>
+                            </Setter>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- CheckBox (волна 02/03A): квадрат 18x18 r4, подпись через 8, строка ≥28.
+         unchecked — PanelBrush/BorderBrush; checked — AccentDimBrush + белая
+         векторная галочка; indeterminate — та же заливка + горизонтальный штрих.
+         Hover → граница AccentBrush; Disabled → Opacity .45 всего визуала.
+         Шрифт подписи (Inter 14, строка 20) задан стилем — сайтам не нужны
+         локальные FontSize/LineHeight. BulletDecorator заменён на Grid:
+         центры квадрата и первой строки подписи совпадают (репорт M01),
+         многострочная подпись привязана к первой строке, текст переносится. -->
     <Style TargetType="CheckBox">
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
         <Setter Property="Margin" Value="0,4"/>
+        <Setter Property="MinHeight" Value="28"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FontFamily" Value="{StaticResource UiFontFamily}"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontWeight" Value="Normal"/>
+        <Setter Property="TextBlock.LineHeight" Value="20"/>
+        <Setter Property="TextBlock.LineStackingStrategy" Value="BlockLineHeight"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <Grid Background="Transparent" Cursor="{TemplateBinding Cursor}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <!-- Квадрат центрируется в 20-px окне, привязанном к ВЕРХУ
+                             подписи (высота ячейки = ActualHeight контента): центр
+                             квадрата = центр первой строки и для одной, и для
+                             многострочной подписи. MinHeight=20 — bullet виден и
+                             при пустом Content. -->
+                        <Grid Grid.Column="0" MinHeight="20"
+                              Height="{Binding ActualHeight, ElementName=ContentSite}"
+                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
+                            <Grid Width="18" Height="18" VerticalAlignment="Top"
+                                  Margin="0,1,0,0">
+                                <Border x:Name="Box" Background="{DynamicResource PanelBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="1" CornerRadius="4"/>
+                                <Path x:Name="Tick" Data="M4,9.5 L8,13.5 L14,5"
+                                      Stroke="{DynamicResource AccentTextBrush}" StrokeThickness="2"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Visibility="Collapsed"/>
+                                <Rectangle x:Name="Dash" Width="9" Height="2"
+                                           Fill="{DynamicResource AccentTextBrush}" RadiusX="1" RadiusY="1"
+                                           Visibility="Collapsed"/>
+                                <Border x:Name="FocusRing" BorderBrush="{DynamicResource AccentSoftBrush}"
+                                        BorderThickness="2" CornerRadius="4" IsHitTestVisible="False"
+                                        Visibility="Collapsed"/>
+                            </Grid>
+                        </Grid>
+                        <ContentPresenter x:Name="ContentSite" Grid.Column="2"
+                                          TextBlock.Foreground="{TemplateBinding Foreground}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
+                            <!-- Перенос длинной подписи: неявный стиль в Resources
+                                 САМОГО ContentPresenter достаётся генерируемому для
+                                 строки TextBlock'у (паттерн ToolTip ниже). -->
+                            <ContentPresenter.Resources>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                </Style>
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Box" Property="Background" Value="{DynamicResource AccentDimBrush}"/>
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource AccentDimBrush}"/>
+                            <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="{x:Null}">
+                            <Setter TargetName="Box" Property="Background" Value="{DynamicResource AccentDimBrush}"/>
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource AccentDimBrush}"/>
+                            <Setter TargetName="Dash" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <Style TargetType="TabItem">
@@ -79,93 +554,119 @@
         <Setter Property="Padding" Value="10,5"/>
     </Style>
 
-    <!-- Слайдер по Overlay Final 6a: трек 4px #1e2740, заливка градиент #5b63e6→#8fa8ff,
-         thumb 13px белый. Значение показывается в подписи НАД треком (в месте использования). -->
+    <!-- Слайдер (волна 02): область взаимодействия 28, дорожка 4 r2,
+         бегунок 16x16 круглый. Пустая дорожка — BorderBrush, заполненная —
+         AccentBrush (спека); бегунок — TextBrightBrush. Значение в подписи НАД
+         треком в месте использования. Одна геометрия для локальных и общих
+         шаблонов: GreenSlider — базовый, неявный Slider наследует его. -->
     <Style x:Key="GreenSlider" TargetType="Slider">
-        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
-        <Setter Property="Height" Value="16"/>
+        <Setter Property="MinHeight" Value="28"/>
         <!-- Клик по треку ставит бегунок в точку клика (а не листает шагами) -->
         <Setter Property="IsMoveToPointEnabled" Value="True"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Slider">
-                    <Grid VerticalAlignment="Center">
-                        <Border Height="4" CornerRadius="3" Background="{DynamicResource BgLightBrush}" Margin="6,0"/>
-                        <Track x:Name="PART_Track">
+                    <Grid MinHeight="28" VerticalAlignment="Center">
+                        <Border Height="4" CornerRadius="2" Margin="8,0"
+                                Background="{DynamicResource BorderBrush}"
+                                VerticalAlignment="Center"/>
+                        <Track x:Name="PART_Track" VerticalAlignment="Center">
                             <Track.DecreaseRepeatButton>
-                                <RepeatButton Command="Slider.DecreaseLarge">
+                                <RepeatButton Command="Slider.DecreaseLarge" Focusable="False">
                                     <RepeatButton.Template>
                                         <ControlTemplate TargetType="RepeatButton">
-                                            <Border Height="4" CornerRadius="3" Background="{DynamicResource SliderFillBrush}" Margin="6,0,0,0"/>
+                                            <Border Height="4" CornerRadius="2,0,0,2" Margin="8,0,0,0"
+                                                    Background="{DynamicResource AccentBrush}"/>
                                         </ControlTemplate>
                                     </RepeatButton.Template>
                                 </RepeatButton>
                             </Track.DecreaseRepeatButton>
                             <Track.IncreaseRepeatButton>
-                                <RepeatButton Command="Slider.IncreaseLarge">
+                                <RepeatButton Command="Slider.IncreaseLarge" Focusable="False">
                                     <RepeatButton.Template>
                                         <ControlTemplate TargetType="RepeatButton">
-                                            <Border Background="Transparent" Height="16"/>
+                                            <Border Background="Transparent" Height="4"
+                                                    Margin="0,0,8,0"/>
                                         </ControlTemplate>
                                     </RepeatButton.Template>
                                 </RepeatButton>
                             </Track.IncreaseRepeatButton>
                             <Track.Thumb>
-                                <Thumb Width="13" Height="13">
+                                <Thumb Width="16" Height="16">
                                     <Thumb.Template>
                                         <ControlTemplate TargetType="Thumb">
-                                            <Ellipse Width="13" Height="13" Fill="#ffffff">
-                                                <Ellipse.Effect>
-                                                    <DropShadowEffect Color="#000000" BlurRadius="6" ShadowDepth="2" Opacity="0.5"/>
-                                                </Ellipse.Effect>
-                                            </Ellipse>
+                                            <Ellipse Width="16" Height="16"
+                                                     Fill="{DynamicResource TextBrightBrush}"/>
                                         </ControlTemplate>
                                     </Thumb.Template>
                                 </Thumb>
                             </Track.Thumb>
                         </Track>
                     </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
     </Style>
 
-    <!-- Global ToolTip style: тёмная скруглённая подсказка с тенью (в стиле оверлея).
-         ControlTemplate нужен для CornerRadius + тени. Применяется и в оверлее, и в настройках. -->
+    <!-- Все слайдеры приложения — та же геометрия волны 02. -->
+    <Style TargetType="Slider" BasedOn="{StaticResource GreenSlider}"/>
+
+    <!-- Global ToolTip style: скруглённая тематическая подсказка с тенью.
+         Неявный стиль TargetType=ToolTip применяется и к вложенным <ToolTip>, и к
+         строковым ToolTip="..." (PopupService создаёт объект ToolTip → стиль подбирается
+         по логическому родителю). DynamicResource → тёмная и светлая темы. -->
     <Style TargetType="ToolTip">
-        <!-- Фон тултипа ВСЕГДА тёмный (#1B2438), поэтому текст фиксированно светлый —
-             иначе в светлой теме TextBrightBrush становится тёмным и текст пропадает. -->
-        <Setter Property="Foreground" Value="#EEF3FB"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
         <Setter Property="FontSize" Value="12"/>
         <Setter Property="Padding" Value="10,6"/>
         <Setter Property="HasDropShadow" Value="False"/>
         <Setter Property="OverridesDefaultStyle" Value="True"/>
-        <Setter Property="MaxWidth" Value="280"/>
+        <Setter Property="MaxWidth" Value="400"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToolTip">
-                    <Border Background="#F21B2438" BorderBrush="#3D5BD6" BorderThickness="1"
-                            CornerRadius="9" Padding="{TemplateBinding Padding}">
+                    <Border Background="{DynamicResource BgMediumBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="6" Padding="{TemplateBinding Padding}">
                         <Border.Effect>
                             <DropShadowEffect Color="#05070d" BlurRadius="18" ShadowDepth="5" Opacity="0.55"/>
                         </Border.Effect>
-                        <TextBlock Text="{TemplateBinding Content}" Foreground="#EEF3FB" FontSize="12" TextWrapping="Wrap"/>
+                        <ContentPresenter Margin="0">
+                            <!-- Перенос текста: неявный стиль в Resources САМОГО ContentPresenter —
+                                 прямой ресурсный родитель генерируемого для строки TextBlock'а.
+                                 (Style.Resources и Border.Resources до него не достаются — проверено
+                                 рендер-смоком; non-string контент не ломается.) -->
+                            <ContentPresenter.Resources>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                </Style>
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
                     </Border>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
     </Style>
 
-    <!-- Modern Slim Scrollbar -->
+    <!-- ScrollBar (волна 02): область взаимодействия 12, видимая полоса 6
+         (трек + бегунок), радиус бегунка 3, мин. длина 24. Hover/Dragging меняют
+         ТОЛЬКО прозрачность бегунка — геометрия не растёт, иначе контент прыгает.
+         Бегунок TextDimBrush: заметен на треке в обеих темах. -->
     <Style TargetType="ScrollBar">
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ScrollBar">
-                    <Grid Width="8">
-                        <Border Background="{DynamicResource BgMediumBrush}" Opacity="0.5" CornerRadius="4"/>
-                        <Track x:Name="PART_Track" IsDirectionReversed="True" Width="8">
+                    <Grid Width="12">
+                        <Border Background="{DynamicResource BgMediumBrush}" Opacity="0.5"
+                                CornerRadius="3" Width="6" HorizontalAlignment="Center"/>
+                        <Track x:Name="PART_Track" IsDirectionReversed="True" Width="12">
                             <Track.DecreaseRepeatButton>
                                 <RepeatButton Style="{x:Null}" Visibility="Collapsed"/>
                             </Track.DecreaseRepeatButton>
@@ -173,20 +674,18 @@
                                 <RepeatButton Style="{x:Null}" Visibility="Collapsed"/>
                             </Track.IncreaseRepeatButton>
                             <Track.Thumb>
-                                <Thumb Width="6" MinHeight="24">
+                                <Thumb Width="12" MinHeight="24">
                                     <Thumb.Template>
                                         <ControlTemplate TargetType="Thumb">
-                                            <Border x:Name="ThumbBorder" Background="{DynamicResource AccentBrush}" Opacity="0.3" CornerRadius="3" Width="6" HorizontalAlignment="Center"/>
+                                            <Border x:Name="ThumbBorder" Background="{DynamicResource TextDimBrush}"
+                                                    Opacity="0.55" CornerRadius="3" Width="6"
+                                                    HorizontalAlignment="Center"/>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="ThumbBorder" Property="Width" Value="8"/>
-                                                    <Setter TargetName="ThumbBorder" Property="Opacity" Value="0.8"/>
-                                                    <Setter TargetName="ThumbBorder" Property="CornerRadius" Value="4"/>
+                                                    <Setter TargetName="ThumbBorder" Property="Opacity" Value="0.85"/>
                                                 </Trigger>
                                                 <Trigger Property="IsDragging" Value="True">
-                                                    <Setter TargetName="ThumbBorder" Property="Width" Value="8"/>
                                                     <Setter TargetName="ThumbBorder" Property="Opacity" Value="1.0"/>
-                                                    <Setter TargetName="ThumbBorder" Property="CornerRadius" Value="4"/>
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -199,14 +698,15 @@
             </Setter.Value>
         </Setter>
         <Style.Triggers>
-            <!-- Горизонтальный скроллбар: та же слим-стилистика, повёрнутая -->
+            <!-- Горизонтальный скроллбар: та же геометрия, повёрнутая -->
             <Trigger Property="Orientation" Value="Horizontal">
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="ScrollBar">
-                            <Grid Height="8">
-                                <Border Background="{DynamicResource BgMediumBrush}" Opacity="0.5" CornerRadius="4"/>
-                                <Track x:Name="PART_Track" Height="8">
+                            <Grid Height="12">
+                                <Border Background="{DynamicResource BgMediumBrush}" Opacity="0.5"
+                                        CornerRadius="3" Height="6" VerticalAlignment="Center"/>
+                                <Track x:Name="PART_Track" Height="12">
                                     <Track.DecreaseRepeatButton>
                                         <RepeatButton Style="{x:Null}" Visibility="Collapsed"/>
                                     </Track.DecreaseRepeatButton>
@@ -214,17 +714,17 @@
                                         <RepeatButton Style="{x:Null}" Visibility="Collapsed"/>
                                     </Track.IncreaseRepeatButton>
                                     <Track.Thumb>
-                                        <Thumb Height="6" MinWidth="24">
+                                        <Thumb Height="12" MinWidth="24">
                                             <Thumb.Template>
                                                 <ControlTemplate TargetType="Thumb">
-                                                    <Border x:Name="ThumbBorder" Background="{DynamicResource AccentBrush}" Opacity="0.3" CornerRadius="3" Height="6" VerticalAlignment="Center"/>
+                                                    <Border x:Name="ThumbBorder" Background="{DynamicResource TextDimBrush}"
+                                                            Opacity="0.55" CornerRadius="3" Height="6"
+                                                            VerticalAlignment="Center"/>
                                                     <ControlTemplate.Triggers>
                                                         <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter TargetName="ThumbBorder" Property="Height" Value="8"/>
-                                                            <Setter TargetName="ThumbBorder" Property="Opacity" Value="0.8"/>
+                                                            <Setter TargetName="ThumbBorder" Property="Opacity" Value="0.85"/>
                                                         </Trigger>
                                                         <Trigger Property="IsDragging" Value="True">
-                                                            <Setter TargetName="ThumbBorder" Property="Height" Value="8"/>
                                                             <Setter TargetName="ThumbBorder" Property="Opacity" Value="1.0"/>
                                                         </Trigger>
                                                     </ControlTemplate.Triggers>

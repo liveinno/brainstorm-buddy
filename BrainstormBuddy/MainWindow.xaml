@@ -6,12 +6,12 @@
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource BgBrush}"
         Foreground="{DynamicResource TextBrush}"
-        FontFamily="Segoe UI"
+        FontFamily="{DynamicResource UiFontFamily}"
         ShowInTaskbar="False">
     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="20">
-        <TextBlock Text="BrainstormBuddy" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-        <TextBlock x:Name="StatusText" Text="Запуск..." Margin="0,8,0,16" HorizontalAlignment="Center" Foreground="{DynamicResource TextDimBrush}"/>
-        <Button Content="Открыть оверлей" Width="160" Click="OnOpenOverlay" HorizontalAlignment="Center"/>
-        <Button Content="Настройки" Width="160" Margin="0,8,0,0" Click="OnOpenSettings" HorizontalAlignment="Center"/>
+        <TextBlock Text="BrainstormBuddy" Style="{StaticResource PageTitleText}" HorizontalAlignment="Center"/>
+        <TextBlock x:Name="StatusText" Style="{StaticResource BodyText}" Text="{DynamicResource L_Main_StatusStart}" Margin="0,8,0,16" HorizontalAlignment="Center" Foreground="{DynamicResource TextDimBrush}"/>
+        <Button Content="{DynamicResource L_Main_OpenOverlay}" Width="160" Click="OnOpenOverlay" HorizontalAlignment="Center"/>
+        <Button Content="{DynamicResource L_Main_Settings}" Width="160" Margin="0,8,0,0" Click="OnOpenSettings" HorizontalAlignment="Center"/>
     </StackPanel>
 </Window>

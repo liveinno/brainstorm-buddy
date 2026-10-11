@@ -57,6 +57,32 @@ packaging/inno/ffmpeg/
 report_install.html
 report_install_keep.html
 report_uninstall.html
+.work/
+diagnostics_*.zip
+
+# Разовый QA-отчёт прогона (коммитится вручную при сборке отчёта)
+docs/QA_REPORT_*.md
+
+# Тестовая WAV-фикстура SttQuality/SttPipeline-тестов живёт в C:\temp\
+test_audio.wav
+# Крупные исходные аудио пользователя (слайсы в testaudios/slices/ — коммитим)
+testaudios/*.m4a
+testaudios/*.mp4
+testaudios/*_transcript.txt
+memory.txt
+2026-10-*_transcript.txt
 
 # локальные скриншоты (не для публикации)
 pdf_imgs/
+
+# Отчёты UI-тестера установки (тестовый мусор)
+report_install.html
+report_install_keep.html
+report_uninstall.html
+
+# Local release instructions, evidence and private work notes
+/.release-private/
+/AGENTS.md
+/.omp/RULES.md
+/SESSION_LOG_*.md
+/BACKLOG_LOCAL.md

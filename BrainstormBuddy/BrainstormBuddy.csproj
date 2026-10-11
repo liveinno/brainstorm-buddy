@@ -2,7 +2,10 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- windows10.0.19041: WinRT-проекции нужны движку Windows OCR (Windows.Media.Ocr,
+         Ocr/WinOcrRecognizer.cs). 19041 = Windows 10 2004 — минимум для стабильного
+         Windows.Media.Ocr API. -->
+    <TargetFramework>net8.0-windows10.0.19041</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
@@ -11,16 +14,40 @@
     <ApplicationIcon>Resources\Icons\app.ico</ApplicationIcon>
     <AssemblyName>BrainstormBuddy</AssemblyName>
     <RootNamespace>BrainstormBuddy</RootNamespace>
-  <Version>2.7.2</Version>
+  <Version>2.28.2</Version>
     <Company>BrainstormBuddy</Company>
     <Product>BrainstormBuddy</Product>
     <LangVersion>12</LangVersion>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- WFAC010 (WinForms-анализатор «уберите DPI из манифеста») для WPF не применим:
+         DPI-awareness WPF читается из манифеста процесса ДО запуска managed-кода,
+         ApplicationHighDpiMode влияет только на WinForms-бутстрап, который мы не вызываем.
+         Удаление dpiAwareness из app.manifest сломало бы Per-Monitor DPI. -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="System.Management" Version="10.0.9" />
+    <!-- Явный пиннинг: транзитивные STJ/STE 10.0.2 (через Microsoft.Extensions.AI)
+         при self-contained publish проигрывали runtime-pack и в выход попадала
+         сборка 8.0.0.0 при deps.json=10.0.2 → падение на старте. -->
+    <PackageReference Include="System.Text.Json" Version="10.0.2" />
+    <PackageReference Include="System.Text.Encodings.Web" Version="10.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- NuGet кладёт natives DirectML-пакета в runtimes\win-x64\native по deps.json;
+         сохраняем явные копии туда же (Link) — страховка резолюции native-путей
+         при publish из WPF-проекта. -->
+    <None Include="$(PkgMicrosoft_ML_OnnxRuntime_DirectML)\runtimes\win-x64\native\onnxruntime.dll"
+          Condition="Exists('$(PkgMicrosoft_ML_OnnxRuntime_DirectML)\runtimes\win-x64\native\onnxruntime.dll')"
+          Link="runtimes\win-x64\native\onnxruntime.dll"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(PkgMicrosoft_ML_OnnxRuntime_DirectML)\runtimes\win-x64\native\onnxruntime_providers_shared.dll"
+          Condition="Exists('$(PkgMicrosoft_ML_OnnxRuntime_DirectML)\runtimes\win-x64\native\onnxruntime_providers_shared.dll')"
+          Link="runtimes\win-x64\native\onnxruntime_providers_shared.dll"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -31,6 +58,12 @@
     <Resource Include="Resources\Icons\tray.ico" />
     <Resource Include="Resources\Icons\app.ico" />
     <Resource Include="Resources\Fonts\*.ttf" />
+    <Resource Include="Resources\Fonts\Inter\*.ttf" />
+    <!-- Модели Tesseract (rus+eng+osd) едут рядом с exe: TesseractRecognizer ищет их
+         в AppContext.BaseDirectory\tessdata. -->
+    <None Update="tessdata\*.traineddata">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="Resources\test_audio_short.flac">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

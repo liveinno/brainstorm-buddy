@@ -83,7 +83,7 @@ public static class LlmProviderRegistry
         {
             Id = "groq", Name = "Groq", Protocol = "openai-chat",
             BaseUrl = "https://api.groq.com/openai/v1", AuthKind = "bearer",
-            ModelPresets = { "llama-3.3-70b-versatile", "llama3-8b-8192" },
+            ModelPresets = { "openai/gpt-oss-120b", "openai/gpt-oss-20b" },
             PrivacyNote = "Запросы уходят в облако Groq.",
             IsBuiltIn = true
         },
@@ -99,7 +99,7 @@ public static class LlmProviderRegistry
         {
             Id = "nvidia-nim", Name = "NVIDIA NIM", Protocol = "openai-chat",
             BaseUrl = "https://integrate.api.nvidia.com/v1", AuthKind = "bearer",
-            ModelPresets = { "meta/llama-3.1-70b-instruct" },
+            ModelPresets = { "meta/llama-3.3-70b-instruct" },
             PrivacyNote = "Запросы уходят в облако NVIDIA.",
             IsBuiltIn = true
         },

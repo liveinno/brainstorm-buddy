@@ -1,3 +1,5 @@
+using System.Reflection;
+using Microsoft.Win32;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -10,8 +12,10 @@ namespace BrainstormBuddy.Services;
 
 /// <summary>
 /// Собирает обезличенный архив для поддержки: логи + настройки без токенов + сведения
-/// о системе + недавние ошибки. НАМЕРЕННО НЕ включает историю вопросов/ответов
-/// (qa_history.txt) и транскрибации — это персональные данные, остаются на машине юзера.
+/// о системе + недавние ошибки + краш-артефакты (crash.log, crash-last.txt). НАМЕРЕННО
+/// НЕ включает историю вопросов/ответов (qa_history.txt), транскрибации и WER-дампы
+/// (*.dmp сотни МБ — в манифесте только перечисляются) — это персональные данные
+/// и тяжёлые файлы, остаются на машине юзера.
 /// </summary>
 public static class DiagnosticsService
 {
@@ -85,14 +89,40 @@ public static class DiagnosticsService
             }
             catch (Exception ex) { manifest.AppendLine($"  • app*.log — ПРОПУЩЕНО ({ex.Message})"); }
 
+            // 4) Краш-артефакты: прямой журнал фаталов (пишется в обход логгера из
+            // UnhandledException-хендлеров) и маркер последнего managed-креша.
+            // Best-effort: файла нет — просто не добавляем.
+            try
+            {
+                var crashLogPath = Path.Combine(appDataDir, "logs", "crash.log");
+                if (File.Exists(crashLogPath))
+                {
+                    var clean = RedactLogText(TailLines(SafeRead(crashLogPath), 200));
+                    File.WriteAllText(Path.Combine(staging, "crash.log"), clean, Encoding.UTF8);
+                    manifest.AppendLine("  • crash.log — журнал «тихих» падений (хвост, до 200 строк)");
+                }
+
+                var crashLastPath = Path.Combine(appDataDir, "logs", "crash-last.txt");
+                if (File.Exists(crashLastPath))
+                {
+                    var clean = RedactLogText(SafeRead(crashLastPath));
+                    File.WriteAllText(Path.Combine(staging, "crash-last.txt"), clean, Encoding.UTF8);
+                    manifest.AppendLine("  • crash-last.txt — маркер последнего managed-креша");
+                }
+            }
+            catch (Exception ex) { manifest.AppendLine($"  • crash-артефакты — ПРОПУЩЕНО ({ex.Message})"); }
+
             manifest.AppendLine();
             manifest.AppendLine("ЧЕГО ЗДЕСЬ НЕТ (остаётся только на вашем компьютере):");
             manifest.AppendLine("  • История вопросов/ответов (qa_history.txt)");
             manifest.AppendLine("  • Транскрибации файлов и записи звонков");
             manifest.AppendLine("  • API-ключи, токены доступа, пароли");
+            // Full-дампы (DumpType=2) весят сотни МБ — в архив не кладём, только
+            // перечисляем в манифесте, чтобы было понятно, что прислать при повторении.
+            AppendWerDumpsInfo(manifest, appDataDir);
             File.WriteAllText(Path.Combine(staging, "README.txt"), manifest.ToString(), Encoding.UTF8);
 
-            // 4) Упаковка
+            // 5) Упаковка
             var zipPath = Path.Combine(destDir, $"diagnostics_{stamp}.zip");
             if (File.Exists(zipPath)) File.Delete(zipPath);
             ZipFile.CreateFromDirectory(staging, zipPath, CompressionLevel.Optimal, includeBaseDirectory: false);
@@ -116,10 +146,90 @@ public static class DiagnosticsService
         catch { return string.Empty; }
     }
 
+    /// <summary>Хвост из последних <paramref name="maxLines"/> строк (crash.log копится за всю жизнь установки).</summary>
+    private static string TailLines(string text, int maxLines)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        var lines = text.Split('\n');
+        return lines.Length <= maxLines ? text : string.Join('\n', lines.Skip(lines.Length - maxLines));
+    }
+
+    /// <summary>
+    /// Перечисляет в манифесте свежие WER-дампы BrainstormBuddy.exe (имя, дата, размер).
+    /// Сами .dmp НЕ копируются — полные дампы слишком велики для архива поддержки.
+    /// </summary>
+    private static void AppendWerDumpsInfo(StringBuilder manifest, string appDataDir)
+    {
+        try
+        {
+            var dirs = WerDumpDirectories(appDataDir).ToList();
+            var dumps = dirs
+                .Where(Directory.Exists)
+                .SelectMany(d => new DirectoryInfo(d).GetFiles("*.dmp"))
+                // %LOCALAPPDATA%\CrashDumps общий для всех приложений — берём только наши.
+                .Where(f => f.Name.Contains("BrainstormBuddy", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(f => f.LastWriteTime)
+                .Take(10)
+                .ToList();
+
+            var where = string.Join(" или ", dirs.Select(d => $"«{RedactLogText(d)}»"));
+            manifest.AppendLine($"  • WER-дампы нативных падений (*.dmp, сотни МБ) — лежат в {where};");
+            if (dumps.Count > 0)
+            {
+                manifest.AppendLine("    найдены — пришлите свежий, если падение повторится:");
+                foreach (var f in dumps)
+                    manifest.AppendLine($"      {f.Name} — {f.LastWriteTime:yyyy-MM-dd HH:mm:ss}, {f.Length / (1024.0 * 1024):F1} МБ");
+            }
+            else
+            {
+                manifest.AppendLine("    пока дампов нет — появятся при нативном краше, тогда пришлите свежий.");
+            }
+        }
+        catch
+        {
+            manifest.AppendLine("  • WER-дампы (*.dmp) — не удалось перечислить; ищите папку dumps рядом с logs\\");
+        }
+    }
+
+    /// <summary>
+    /// Каталоги, где искать WER-дампы: реальный DumpFolder из HKCU\...\LocalDumps\
+    /// BrainstormBuddy.exe, зарегистрированный CrashGuard'ом «appdata\dumps»
+    /// и системный дефолт %LOCALAPPDATA%\CrashDumps.
+    /// </summary>
+    private static IReadOnlyList<string> WerDumpDirectories(string appDataDir)
+    {
+        var dirs = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Реестр — только Windows; Core кроссплатформенный, поэтому гард ОС
+        // (иначе CA1416; на не-Windows вызов упал бы в PlatformNotSupported).
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                const string keyPath = @"Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\BrainstormBuddy.exe";
+                using var key = Registry.CurrentUser.OpenSubKey(keyPath);
+                if (key?.GetValue("DumpFolder") is string regDir && regDir.Length > 0 && seen.Add(regDir))
+                    dirs.Add(regDir);
+            }
+            catch { /* реестр может быть закрыт политикой — пробуем известные пути */ }
+        }
+
+        var ownDir = Path.Combine(appDataDir, "dumps");
+        if (seen.Add(ownDir)) dirs.Add(ownDir);
+
+        var defDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CrashDumps");
+        if (seen.Add(defDir)) dirs.Add(defDir);
+        return dirs;
+    }
+
     private static string BuildSystemInfo(string? extra)
     {
         var sb = new StringBuilder();
-        var asm = typeof(DiagnosticsService).Assembly.GetName();
+        // Версия берётся из входной сборки (WPF app 2.12.0), а не из Core (застряла на 2.5.2) —
+        // иначе в system_info.txt писалась устаревшая версия библиотеки, а не приложения.
+        var asm = (Assembly.GetEntryAssembly() ?? typeof(DiagnosticsService).Assembly).GetName();
         sb.AppendLine($"Приложение: {asm.Name} {asm.Version}");
         sb.AppendLine($"ОС: {Environment.OSVersion} (64-bit: {Environment.Is64BitOperatingSystem})");
         sb.AppendLine($".NET (CLR): {Environment.Version}");

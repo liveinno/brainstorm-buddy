@@ -16,6 +16,7 @@ USER_FRAGS = [
     "a3_audio_stt.py",
     "a4_filetranscription.py",
     "a5_overlay_hotkeys_tray.py",
+    "a8_memory.py",
     "a6_summary_agents_diag.py",
 ]
 ADMIN_FRAGS = [

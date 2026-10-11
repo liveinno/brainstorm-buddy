@@ -11,125 +11,16 @@
         ShowInTaskbar="False"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
+        FontFamily="{DynamicResource UiFontFamily}"
         Title="BrainstormBuddy Overlay">
 
     <Window.Resources>
         <!-- Стиль ToolTip берётся из общего Styles.xaml (тёмная скруглённая подсказка).
              Локальный сломанный (белый на белом) удалён — подсказки были невидимы. -->
 
-        <!-- ComboBoxItem: светлый текст на тёмном; selected = зелёный + ЧЁРНЫЙ текст.
-             ВАЖНО: в OverlayWindow.xaml нет global ComboBox style, и default WPF Aero рисует
-             серый текст на голубом. Этот стиль применяется только к items внутри ComboBox. -->
-        <Style TargetType="ComboBoxItem">
-            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
-            <Setter Property="Padding" Value="8,5"/>
-            <Setter Property="FontSize" Value="13"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="ComboBoxItem">
-                        <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter TextBlock.Foreground="{TemplateBinding Foreground}"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BorderBrush}"/>
-                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
-                            </Trigger>
-                            <Trigger Property="IsHighlighted" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource BorderBrush}"/>
-                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
-                            </Trigger>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentBrush}"/>
-                                <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}"/>
-                                <Setter Property="FontWeight" Value="SemiBold"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <!-- ComboBox в title bar: тёмный popup, белый текст, чёрный на зелёном selected -->
-        <Style TargetType="ComboBox">
-            <Setter Property="Background" Value="{DynamicResource BgBrush}"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
-            <Setter Property="Padding" Value="6,4"/>
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="MinHeight" Value="24"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="ComboBox">
-                        <Grid x:Name="TemplateRoot" SnapsToDevicePixels="True">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="22"/>
-                            </Grid.ColumnDefinitions>
-                            <Border x:Name="Bd" Grid.ColumnSpan="2"
-                                    Background="{TemplateBinding Background}"
-                                    BorderBrush="{TemplateBinding BorderBrush}"
-                                    BorderThickness="{TemplateBinding BorderThickness}"
-                                    CornerRadius="3">
-                                <ContentPresenter x:Name="ContentSite"
-                                                  Content="{TemplateBinding SelectionBoxItem}"
-                                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
-                                                  Margin="10,4,26,4"
-                                                  VerticalAlignment="Center"
-                                                  TextBlock.Foreground="{TemplateBinding Foreground}"
-                                                  IsHitTestVisible="False"/>
-                            </Border>
-                            <!-- Тогл на ВСЮ ширину (клик по любому месту поля раскрывает список),
-                                 «голый» шаблон без chrome; стрелка справа не перекрывает текст. -->
-                            <ToggleButton x:Name="ToggleButton"
-                                          Grid.Column="0" Grid.ColumnSpan="2"
-                                          Focusable="False"
-                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
-                                          ClickMode="Press">
-                                <ToggleButton.Template>
-                                    <ControlTemplate TargetType="ToggleButton">
-                                        <Border Background="Transparent">
-                                            <Path x:Name="Arrow" Data="M0,0 L4,4 L8,0 Z"
-                                                  Fill="{DynamicResource TextMutedBrush}"
-                                                  HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                                        </Border>
-                                    </ControlTemplate>
-                                </ToggleButton.Template>
-                            </ToggleButton>
-                            <Popup x:Name="PART_Popup"
-                                   IsOpen="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
-                                   Placement="Bottom"
-                                   AllowsTransparency="True"
-                                   Focusable="False"
-                                   PopupAnimation="Fade"
-                                   VerticalOffset="2">
-                                <Border x:Name="DropDownBorder"
-                                        Background="{DynamicResource PanelBrush}"
-                                        BorderBrush="{DynamicResource BorderBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="3"
-                                        MinWidth="{TemplateBinding ActualWidth}"
-                                        MaxHeight="{TemplateBinding MaxDropDownHeight}">
-                                    <ScrollViewer x:Name="DropDownScrollViewer" Margin="2">
-                                        <ItemsPresenter x:Name="ItemsPresenter" KeyboardNavigation.DirectionalNavigation="Contained"/>
-                                    </ScrollViewer>
-                                </Border>
-                            </Popup>
-                        </Grid>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
-                            </Trigger>
-                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
+        <!-- ComboBox/ComboBoxItem: локальные копии шаблона удалены — теперь берутся
+             из глобального Styles.xaml (r10, клик по всему полю, тёмный popup).
+             PresetSelector ниже переопределяет только Background/Foreground. -->
 
         <!-- Кнопка-иконка по Button States: r8, hover-подложка HoverBrush, нажатие scale(0.9) -->
         <Style x:Key="TitleBarButton" TargetType="Button">
@@ -162,34 +53,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
-        <!-- Primary-кнопка «Отправить» (градиент индиго r10, нажатие scale 0.95) -->
-        <Style x:Key="PrimaryActionButton" TargetType="Button">
-            <Setter Property="Foreground" Value="#ffffff"/>
-            <Setter Property="FontSize" Value="12.5"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd" Background="{DynamicResource AccentGradientBrush}"
-                                CornerRadius="10" Padding="13,7" RenderTransformOrigin="0.5,0.5">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Bd" Property="RenderTransform">
-                                    <Setter.Value>
-                                        <ScaleTransform ScaleX="0.95" ScaleY="0.95"/>
-                                    </Setter.Value>
-                                </Setter>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
         <!-- Крестик закрытия баннеров/тостов. Дефолтный WPF-хром кнопки на янтарном/золотом
              фоне рисовал серый квадрат при hover, а сама зона 20px была меньше пальца/курсора.
              Явный шаблон: прозрачный фон r6, hover — полупрозрачная янтарная подложка,
@@ -212,6 +75,49 @@
                                 <Setter TargetName="Bd" Property="Background" Value="#33F0A860"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <ScaleTransform ScaleX="0.9" ScaleY="0.9"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Круглые кнопки отправки оверлея (волна 03A): круг 32×32 r16, глиф 18×18
+             по центру. Жёсткие Min/Max — глобальный неявный стиль Button (MinHeight=36)
+             не может вытянуть круг в эллипс ни в одном состоянии; нажатие — только
+             RenderTransform, геометрия раскладки не меняется. ContentPresenter x:Name="Cp"
+             обязателен: PressedIconSwap подменяет глиф на Icon*Pressed через
+             Template.FindName("Cp"). -->
+        <Style x:Key="OverlaySendButton" TargetType="Button">
+            <Setter Property="Width" Value="32"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="MinWidth" Value="32"/>
+            <Setter Property="MinHeight" Value="32"/>
+            <Setter Property="MaxWidth" Value="32"/>
+            <Setter Property="MaxHeight" Value="32"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{DynamicResource ActionPrimaryBrush}"
+                                CornerRadius="16" RenderTransformOrigin="0.5,0.5">
+                            <ContentPresenter x:Name="Cp" Width="18" Height="18"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ActionPrimaryHoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ActionPrimaryPressedBrush}"/>
                                 <Setter TargetName="Bd" Property="RenderTransform">
                                     <Setter.Value>
                                         <ScaleTransform ScaleX="0.9" ScaleY="0.9"/>
@@ -269,18 +175,63 @@
                             <Border Grid.Column="1" HorizontalAlignment="Right"
                                     Background="{DynamicResource QuestionBubbleBrush}"
                                     BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="16,16,4,16" Padding="15,11">
+                                    CornerRadius="16,16,4,16" Padding="{DynamicResource OverlayBubblePadding}">
                                 <StackPanel>
-                                    <TextBlock Text="{Binding Question}" Foreground="{DynamicResource TextBrush}"
-                                               FontSize="{DynamicResource OverlayQuestionFontSize}" TextWrapping="Wrap"/>
-                                    <StackPanel Orientation="Horizontal" Margin="0,7,0,0">
-                                        <Ellipse Width="6" Height="6" Fill="{Binding StatusBrush}" VerticalAlignment="Center"/>
-                                        <TextBlock Text="{Binding SttReceivedText}" Foreground="{DynamicResource TextFaintBrush}"
-                                                   FontSize="9" Margin="7,0,0,0" FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center"/>
-                                        <TextBlock Text="{Binding SttLatencyText}" Foreground="{DynamicResource TextFaintBrush}"
-                                                   FontSize="9" Margin="6,0,0,0" FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center"/>
-                                        <TextBlock Text="{Binding AudioDurationText}" Foreground="{DynamicResource TextFaintBrush}"
-                                                   FontSize="9" Margin="6,0,0,0" FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center"/>
+                                    <!-- TextBox IsReadOnly вместо TextBlock: юзер может выделять
+                                         и копировать текст вопроса курсором (прозрачный, без рамки). -->
+                                    <TextBox Text="{Binding Question}" Foreground="{DynamicResource TextBrush}"
+                                             FontSize="{DynamicResource OverlayQuestionFontSize}" TextWrapping="Wrap"
+                                             TextBlock.LineHeight="{DynamicResource OverlayQuestionLineHeight}" TextBlock.LineStackingStrategy="BlockLineHeight"
+                                             IsReadOnly="True" Background="Transparent" BorderThickness="0" Padding="0"
+                                             MinHeight="0" CaretBrush="{DynamicResource TextBrush}"
+                                             VerticalScrollBarVisibility="Disabled"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <!-- Speaker chips (диаризация): чип на каждого спикера, встретившегося
+                                             в пузыре («[S1] … [S2] …») плюс доминантный; цвет стабилен в сессии;
+                                             вся строка скрыта при выкл/"S?". ContextMenu не наследует DataContext —
+                                             мост через Tag на Border + PlacementTarget.Tag. -->
+                                        <ItemsControl ItemsSource="{Binding SpeakerChips}"
+                                                      Visibility="{Binding SpeakerChipsVisibility}"
+                                                      Margin="0,7,0,0" VerticalAlignment="Center">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <StackPanel Orientation="Horizontal"/>
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border BorderBrush="{Binding Brush}" BorderThickness="1"
+                                                            CornerRadius="8" Padding="6,2" Margin="0,0,6,0"
+                                                            VerticalAlignment="Center"
+                                                            Tag="{Binding}" Cursor="Hand">
+                                                        <Border.ContextMenu>
+                                                            <ContextMenu>
+                                                                <MenuItem Header="{DynamicResource L_MemAssignName}"
+                                                                          Click="OnAssignSpeakerNameClick"
+                                                                          DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                                            </ContextMenu>
+                                                        </Border.ContextMenu>
+                                                        <TextBlock Text="{Binding Text}"
+                                                                   Foreground="{Binding Brush}"
+                                                                   FontSize="12" FontWeight="Medium"
+                                                                   VerticalAlignment="Center"/>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <StackPanel x:Name="QuestionTimingLine" Orientation="Horizontal"
+                                                    Margin="0,7,0,0"
+                                                    Visibility="{DynamicResource QuestionTimingLineVisibility}">
+                                            <Ellipse Width="6" Height="6" Fill="{Binding StatusBrush}" VerticalAlignment="Center"/>
+                                            <TextBlock Text="{Binding SttReceivedText}" Foreground="{DynamicResource TextMutedBrush}"
+                                                       FontSize="12" Margin="7,0,0,0" FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center"/>
+                                            <TextBlock Text="{Binding SttLatencyText}" Foreground="{DynamicResource TextMutedBrush}"
+                                                       FontSize="12" Margin="6,0,0,0" FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center"/>
+                                            <TextBlock Text="{Binding OcrLatencyText}" Foreground="{DynamicResource TextMutedBrush}"
+                                                       FontSize="12" Margin="6,0,0,0" FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center"/>
+                                            <TextBlock Text="{Binding AudioDurationText}" Foreground="{DynamicResource TextMutedBrush}"
+                                                       FontSize="12" Margin="6,0,0,0" FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center"/>
+                                        </StackPanel>
                                     </StackPanel>
                                 </StackPanel>
                             </Border>
@@ -297,26 +248,60 @@
                             <StackPanel Grid.Column="0" HorizontalAlignment="Stretch">
                                 <!-- Шапка «ОТВЕТ Σ…» слева, тех-метка rec/STT/LLM — СПРАВА на той же строке (скрываемая) -->
                                 <DockPanel Margin="0,0,0,4" LastChildFill="False">
-                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center"
-                                                Visibility="{DynamicResource TimingLineVisibility}">
-                                        <TextBlock Text="{Binding ChunkReadyText}" Foreground="{DynamicResource TextFaintBrush}" FontSize="9" FontFamily="{DynamicResource MonoFont}"/>
-                                        <TextBlock Text="{Binding SttSentText}" Foreground="{DynamicResource TextFaintBrush}" FontSize="9" Margin="6,0,0,0" FontFamily="{DynamicResource MonoFont}"/>
-                                        <TextBlock Text="{Binding LlmSentText}" Foreground="{DynamicResource TextFaintBrush}" FontSize="9" Margin="6,0,0,0" FontFamily="{DynamicResource MonoFont}"/>
-                                    </StackPanel>
-                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <!-- Одна TextBlock-строка с Runs: в горизонтальном StackPanel дети
+                                         меряются с бесконечной шириной и TextTrimming не срабатывает —
+                                         при переполнении ClipToBounds резал строку посреди глифа
+                                         (артефакт вида «2,?rec» у края). TextBlock + CharacterEllipsis
+                                         обрезает хвост многоточием вместо среза глифов. -->
+                                    <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextMutedBrush}" FontSize="12"
+                                               FontFamily="{DynamicResource MonoFont}"
+                                               TextTrimming="CharacterEllipsis"
+                                               Visibility="{DynamicResource TimingLineVisibility}">
+                                        <Run Text="{Binding ChunkReadyText, Mode=OneWay}"/><Run Text="  "/><Run Text="{Binding SttSentText, Mode=OneWay}"/><Run Text="  "/><Run Text="{Binding LlmSentText, Mode=OneWay}"/>
+                                    </TextBlock>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" ClipToBounds="True">
                                         <TextBlock Text="{DynamicResource L_Answer}" Foreground="{DynamicResource TextDimBrush}"
-                                                   FontSize="10" FontFamily="{DynamicResource MonoFont}"/>
+                                                   FontSize="11" FontWeight="Medium"
+                                                   LineHeight="16" LineStackingStrategy="BlockLineHeight"/>
                                         <TextBlock Text="{Binding TotalLatencyText}" Foreground="{Binding LatencyBrush}"
-                                                   FontSize="10" Margin="8,0,0,0" FontFamily="{DynamicResource MonoFont}" FontWeight="SemiBold"/>
-                                        <TextBlock Text="{Binding LlmLatencyText}" Foreground="{DynamicResource TextFaintBrush}"
-                                                   FontSize="9" Margin="8,0,0,0" FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center"/>
+                                                   FontSize="12" Margin="8,0,0,0" FontFamily="{DynamicResource MonoFont}" FontWeight="Medium"/>
                                     </StackPanel>
                                 </DockPanel>
                                 <Border Background="{DynamicResource AnswerCardBrush}"
                                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                        CornerRadius="4,16,16,16" Padding="16,14">
-                                    <TextBlock Text="{Binding Answer}" Foreground="{DynamicResource TextBrightBrush}"
-                                               FontSize="{DynamicResource OverlayAnswerFontSize}" TextWrapping="Wrap"/>
+                                        CornerRadius="4,16,16,16" Padding="{DynamicResource OverlayBubblePadding}">
+                                    <StackPanel>
+                                        <!-- IsReadOnly TextBox — ответ выделяется/копируется курсором;
+                                             при стриминге Text обновляется биндингом дельтами. -->
+                                        <TextBox Text="{Binding Answer}" Foreground="{DynamicResource TextBrightBrush}"
+                                                 FontSize="{DynamicResource OverlayAnswerFontSize}" TextWrapping="Wrap"
+                                                 TextBlock.LineHeight="{DynamicResource OverlayAnswerLineHeight}" TextBlock.LineStackingStrategy="BlockLineHeight"
+                                                 IsReadOnly="True" Background="Transparent" BorderThickness="0" Padding="0"
+                                                 MinHeight="0" CaretBrush="{DynamicResource TextBrightBrush}"
+                                                 VerticalScrollBarVisibility="Disabled"/>
+                                        <!-- Сработал лимит Ui.MaxAnswerChars: строка-ссылка ведёт в настройки
+                                             на вкладку «Оверлей» (золотая подсветка поля лимита). Видна только
+                                             при реальной обрезке (AnswerTruncatedVisibility). Ссылка без
+                                             подчёркивания — оно появляется при hover (триггер ниже). -->
+                                        <TextBlock Margin="0,6,0,0" FontSize="12" TextWrapping="Wrap"
+                                                   LineHeight="18" LineStackingStrategy="BlockLineHeight"
+                                                   Visibility="{Binding AnswerTruncatedVisibility}">
+                                            <Hyperlink Click="OnTruncatedHintClick"
+                                                       Foreground="{DynamicResource AccentBrush}" Cursor="Hand">
+                                                <Hyperlink.Style>
+                                                    <Style TargetType="Hyperlink">
+                                                        <Style.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="TextDecorations" Value="Underline"/>
+                                                            </Trigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Hyperlink.Style>
+                                                <Run Text="{DynamicResource L_Answer_Truncated}"/>
+                                            </Hyperlink>
+                                        </TextBlock>
+                                    </StackPanel>
                                 </Border>
                             </StackPanel>
                         </Grid>
@@ -332,10 +317,13 @@
                                     CornerRadius="14" Padding="13,11"
                                     Visibility="{Binding HrdAdviceVisibility}">
                                 <StackPanel>
-                                    <TextBlock Text="{DynamicResource L_HrdAdvice}" FontSize="11.5" FontWeight="Bold"
+                                    <TextBlock Text="{DynamicResource L_HrdAdvice}" FontSize="11" FontWeight="Medium"
+                                               LineHeight="16" LineStackingStrategy="BlockLineHeight"
                                                Foreground="#9db2ff" Margin="0,0,0,5"/>
-                                    <TextBlock Text="{Binding HrdAdvice}" Foreground="#c4d0ea" FontSize="12.5"
-                                               TextWrapping="Wrap"/>
+                                    <TextBox Text="{Binding HrdAdvice}" Foreground="#c4d0ea" FontSize="13"
+                                             TextWrapping="Wrap" IsReadOnly="True" Background="Transparent"
+                                             BorderThickness="0" Padding="0" MinHeight="0" CaretBrush="#c4d0ea"
+                                             VerticalScrollBarVisibility="Disabled"/>
                                 </StackPanel>
                             </Border>
                             <Rectangle Grid.Column="1" Width="10" Visibility="{Binding StressDefenseVisibility}"/>
@@ -343,10 +331,13 @@
                                     CornerRadius="14" Padding="13,11"
                                     Visibility="{Binding StressDefenseVisibility}">
                                 <StackPanel>
-                                    <TextBlock Text="{DynamicResource L_Defense}" FontSize="11.5" FontWeight="Bold"
+                                    <TextBlock Text="{DynamicResource L_Defense}" FontSize="11" FontWeight="Medium"
+                                               LineHeight="16" LineStackingStrategy="BlockLineHeight"
                                                Foreground="#f0c65f" Margin="0,0,0,5"/>
-                                    <TextBlock Text="{Binding StressDefense}" Foreground="#e2d6b4" FontSize="12.5"
-                                               TextWrapping="Wrap"/>
+                                    <TextBox Text="{Binding StressDefense}" Foreground="#e2d6b4" FontSize="13"
+                                             TextWrapping="Wrap" IsReadOnly="True" Background="Transparent"
+                                             BorderThickness="0" Padding="0" MinHeight="0" CaretBrush="#e2d6b4"
+                                             VerticalScrollBarVisibility="Disabled"/>
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -356,10 +347,13 @@
                                 CornerRadius="14" Padding="13,11" Margin="0,10,0,0"
                                 Visibility="{Binding ExpandedVisibility}">
                             <StackPanel>
-                                <TextBlock Text="{DynamicResource L_Expanded}" FontSize="11.5" FontWeight="Bold"
+                                <TextBlock Text="{DynamicResource L_Expanded}" FontSize="11" FontWeight="Medium"
+                                           LineHeight="16" LineStackingStrategy="BlockLineHeight"
                                            Foreground="#f0c65f" Margin="0,0,0,5"/>
-                                <TextBlock Text="{Binding ExpandedAnswer}" Foreground="#e2d6b4" FontSize="12.5"
-                                           TextWrapping="Wrap"/>
+                                <TextBox Text="{Binding ExpandedAnswer}" Foreground="#e2d6b4" FontSize="13"
+                                         TextWrapping="Wrap" IsReadOnly="True" Background="Transparent"
+                                         BorderThickness="0" Padding="0" MinHeight="0" CaretBrush="#e2d6b4"
+                                         VerticalScrollBarVisibility="Disabled"/>
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -384,13 +378,15 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <!-- Title bar / drag handle. Grid Auto/*/Auto: лого | селектор (сжимается) | панель кнопок.
-                 Grid надёжнее DockPanel держит правую панель в пределах окна. -->
+            <!-- Title bar / drag handle. Grid Auto/*/Auto/Auto: лого | селектор (сжимается) |
+                 группы действий | панель чипов и кнопок окна. -->
+            <!-- Grid надёжнее DockPanel держит правую панель в пределах окна. -->
             <Grid Grid.Row="0" x:Name="DragHandle" Background="Transparent"
                   MouseLeftButtonDown="OnDragHandleMouseDown" Cursor="SizeAll" Margin="16,14,16,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <!-- Лого-бейдж 28×28 r9, индиго-градиент, белая волна 1:1 (Overlay Final 6a, viewBox24) -->
@@ -408,13 +404,14 @@
                     </Viewbox>
                 </Border>
                 <!-- Правая панель: чипы + кнопки. Auto-колонка → всегда полная ширина, кнопки не режутся. -->
-                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                     <!-- Чипы-статусы 6a: точка 7px + mono-подпись, без рамки -->
                     <Border x:Name="RecChip" BorderThickness="0" Background="Transparent" Margin="0,0,8,0"
                             ToolTip="{DynamicResource L_TT_Rec}" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal">
                             <Ellipse x:Name="RecIndicator" Width="7" Height="7" Fill="{DynamicResource TextMutedBrush}" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="RecChipText" Text="REC" FontSize="10" FontFamily="{DynamicResource MonoFont}"
+                            <TextBlock x:Name="RecChipText" Text="REC" FontSize="13"
+                                       LineHeight="18" LineStackingStrategy="BlockLineHeight"
                                        Foreground="{DynamicResource TextDimBrush}" Margin="5,0,0,0" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Border>
@@ -422,7 +419,8 @@
                             ToolTip="{DynamicResource L_TT_Llm}" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal">
                             <Ellipse x:Name="LlmIndicator" Width="7" Height="7" Fill="{DynamicResource TextMutedBrush}" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="LlmChipText" Text="LLM" FontSize="10" FontFamily="{DynamicResource MonoFont}"
+                            <TextBlock x:Name="LlmChipText" Text="LLM" FontSize="13"
+                                       LineHeight="18" LineStackingStrategy="BlockLineHeight"
                                        Foreground="{DynamicResource TextDimBrush}" Margin="5,0,0,0" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Border>
@@ -445,11 +443,37 @@
                         <ContentPresenter Content="{DynamicResource IconClose}" Width="15" Height="15"/>
                     </Button>
                 </StackPanel>
-                <!-- Селектор промпта: пилюля #141b2c r10. Средняя *-колонка — сжимается при нехватке места. -->
-                <ComboBox Grid.Column="1" x:Name="PresetSelector" Width="200" MinHeight="30" Margin="0,0,8,0"
-                          HorizontalAlignment="Left"
+                <!-- Селектор промпта: пилюля #141b2c r10. Средняя *-колонка — сжимается при нехватке места
+                     (MaxWidth=200 как прежний Width, MinWidth держит читаемость на узком окне). -->
+                <ComboBox Grid.Column="1" x:Name="PresetSelector" MinWidth="110" MaxWidth="200" MinHeight="30"
+                          FontSize="13"
                           Background="{DynamicResource PanelBrush}" Foreground="{DynamicResource TextBrightBrush}"
                           SelectionChanged="OnPresetSelectorChanged" ToolTip="{DynamicResource L_TT_Preset}"/>
+                <!-- Ряд действий (экспорт/протокол/скриншот/клоак/стереть) — одна пилюля
+                     в шапке между селектором и статусами. Те же кнопки/хендлеры/тултипы.
+                     Hit-test: все кнопки — ButtonBase → IsOverInteractive → клики доходят, а не HTCAPTION. -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,8,0">
+                    <Border Style="{StaticResource ToolGroup}">
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="ExportTransBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnExportTranscript" ToolTip="{DynamicResource L_TT_Export}">
+                                <ContentPresenter Content="{DynamicResource IconExport}" Width="16" Height="16"/>
+                            </Button>
+                            <Button x:Name="ExportSummaryBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnExportAiSummary" ToolTip="{DynamicResource L_TT_Protocol}">
+                                <ContentPresenter Content="{DynamicResource IconAiProtocol}" Width="16" Height="16"/>
+                            </Button>
+                            <Button x:Name="ScreenShotButton" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnScreenShotClick" ToolTip="{DynamicResource L_TT_Screenshot}">
+                                <ContentPresenter Content="{DynamicResource IconScreenshot}" Width="14" Height="14"/>
+                            </Button>
+                            <!-- Cloak (сквозной режим) временно скрыт: вешал главное окно. Вернуть после фикса. -->
+                            <Button x:Name="CloakButton" Visibility="Collapsed" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnCloakClick" ToolTip="{DynamicResource L_TT_Cloak}">
+                                <ContentPresenter Content="{DynamicResource IconCloak}" Width="15" Height="15"/>
+                            </Button>
+                            <Button x:Name="EraseButton" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnEraseClick" ToolTip="{DynamicResource L_TT_Erase}">
+                                <ContentPresenter Content="{DynamicResource IconErase}" Width="16" Height="16"/>
+                            </Button>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
             </Grid>
 
             <!-- Row 1: слайдеры (макет: padding 2 18 12, gap 26; label слева, значение справа #8fa8ff).
@@ -463,9 +487,10 @@
                 <StackPanel Grid.Column="0">
                     <DockPanel Margin="0,0,0,7" LastChildFill="False">
                         <TextBlock DockPanel.Dock="Left" Text="{DynamicResource L_Silence}" Foreground="{DynamicResource TextDimBrush}"
-                                   FontSize="10.5" FontWeight="SemiBold"/>
+                                   FontSize="11" FontWeight="Medium"
+                                   LineHeight="16" LineStackingStrategy="BlockLineHeight"/>
                         <TextBlock DockPanel.Dock="Right" Foreground="{DynamicResource AccentSoftBrush}"
-                                   FontSize="9.5" FontFamily="{DynamicResource MonoFont}" FontWeight="SemiBold"
+                                   FontSize="12" FontFamily="{DynamicResource MonoFont}" FontWeight="Medium"
                                    Text="{Binding Value, ElementName=SilenceSlider, StringFormat={}{0:0.0}s}"/>
                     </DockPanel>
                     <Slider x:Name="SilenceSlider" Style="{StaticResource GreenSlider}"
@@ -477,9 +502,10 @@
                 <StackPanel Grid.Column="2">
                     <DockPanel Margin="0,0,0,7" LastChildFill="False">
                         <TextBlock DockPanel.Dock="Left" Text="{DynamicResource L_ChunkMax}" Foreground="{DynamicResource TextDimBrush}"
-                                   FontSize="10.5" FontWeight="SemiBold"/>
+                                   FontSize="11" FontWeight="Medium"
+                                   LineHeight="16" LineStackingStrategy="BlockLineHeight"/>
                         <TextBlock DockPanel.Dock="Right" Foreground="{DynamicResource AccentSoftBrush}"
-                                   FontSize="9.5" FontFamily="{DynamicResource MonoFont}" FontWeight="SemiBold"
+                                   FontSize="12" FontFamily="{DynamicResource MonoFont}" FontWeight="Medium"
                                    Text="{Binding Value, ElementName=ChunkSlider, StringFormat={}{0:0}s}"/>
                     </DockPanel>
                     <Slider x:Name="ChunkSlider" Style="{StaticResource GreenSlider}"
@@ -490,79 +516,55 @@
                 </StackPanel>
             </Grid>
 
-            <!-- Row 2: ряд действий + статус. Margin.Left=52 выравнивает первую видимую группу
-                 под левый край селектора промпта: 16 (margin шапки) + 28 (лого) + 8 (его margin).
-                 Межгрупповый gap 7 живёт в правом margin каждой группы: при Collapsed
-                 SpeedPresetGroup/CloakButton мёртвых отступов не остаётся. -->
-            <StackPanel Grid.Row="2">
+            <!-- Row 2: статус «Слушаю…» справа + пресеты скорости речи (только Инженерный режим).
+                 Ряд действий (экспорт/протокол/скриншот/стереть) переехал в шапку между селектором
+                 промпта и индикаторами. Margin.Left=52 выравнивает SpeedPresetGroup под левый край
+                 селектора: 16 (margin шапки) + 28 (лого) + 8 (его margin). -->
+            <StackPanel Grid.Row="2" x:Name="StatusRow">
                 <DockPanel LastChildFill="False" Margin="52,0,18,10">
-                    <!-- Кнопка «Отправить» перенесена вниз на молнию в мик-панель (по фидбеку).
-                         Пресеты скорости речи — только в Инженерном режиме. -->
-                    <Border x:Name="SpeedPresetGroup" Style="{StaticResource ToolGroup}" Margin="0,0,7,0">
+                    <!-- Пресеты скорости речи — только в Инженерном режиме. -->
+                    <Border x:Name="SpeedPresetGroup" Style="{StaticResource ToolGroup}">
                         <StackPanel Orientation="Horizontal">
-                            <Button Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnSilenceSpeedDown" ToolTip="{DynamicResource L_TT_SlowSpeech}">
-                                <ContentPresenter Content="{DynamicResource IconSlowSpeech}" Width="15" Height="15"/>
+                            <Button x:Name="SlowSpeechBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnSilenceSpeedDown" ToolTip="{DynamicResource L_TT_SlowSpeech}">
+                                <Image Source="{DynamicResource BuddyExtra.Icon.SpeechSlow.Default}" Width="15" Height="15"/>
                             </Button>
-                            <Button Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnResetSpeed" ToolTip="{DynamicResource L_TT_ResetSpeed}">
-                                <ContentPresenter Content="{DynamicResource IconResetSpeed}" Width="15" Height="15"/>
+                            <Button x:Name="ResetSpeedBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnResetSpeed" ToolTip="{DynamicResource L_TT_ResetSpeed}">
+                                <Image Source="{DynamicResource BuddyExtra.Icon.SpeechReset.Default}" Width="15" Height="15"/>
                             </Button>
-                            <Button Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnSilenceSpeedUp" ToolTip="{DynamicResource L_TT_FastSpeech}">
-                                <ContentPresenter Content="{DynamicResource IconFastSpeech}" Width="15" Height="15"/>
+                            <Button x:Name="FastSpeechBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnSilenceSpeedUp" ToolTip="{DynamicResource L_TT_FastSpeech}">
+                                <Image Source="{DynamicResource BuddyExtra.Icon.SpeechFast.Default}" Width="15" Height="15"/>
                             </Button>
                         </StackPanel>
                     </Border>
-                    <Border Style="{StaticResource ToolGroup}" Margin="0,0,7,0">
-                        <StackPanel Orientation="Horizontal">
-                            <Button x:Name="ExportTransBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnExportTranscript" ToolTip="{DynamicResource L_TT_Export}">
-                                <ContentPresenter x:Name="ExportIconHost" Content="{DynamicResource IconExport}" Width="16" Height="16"/>
-                            </Button>
-                            <Button x:Name="ExportSummaryBtn" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnExportAiSummary" ToolTip="{DynamicResource L_TT_Protocol}">
-                                <ContentPresenter Content="{DynamicResource IconAiProtocol}" Width="16" Height="16"/>
-                            </Button>
-                            <Button x:Name="ScreenShotButton" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnScreenShotClick" ToolTip="{DynamicResource L_TT_Screenshot}">
-                                <ContentPresenter Content="{DynamicResource IconScreenshot}" Width="14" Height="14"/>
-                            </Button>
+                    <!-- Волна 08: статус читается на любом фоне — локальная непрозрачная
+                         подложка PanelBrush только под статус (окно остаётся стеклом). -->
+                    <Border DockPanel.Dock="Right" Background="{DynamicResource PanelBrush}"
+                            CornerRadius="8" Padding="8,4" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Ellipse Width="7" Height="7" Fill="{DynamicResource SuccessBrush}" VerticalAlignment="Center">
+                                <Ellipse.Effect>
+                                    <DropShadowEffect Color="#68d6a4" BlurRadius="8" ShadowDepth="0" Opacity="0.7"/>
+                                </Ellipse.Effect>
+                            </Ellipse>
+                            <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextMutedBrush}" FontSize="13"
+                                       LineHeight="18" LineStackingStrategy="BlockLineHeight"
+                                       Margin="9,0,0,0" VerticalAlignment="Center" Text="{DynamicResource L_Listening}"/>
+                            <!-- Инженерный индикатор: чанков в очереди STT + секунд аудио в буферах
+                                 (ещё не отправлено). Виден только в Config.Ui.EngineerMode,
+                                 обновляется в OnBlinkTick вместе с остальными индикаторами. -->
+                            <TextBlock x:Name="SttQueueText" Foreground="{DynamicResource TextMutedBrush}" FontSize="12"
+                                       FontFamily="{DynamicResource MonoFont}" Margin="10,0,0,0" VerticalAlignment="Center"
+                                       Visibility="Collapsed" ToolTip="{DynamicResource L_TT_SttQueue}" Text=""/>
                         </StackPanel>
                     </Border>
-                    <Border Style="{StaticResource ToolGroup}" Margin="0,0,7,0" HorizontalAlignment="Right">
-                        <StackPanel Orientation="Horizontal">
-                            <!-- Cloak (сквозной режим) временно скрыт: вешал главное окно. Вернуть после фикса. -->
-                            <Button x:Name="CloakButton" Visibility="Collapsed" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Margin="0,0,4,0" Click="OnCloakClick" ToolTip="{DynamicResource L_TT_Cloak}">
-                                <ContentPresenter Content="{DynamicResource IconCloak}" Width="15" Height="15"/>
-                            </Button>
-                            <Button x:Name="EraseButton" Style="{StaticResource TitleBarButton}" Width="28" Height="26" Click="OnEraseClick" ToolTip="{DynamicResource L_TT_Erase}">
-                                <ContentPresenter Content="{DynamicResource IconErase}" Width="16" Height="16"/>
-                            </Button>
-                        </StackPanel>
-                    </Border>
-                    <!-- Статус «Слушаю…» — справа в этой же строке (поднят на строку вверх) -->
-                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Ellipse Width="7" Height="7" Fill="{DynamicResource SuccessBrush}" VerticalAlignment="Center">
-                            <Ellipse.Effect>
-                                <DropShadowEffect Color="#68d6a4" BlurRadius="8" ShadowDepth="0" Opacity="0.7"/>
-                            </Ellipse.Effect>
-                        </Ellipse>
-                        <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextMutedBrush}" FontSize="13"
-                                   Margin="9,0,0,0" VerticalAlignment="Center" Text="{DynamicResource L_Listening}"/>
-                        <!-- Инженерный индикатор: чанков в очереди STT + секунд аудио в буферах
-                             (ещё не отправлено). Виден только в Config.Ui.EngineerMode,
-                             обновляется в OnBlinkTick вместе с остальными индикаторами. -->
-                        <TextBlock x:Name="SttQueueText" Foreground="{DynamicResource TextFaintBrush}" FontSize="10"
-                                   FontFamily="{DynamicResource MonoFont}" Margin="10,0,0,0" VerticalAlignment="Center"
-                                   Visibility="Collapsed" ToolTip="{DynamicResource L_TT_SttQueue}" Text=""/>
-                    </StackPanel>
                 </DockPanel>
                 <!-- Баннер-уведомление о проблемах (STT/LLM недоступны). Скрыт, пока всё ок. -->
                 <Border x:Name="NoticeBanner" Visibility="Collapsed" Margin="18,0,18,12"
-                        Background="#26F0A860" BorderBrush="#66F0A860" BorderThickness="1" CornerRadius="12" Padding="12,9">
+                        Background="{DynamicResource PanelBrush}" BorderBrush="#66F0A860" BorderThickness="1" CornerRadius="12" Padding="12,9">
                     <DockPanel LastChildFill="True">
-                        <!-- Треугольник-предупреждение слева -->
+                        <!-- Треугольник-предупреждение слева: иконка из пака BuddyExtra -->
                         <Viewbox DockPanel.Dock="Left" Width="18" Height="18" VerticalAlignment="Top" Margin="0,1,10,0">
-                            <Canvas Width="24" Height="24">
-                                <Path Fill="#F0A860" Data="M12 2.6L22.4 20a1 1 0 0 1-.87 1.5H2.47A1 1 0 0 1 1.6 20z"/>
-                                <Rectangle Canvas.Left="11" Canvas.Top="8.5" Width="2" Height="6.2" RadiusX="1" RadiusY="1" Fill="#1a1205"/>
-                                <Ellipse Canvas.Left="11" Canvas.Top="16.3" Width="2" Height="2" Fill="#1a1205"/>
-                            </Canvas>
+                            <Image Source="{DynamicResource BuddyExtra.Icon.StatusWarning.Default}"/>
                         </Viewbox>
                         <!-- Кнопка «скрыть» справа: штрихи ярче/толще прежних (#E1B85A/2.6 терялись
                              на янтарном фоне), hover — по стилю BannerCloseButton -->
@@ -577,16 +579,38 @@
                             </Viewbox>
                         </Button>
                         <StackPanel VerticalAlignment="Center">
-                            <TextBlock x:Name="NoticeTitle" Text="" Foreground="#FFE1B85A" FontSize="12.5" FontWeight="SemiBold"/>
-                            <TextBlock x:Name="NoticeBody" Text="" Foreground="#F0DBBB" FontSize="11.5"
-                                       TextWrapping="Wrap" Margin="0,2,0,0"/>
+                            <TextBlock x:Name="NoticeTitle" Text="" Foreground="#FFE1B85A" FontSize="14" FontWeight="SemiBold"
+                                       LineHeight="20" LineStackingStrategy="BlockLineHeight"/>
+                            <TextBlock x:Name="NoticeBody" Text="" Foreground="#F0DBBB" FontSize="13"
+                                       LineHeight="20" LineStackingStrategy="BlockLineHeight"
+                                       TextWrapping="Wrap" Margin="0,6,0,0"/>
                             <!-- Ссылка «Открыть настройки» — видна, когда для баннера задан раздел-цель -->
                             <Button x:Name="NoticeActionBtn" Click="OnNoticeAction" Visibility="Collapsed"
-                                    Cursor="Hand" HorizontalAlignment="Left" Margin="0,6,0,0"
+                                    Cursor="Hand" HorizontalAlignment="Left" Margin="0,6,0,0" MinHeight="0"
                                     Background="Transparent" BorderThickness="0" Padding="0">
-                                <TextBlock Text="Открыть настройки →" Foreground="#FFE1B85A"
-                                           TextDecorations="Underline" FontSize="11.5" FontWeight="SemiBold"/>
+                                <TextBlock Text="{DynamicResource L_Ovl_OpenSettingsHint}" Foreground="#FFE1B85A"
+                                           TextDecorations="Underline" FontSize="13" FontWeight="Medium"
+                                           LineHeight="20" LineStackingStrategy="BlockLineHeight"/>
                             </Button>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- Индикатор сквозного режима: клики мыши проходят насквозь, поэтому
+                     баннер текстовый, без кнопок — снять плащ можно хоткеем или
+                     через иконку в трее. Виден только при включённом cloak. -->
+                <Border x:Name="CloakBanner" Visibility="Collapsed" Margin="18,0,18,12"
+                        Background="{DynamicResource PanelBrush}" BorderBrush="#66F0A860" BorderThickness="1" CornerRadius="12" Padding="12,9">
+                    <DockPanel LastChildFill="True">
+                        <Viewbox DockPanel.Dock="Left" Width="18" Height="18" VerticalAlignment="Top" Margin="0,1,10,0">
+                            <Image Source="{DynamicResource BuddyExtra.Icon.StatusWarning.Default}"/>
+                        </Viewbox>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{DynamicResource L_Ovl_CloakBannerTitle}" Foreground="#FFE1B85A" FontSize="14" FontWeight="SemiBold"
+                                       LineHeight="20" LineStackingStrategy="BlockLineHeight"/>
+                            <TextBlock x:Name="CloakBannerBody" Foreground="#F0DBBB" FontSize="13"
+                                       LineHeight="20" LineStackingStrategy="BlockLineHeight"
+                                       TextWrapping="Wrap" Margin="0,6,0,0"/>
                         </StackPanel>
                     </DockPanel>
                 </Border>
@@ -595,7 +619,7 @@
                      Цвет = CoachGold #F4C542 (как золотые рамки обучения — фирменный акцент).
                      Показывается 25 секунд, потом исчезает; кнопка закрытия — сразу. -->
                 <Border x:Name="DeviceToast" Visibility="Collapsed" Margin="18,0,18,12"
-                        Background="#2BF4C542" BorderBrush="#99F4C542" BorderThickness="1.5" CornerRadius="12" Padding="12,9">
+                        Background="{DynamicResource PanelBrush}" BorderBrush="#99F4C542" BorderThickness="1.5" CornerRadius="12" Padding="12,9">
                     <DockPanel LastChildFill="True">
                         <Viewbox DockPanel.Dock="Left" Width="18" Height="18" VerticalAlignment="Top" Margin="0,1,10,0">
                             <Canvas Width="24" Height="24">
@@ -608,7 +632,7 @@
                         </Viewbox>
                         <Button DockPanel.Dock="Right" Click="OnDeviceToastClose"
                                 Style="{StaticResource BannerCloseButton}" Margin="8,0,0,0" VerticalAlignment="Top"
-                                ToolTip="Закрыть">
+                ToolTip="{DynamicResource L_CloseBtn}">
                             <Viewbox Width="14" Height="14">
                                 <Canvas Width="24" Height="24">
                                     <Path Stroke="#FFF4C542" StrokeThickness="3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
@@ -617,9 +641,45 @@
                             </Viewbox>
                         </Button>
                         <StackPanel VerticalAlignment="Center">
-                            <TextBlock x:Name="DeviceToastTitle" Text="" Foreground="#FFF4C542" FontSize="12.5" FontWeight="SemiBold"/>
-                            <TextBlock x:Name="DeviceToastBody" Text="" Foreground="#F5E7C0" FontSize="11.5"
-                                       TextWrapping="Wrap" Margin="0,2,0,0"/>
+                            <TextBlock x:Name="DeviceToastTitle" Text="" Foreground="#FFF4C542" FontSize="14" FontWeight="SemiBold"
+                                       LineHeight="20" LineStackingStrategy="BlockLineHeight"/>
+                            <TextBlock x:Name="DeviceToastBody" Text="" Foreground="#F5E7C0" FontSize="13"
+                                       LineHeight="20" LineStackingStrategy="BlockLineHeight"
+                                       TextWrapping="Wrap" Margin="0,6,0,0"/>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- Зелёный тост памяти: LLM записал/обновил/забыл факт в памяти.
+                     Палитра — зелёная (#4ADE80 заголовок, #D1FAE5 тело), layout тот же,
+                     что у DeviceToast. Показывается 5 секунд, крестик — сразу. -->
+                <Border x:Name="MemoryToast" Visibility="Collapsed" Margin="18,0,18,12"
+                        Background="{DynamicResource PanelBrush}" BorderBrush="#994ADE80" BorderThickness="1.5" CornerRadius="12" Padding="12,9">
+                    <DockPanel LastChildFill="True">
+                        <Viewbox DockPanel.Dock="Left" Width="18" Height="18" VerticalAlignment="Top" Margin="0,1,10,0">
+                            <Canvas Width="24" Height="24">
+                                <!-- Галочка «в память добавлено» -->
+                                <Path Stroke="#4ADE80" StrokeThickness="2.6" Fill="Transparent"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Data="M4.5 12.5L10 18L19.5 6.5"/>
+                            </Canvas>
+                        </Viewbox>
+                        <Button DockPanel.Dock="Right" Click="OnMemoryToastClose"
+                                Style="{StaticResource BannerCloseButton}" Margin="8,0,0,0" VerticalAlignment="Top"
+                                ToolTip="{DynamicResource L_CloseBtn}">
+                            <Viewbox Width="14" Height="14">
+                                <Canvas Width="24" Height="24">
+                                    <Path Stroke="#FF4ADE80" StrokeThickness="3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                          Data="M6.5 6.5L17.5 17.5M17.5 6.5L6.5 17.5"/>
+                                </Canvas>
+                            </Viewbox>
+                        </Button>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock x:Name="MemoryToastTitle" Text="" Foreground="#FF4ADE80" FontSize="14" FontWeight="SemiBold"
+                                       LineHeight="20" LineStackingStrategy="BlockLineHeight"/>
+                            <TextBlock x:Name="MemoryToastBody" Text="" Foreground="#D1FAE5" FontSize="13"
+                                       LineHeight="20" LineStackingStrategy="BlockLineHeight"
+                                       TextWrapping="Wrap" Margin="0,6,0,0"/>
                         </StackPanel>
                     </DockPanel>
                 </Border>
@@ -674,10 +734,10 @@
                             </EventTrigger>
                         </Border.Triggers>
                     </Border>
-                    <TextBlock Text="{DynamicResource L_ColdStartTitle}" Foreground="{DynamicResource TextBrightBrush}"
-                               FontSize="14" FontWeight="SemiBold" TextAlignment="Center" Margin="0,14,0,0"/>
-                    <TextBlock Text="{DynamicResource L_ColdStartBody}" Foreground="{DynamicResource TextMutedBrush}"
-                               FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                    <TextBlock x:Name="ColdStartTitle" Text="{DynamicResource L_ColdStartTitle}" Foreground="{DynamicResource TextBrightBrush}"
+                               Style="{StaticResource SectionTitleText}" TextAlignment="Center" Margin="0,14,0,0"/>
+                    <TextBlock x:Name="ColdStartBody" Text="{DynamicResource L_ColdStartBody}" Foreground="{DynamicResource TextMutedBrush}"
+                               Style="{StaticResource BodyText}" TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0"/>
                 </StackPanel>
             </Grid>
 
@@ -696,73 +756,66 @@
                         <TextBlock DockPanel.Dock="Left" x:Name="TimelineChevron" Text="▸" Foreground="{DynamicResource TextMutedBrush}"
                                    FontSize="28" Margin="0,-6,8,-6" VerticalAlignment="Center"/>
                         <TextBlock DockPanel.Dock="Left" x:Name="TimelineHeaderText" Text="{DynamicResource L_Audio}"
-                                   Foreground="{DynamicResource TextFaintBrush}" FontSize="10" FontWeight="Bold"
+                                   Foreground="{DynamicResource TextMutedBrush}" FontSize="11" FontWeight="Medium"
+                                   LineHeight="16" LineStackingStrategy="BlockLineHeight"
                                    VerticalAlignment="Center"/>
                         <TextBlock DockPanel.Dock="Right" Text="{DynamicResource L_Last2Min}"
-                                   Foreground="{DynamicResource TextFaintBrush}" FontSize="9.5"
+                                   Foreground="{DynamicResource TextMutedBrush}" FontSize="12"
                                    FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center"/>
                     </DockPanel>
                 </Border>
                 <Grid Grid.Row="1" x:Name="TimelineBody">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="14"/>
+                        <RowDefinition Height="18"/>
                     </Grid.RowDefinitions>
                     <Image x:Name="TimelineImage" Grid.Row="0" Height="38"
                            HorizontalAlignment="Stretch" VerticalAlignment="Bottom"
                            Stretch="Fill" ToolTip="{DynamicResource L_TT_Timeline}"/>
                     <!-- Time ruler: ticks + labels -->
-                    <Canvas x:Name="TimelineRuler" Grid.Row="1" Height="14"
+                    <Canvas x:Name="TimelineRuler" Grid.Row="1" Height="18"
                             HorizontalAlignment="Stretch" ClipToBounds="True"/>
                 </Grid>
             </Grid>
 
             <!-- Футер по 6a: mono-строка «Токены … / часы», ниже поле-пилюля r999
                  с плейсхолдером и круглой градиентной кнопкой-самолётиком -->
-            <StackPanel Grid.Row="5">
+            <StackPanel Grid.Row="5" x:Name="FooterRow">
                 <DockPanel Margin="18,12,18,0" LastChildFill="False">
                     <TextBlock DockPanel.Dock="Left" x:Name="TokenText"
-                               Foreground="{DynamicResource TextFaintBrush}" FontSize="10"
+                               Foreground="{DynamicResource TextMutedBrush}" FontSize="12"
                                FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center" Text=""/>
                     <TextBlock DockPanel.Dock="Right" x:Name="ClockText"
-                               Foreground="{DynamicResource TextFaintBrush}" FontSize="10"
+                               Foreground="{DynamicResource TextMutedBrush}" FontSize="12"
                                FontFamily="{DynamicResource MonoFont}" VerticalAlignment="Center" Text="00:00:00"/>
                 </DockPanel>
-                <!-- Поле секретного сообщения: скруглённый прямоугольник r16 (юзер: капсула r999 читалась «яйцом») -->
-                <Border Margin="18,8,18,0" Background="{DynamicResource PanelBrush}"
-                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                        CornerRadius="14" Padding="14,3,5,3">
+                <!-- Поле секретного сообщения: скруглённый прямоугольник r14, высота строки 44
+                     (рамка 1 + внутренние 12,5,5,5 + контент 32); кнопка-круг 32×32 справа. -->
+                <Border Margin="18,8,18,0" Height="44" Background="{DynamicResource PanelBrush}"
+                        BorderBrush="{DynamicResource InputBorderBrush}" BorderThickness="1"
+                        CornerRadius="14" Padding="12,5,5,5">
                     <DockPanel LastChildFill="True">
                         <Button DockPanel.Dock="Right" x:Name="ChatSendBtn" Click="OnChatSend"
-                                Width="24" Height="24" Margin="8,0,0,0"
-                                Cursor="Hand" VerticalAlignment="Center"
+                                Style="{StaticResource OverlaySendButton}"
+                                Margin="8,0,0,0"
+                                AutomationProperties.Name="{DynamicResource L_TT_ChatSend}"
                                 ToolTip="{DynamicResource L_TT_ChatSend}">
-                            <Button.Template>
-                                <ControlTemplate TargetType="Button">
-                                    <Border x:Name="Bd" Background="{DynamicResource AccentGradientBrush}"
-                                            CornerRadius="12" RenderTransformOrigin="0.5,0.5">
-                                        <Viewbox Width="13" Height="13">
-                                            <Canvas Width="24" Height="24">
-                                                <Path Fill="#ffffff" Data="M2.8 20.6L22 12 2.8 3.4l.6 6.8L16 12 3.4 13.8z"/>
-                                            </Canvas>
-                                        </Viewbox>
-                                    </Border>
-                                    <ControlTemplate.Triggers>
-                                        <Trigger Property="IsPressed" Value="True">
-                                            <Setter TargetName="Bd" Property="RenderTransform">
-                                                <Setter.Value>
-                                                    <ScaleTransform ScaleX="0.88" ScaleY="0.88"/>
-                                                </Setter.Value>
-                                            </Setter>
-                                        </Trigger>
-                                    </ControlTemplate.Triggers>
-                                </ControlTemplate>
-                            </Button.Template>
+                            <Viewbox Width="18" Height="18">
+                                <Canvas Width="24" Height="24">
+                                    <Path Fill="#ffffff" Data="M2.8 20.6L22 12 2.8 3.4l.6 6.8L16 12 3.4 13.8z"/>
+                                </Canvas>
+                            </Viewbox>
                         </Button>
                         <Grid VerticalAlignment="Center">
+                            <!-- Высота текстового контрола 32 (MinHeight=0 — иначе неявный
+                                 стиль TextBox вернул бы 36), Padding=0: отступ уже задал
+                                 контейнер. PART_ContentHost не должен повторно брать Padding
+                                 в Margin — двойной отступ. -->
                             <TextBox x:Name="ChatInputBox"
                                      Background="Transparent" Foreground="{DynamicResource TextBrush}"
-                                     BorderThickness="0" Padding="0" FontSize="12" VerticalAlignment="Center"
+                                     BorderThickness="0" Padding="0" FontSize="14" FontWeight="Normal"
+                                     Height="32" MinHeight="0"
+                                     AutomationProperties.Name="{DynamicResource L_TT_ChatInput}"
                                      ToolTip="{DynamicResource L_TT_ChatInput}"
                                      KeyDown="OnChatInputKeyDown">
                                 <TextBox.Template>
@@ -771,16 +824,24 @@
                                     </ControlTemplate>
                                 </TextBox.Template>
                             </TextBox>
+                            <!-- Подсказка-плейсхолдер: видна ТОЛЬКО в пустом нефокусном поле
+                                 (MultiDataTrigger: Text="" И IsKeyboardFocusWithin=False).
+                                 При фокусе прячется сразу — каретка больше не пересекает текст.
+                                 IsHitTestVisible=False: клики проходят сквозь неё в TextBox. -->
                             <TextBlock x:Name="ChatInputHint" IsHitTestVisible="False" Text="{DynamicResource L_SecretHint}"
-                                       Foreground="{DynamicResource TextDimBrush}" FontSize="12"
+                                       Foreground="{DynamicResource TextDimBrush}" FontSize="14" Padding="0"
                                        VerticalAlignment="Center">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="Visibility" Value="Collapsed"/>
                                         <Style.Triggers>
-                                            <DataTrigger Binding="{Binding Text, ElementName=ChatInputBox}" Value="">
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding Text, ElementName=ChatInputBox}" Value=""/>
+                                                    <Condition Binding="{Binding IsKeyboardFocusWithin, ElementName=ChatInputBox}" Value="False"/>
+                                                </MultiDataTrigger.Conditions>
                                                 <Setter Property="Visibility" Value="Visible"/>
-                                            </DataTrigger>
+                                            </MultiDataTrigger>
                                         </Style.Triggers>
                                     </Style>
                                 </TextBlock.Style>
@@ -790,25 +851,29 @@
                 </Border>
 
                 <!-- Нижняя панель: микрофон (=пауза аудио) + живая волна (RMS) + молния «Отправить».
-                     Высота приведена к полю секретного сообщения (r16, padding 6, кнопки 30px). -->
-                <Border Margin="18,8,18,12" Background="#CC141A28"
-                        BorderBrush="#283351" BorderThickness="1" CornerRadius="14" Padding="4">
+                     Волна 03A: высота панели 44 (рамка 1 + внутренние 5 + контент), кнопки 24×24
+                     по центру, круг отправки 32×32. MinHeight/MinWidth 24 на кнопках нужны:
+                     глобальный неявный стиль Button тащит MinHeight=36 и растягивал их до 24×36. -->
+                <Border Margin="18,8,18,12" Height="44" Background="{DynamicResource PanelBrush}"
+                        BorderBrush="{DynamicResource InputBorderBrush}" BorderThickness="1" CornerRadius="14" Padding="5">
                     <Grid>
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <!-- Микрофон = поставить/снять паузу аудио (иконка/цвет меняется в RefreshAudioPauseButton) -->
-                        <Button Grid.Column="0" x:Name="MicPauseButton" Click="OnAudioPauseClick"
-                                Width="24" Height="24" Cursor="Hand" ToolTip="{DynamicResource L_TT_AudioPause}">
+                        <!-- Микрофон = «Мик выкл»: глушит ТОЛЬКО mic-канал, захват динамика живёт
+                             (иконка/цвет меняется в RefreshMicMuteButton). Полная пауза — хоткей Ctrl+Shift+P. -->
+                        <Button Grid.Column="0" x:Name="MicMuteButton" Click="OnMicMuteClick"
+                                Width="24" Height="24" MinWidth="24" MinHeight="24" Cursor="Hand" ToolTip="{DynamicResource L_TT_MicMute}">
                             <Button.Template>
                                 <ControlTemplate TargetType="Button">
                                     <Border x:Name="Bd" Width="24" Height="24" CornerRadius="12"
                                             Background="{DynamicResource HoverBrush}" RenderTransformOrigin="0.5,0.5">
-                                        <ContentPresenter Content="{DynamicResource IconMic}" Width="16" Height="16"/>
+                                        <ContentPresenter x:Name="Cp" Content="{DynamicResource IconMic}" Width="16" Height="16"/>
                                     </Border>
                                     <ControlTemplate.Triggers>
                                         <Trigger Property="IsPressed" Value="True">
@@ -823,12 +888,12 @@
                         <!-- «LLM выкл» = чистый транскрибатор (золотая подсветка в RefreshLlmOffButton,
                              как у микрофона) -->
                         <Button Grid.Column="1" x:Name="LlmOffButton" Click="OnLlmOffClick"
-                                Width="24" Height="24" Margin="4,0,0,0" Cursor="Hand" ToolTip="{DynamicResource L_TT_LlmOff}">
+                                Width="24" Height="24" MinWidth="24" MinHeight="24" Margin="4,0,0,0" Cursor="Hand" ToolTip="{DynamicResource L_TT_LlmOff}">
                             <Button.Template>
                                 <ControlTemplate TargetType="Button">
                                     <Border x:Name="Bd" Width="24" Height="24" CornerRadius="12"
                                             Background="{DynamicResource HoverBrush}" RenderTransformOrigin="0.5,0.5">
-                                        <ContentPresenter Content="{DynamicResource IconLlmOff}" Width="16" Height="16"/>
+                                        <ContentPresenter x:Name="Cp" Content="{DynamicResource IconLlm}" Width="16" Height="16"/>
                                     </Border>
                                     <ControlTemplate.Triggers>
                                         <Trigger Property="IsPressed" Value="True">
@@ -840,14 +905,34 @@
                                 </ControlTemplate>
                             </Button.Template>
                         </Button>
-                        <!-- «Динамик выкл» = глушить приём loopback (подсветка в RefreshSpeakerMuteButton) -->
+                        <!-- «Динамик выкл» = глушить приём loopback (иконка Speaker/SpeakerOff
+                             и подсветка меняются в RefreshSpeakerMuteButton) -->
                         <Button Grid.Column="2" x:Name="SpeakerMuteButton" Click="OnSpeakerMuteClick"
-                                Width="24" Height="24" Margin="4,0,0,0" Cursor="Hand" ToolTip="{DynamicResource L_TT_SpeakerMute}">
+                                Width="24" Height="24" MinWidth="24" MinHeight="24" Margin="4,0,0,0" Cursor="Hand" ToolTip="{DynamicResource L_TT_SpeakerMute}">
                             <Button.Template>
                                 <ControlTemplate TargetType="Button">
                                     <Border x:Name="Bd" Width="24" Height="24" CornerRadius="12"
                                             Background="{DynamicResource HoverBrush}" RenderTransformOrigin="0.5,0.5">
-                                        <ContentPresenter Content="{DynamicResource IconSpeakerOff}" Width="16" Height="16"/>
+                                        <ContentPresenter x:Name="Cp" Content="{DynamicResource IconSpeaker}" Width="16" Height="16"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsPressed" Value="True">
+                                            <Setter TargetName="Bd" Property="RenderTransform">
+                                                <Setter.Value><ScaleTransform ScaleX="0.9" ScaleY="0.9"/></Setter.Value>
+                                            </Setter>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Button.Template>
+                        </Button>
+                        <!-- Память: чип-индикатор состояния (иконка-чип; цвет = RefreshMemoryButton) -->
+                        <Button Grid.Column="3" x:Name="MemoryButton" Click="OnMemoryClick"
+                                Width="24" Height="24" MinWidth="24" MinHeight="24" Margin="4,0,0,0" Cursor="Hand" ToolTip="{DynamicResource L_MemToggle_Off}">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border x:Name="Bd" Width="24" Height="24" CornerRadius="12"
+                                            Background="{DynamicResource HoverBrush}" RenderTransformOrigin="0.5,0.5">
+                                        <ContentPresenter x:Name="Cp" Content="{DynamicResource IconMemory}" Width="16" Height="16"/>
                                     </Border>
                                     <ControlTemplate.Triggers>
                                         <Trigger Property="IsPressed" Value="True">
@@ -860,27 +945,14 @@
                             </Button.Template>
                         </Button>
                         <!-- Живая волна: 24 бара, высоты обновляются из RMS в OnBlinkTick -->
-                        <StackPanel Grid.Column="3" x:Name="LiveWave" Orientation="Horizontal"
+                        <StackPanel Grid.Column="4" x:Name="LiveWave" Orientation="Horizontal"
                                     HorizontalAlignment="Center" VerticalAlignment="Center" Height="24"/>
                         <!-- Молния = Отправить (перенесена из ряда действий) -->
-                        <Button Grid.Column="4" x:Name="LiveSendBtn" Click="OnSendNow"
-                                Width="24" Height="24" Cursor="Hand" ToolTip="{DynamicResource L_TT_SendBtn}">
-                            <Button.Template>
-                                <ControlTemplate TargetType="Button">
-                                    <Border x:Name="Bd" Background="{DynamicResource AccentGradientBrush}"
-                                            CornerRadius="12" RenderTransformOrigin="0.5,0.5">
-                                        <ContentPresenter Content="{DynamicResource IconSendNow}" Width="15" Height="15"/>
-                                    </Border>
-                                    <ControlTemplate.Triggers>
-                                        <Trigger Property="IsPressed" Value="True">
-                                            <Setter TargetName="Bd" Property="RenderTransform">
-                                                <Setter.Value><ScaleTransform ScaleX="0.9" ScaleY="0.9"/></Setter.Value>
-                                            </Setter>
-                                        </Trigger>
-                                    </ControlTemplate.Triggers>
-                                </ControlTemplate>
-                            </Button.Template>
-                        </Button>
+                        <Button Grid.Column="5" x:Name="LiveSendBtn" Click="OnSendNow"
+                                Style="{StaticResource OverlaySendButton}"
+                                AutomationProperties.Name="{DynamicResource L_TT_SendNow}"
+                                ToolTip="{DynamicResource L_TT_SendNow}"
+                                Content="{DynamicResource IconSendNow}"/>
                     </Grid>
                 </Border>
             </StackPanel>

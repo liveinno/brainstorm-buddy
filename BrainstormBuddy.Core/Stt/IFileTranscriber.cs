@@ -6,7 +6,7 @@ namespace BrainstormBuddy.Stt;
 /// </summary>
 public interface IFileTranscriber : IDisposable
 {
-    /// <summary>Короткое имя движка для UI («GigaAM · CPU», «Whisper turbo»).</summary>
+    /// <summary>Короткое имя движка для UI («GigaAM v3 · CPU», «Whisper turbo»).</summary>
     string EngineName { get; }
 
     /// <param name="samples16k">16 кГц mono float [-1..1].</param>
@@ -15,21 +15,21 @@ public interface IFileTranscriber : IDisposable
         Action<double, string>? progress, CancellationToken ct);
 }
 
-/// <summary>Адаптер GigaAM под IFileTranscriber (поверх FileTranscriptionService).</summary>
+/// <summary>Адаптер GigaAM (v2/v3) под IFileTranscriber (поверх FileTranscriptionService).</summary>
 public sealed class GigaamFileTranscriber : IFileTranscriber
 {
-    private readonly NativeGigaamSttService _stt;
+    private readonly IGigaamSttEngine _stt;
     private readonly bool _ownsStt;
     private readonly FileTranscriptionService _svc;
 
-    public GigaamFileTranscriber(NativeGigaamSttService stt, bool ownsStt)
+    public GigaamFileTranscriber(IGigaamSttEngine stt, bool ownsStt)
     {
         _stt = stt;
         _ownsStt = ownsStt;
         _svc = new FileTranscriptionService(stt);
     }
 
-    public string EngineName => $"GigaAM · {_stt.ActiveProvider}";
+    public string EngineName => $"GigaAM {_stt.VersionTag} · {_stt.ActiveProvider}";
 
     public FileTranscriptResult Transcribe(float[] samples16k, TimeSpan duration, string method,
         Action<double, string>? progress, CancellationToken ct)

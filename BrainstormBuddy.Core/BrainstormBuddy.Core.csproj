@@ -7,16 +7,34 @@
     <LangVersion>12</LangVersion>
     <RootNamespace>BrainstormBuddy</RootNamespace>
     <AssemblyName>BrainstormBuddy.Core</AssemblyName>
-    <Version>2.5.2</Version>
+    <Version>2.13.2</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" GeneratePathProperty="true" />
+    <!-- SentencePiece-токенизатор для multilingual-e5-small (XLM-R BPE): читаем
+         sentencepiece.bpe.model напрямую. -->
+    <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Tesseract" Version="5.2.0" />
     <PackageReference Include="Whisper.net" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1" />
+    <!-- DirectML-пакет штатно кладёт onnxruntime.dll в runtimes\win-x64\native;
+         копия в корень выхода нужна старым native-загрузчикам, которые ищут её рядом
+         с exe (и чтобы её не мог перетереть чужой native-пакет). -->
+    <None Include="$(PkgMicrosoft_ML_OnnxRuntime_DirectML)\runtimes\win-x64\native\onnxruntime.dll"
+          Condition="Exists('$(PkgMicrosoft_ML_OnnxRuntime_DirectML)\runtimes\win-x64\native\onnxruntime.dll')"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- internal-API для офлайн-прогонов: NemotronBench (снимок сегментов, drain)
+         и юнит-тесты маппинга сегментов без нативной dll. -->
+    <InternalsVisibleTo Include="BrainstormBuddy.Tests" />
+    <InternalsVisibleTo Include="BrainstormBuddy.Headless" />
   </ItemGroup>
 
 </Project>

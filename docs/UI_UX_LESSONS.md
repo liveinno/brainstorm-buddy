@@ -87,11 +87,12 @@
 - `ToggleButton` только над стрелкой → **клик по полю не открывает список**.
 - Стрелка **наезжает на текст** (ContentPresenter спанит обе колонки).
 
-Решение (см. стиль ComboBox в `OverlayWindow.xaml` и `SettingsWindow.xaml`):
+Решение — глобальный стиль в `Resources/Styles.xaml` (`Style TargetType="ComboBox"`,
+раньше жил локально в окнах — копии в Overlay/FileTranscription удалены):
 - `ToggleButton Grid.ColumnSpan="2"` (весь поле) с «голым» шаблоном без chrome;
-- у `ContentPresenter` правый отступ (`Margin="…,26,…"`), чтобы текст не лез
-  под стрелку;
+- `ContentSite` ограничен `Grid.Column="0"` — под стрелку (колонка 1) текст не лезет;
 - для показа выбранного значения — `Content="{TemplateBinding SelectionBoxItem}"`;
+- `PART_EditableTextBox` обязателен в шаблоне — без него editable-комбо пустое;
 - если привязка идёт к строке, а элементы — `ComboBoxItem`, используйте
   `SelectedValue` + `SelectedValuePath="Content"` (иначе поле пустое).
 

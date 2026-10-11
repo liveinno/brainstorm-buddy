@@ -10,7 +10,7 @@ public class ConfigLoader
 {
     // Текущая версия схемы конфига. Повышать при смене дефолтов/структуры — тогда
     // старые конфиги пройдут миграцию (чистка dev-остатков, дедуп пресетов и т.п.).
-    public const int CurrentSchemaVersion = 6;
+    public const int CurrentSchemaVersion = 10;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -194,6 +194,95 @@ public class ConfigLoader
             _logger.Info($"Migration: ProviderId пуст → вывели по BaseUrl: '{c.Api.ProviderId}' ({c.Api.BaseUrl})", "Config");
         }
 
+        // 8) Схема 7 (2.16.0): ScreenOcr.Enabled разделён на «фича доступна» (Enabled) и
+        //    «фоновое слежение» (AutoWatchEnabled, дефолт false). У пользователей со
+        //    включённым OCR авто-слежение РАБОТАЛО — не глушим его апгрейдом:
+        //    поднимаем AutoWatch для старых конфигов с Enabled=true. Новые установки
+        //    получают честный дефолт false (включается галочкой в «Экран OCR»).
+        if (c.SchemaVersion < 7 && c.ScreenOcr.Enabled && !c.ScreenOcr.AutoWatchEnabled)
+        {
+            _logger.Info("Migration: ScreenOcr.Enabled=true → AutoWatchEnabled=true (раньше слежение было неотделимо)", "Config");
+            c.ScreenOcr.AutoWatchEnabled = true;
+        }
+        // 9) Схема 8 (2.16.1): лимит ответа и память «из коробки» должны дойти до
+        //    СУЩЕСТВУЮЩИХ конфигов, а не только до чистых установок. Меняем ТОЛЬКО
+        //    старые дефолтные значения — кастомные настройки юзера не трогаем.
+        if (c.SchemaVersion < 8)
+        {
+            // Старый дефолт 180 рвал ответы на полуслове (finish_reason=length в
+            // логах 2026-10-08). Кастомный лимит (больше/меньше) — оставляем.
+            if (c.Advanced.MaxResponseTokens == 180)
+            {
+                _logger.Info("Migration: MaxResponseTokens 180 → 400 (старый дефолт обрезал ответы)", "Config");
+                c.Advanced.MaxResponseTokens = 400;
+            }
+            // Память «из коробки»: у конфигов эпохи ≤2.15 Enabled=false и
+            // EmbeddingsMode="disabled" лежали как ДЕФОЛТЫ (юзер их не ставил) —
+            // после апгрейда память оставалась мёртвой ровно из-за этого. Поднимаем;
+            // кто осознанно выключил — выключит галочкой, это один клик.
+            if (!c.Memory.Enabled)
+            {
+                _logger.Info("Migration: Memory.Enabled=false (старый дефолт) → true — память из коробки", "Config");
+                c.Memory.Enabled = true;
+            }
+            if (string.Equals(c.Memory.EmbeddingsMode, "disabled", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.Info("Migration: EmbeddingsMode=disabled → local (e5: в Full бандлится, в Lite качается по кнопке)", "Config");
+                c.Memory.EmbeddingsMode = "local";
+            }
+        }
+
+        // 10) Схема 9 (2.17.0): память «из коробки» включает и чтение, и запись по
+        //    умолчанию — у старых конфигов DefaultUseMemory/DefaultWriteMemory могли
+        //    остаться false из эпохи до 2.16. Поднимаем false → true (кастомный true
+        //    не трогаем). CooldownSec OCR стал double: допустимый диапазон 0.3–30 с,
+        //    выходящие значения зажимаем.
+        if (c.SchemaVersion < 9)
+        {
+            if (!c.Memory.DefaultUseMemory)
+            {
+                _logger.Info("Migration: DefaultUseMemory=false → true (память читает прошлые встречи)", "Config");
+                c.Memory.DefaultUseMemory = true;
+            }
+            if (!c.Memory.DefaultWriteMemory)
+            {
+                _logger.Info("Migration: DefaultWriteMemory=false → true (память пишет новые встречи)", "Config");
+                c.Memory.DefaultWriteMemory = true;
+            }
+            if (c.ScreenOcr.CooldownSec > 30)
+            {
+                _logger.Info($"Migration: ScreenOcr.CooldownSec {c.ScreenOcr.CooldownSec} → 30 (допустимый диапазон 0.3-30)", "Config");
+                c.ScreenOcr.CooldownSec = 30;
+            }
+            else if (c.ScreenOcr.CooldownSec < 0.3)
+            {
+                _logger.Info($"Migration: ScreenOcr.CooldownSec {c.ScreenOcr.CooldownSec} → 0.3 (допустимый диапазон 0.3-30)", "Config");
+                c.ScreenOcr.CooldownSec = 0.3;
+            }
+        }
+
+        // schema 10 (2.18.0): новые дефолты «из коробки» — стриминг, шрифт 12,
+        // диаризация. Меняем только точные старые дефолтные значения, чтобы не
+        // переопределять осознанный кастом.
+        if (c.SchemaVersion < 10)
+        {
+            if (!c.Advanced.StreamLlmAnswers)
+            {
+                _logger.Info("Migration: StreamLlmAnswers=false → true (2.18.0: стриминг по умолчанию)", "Config");
+                c.Advanced.StreamLlmAnswers = true;
+            }
+            if (c.Ui.FontSize == 17)
+            {
+                _logger.Info("Migration: Ui.FontSize 17 → 12 (2.18.0: компактный дефолт)", "Config");
+                c.Ui.FontSize = 12;
+            }
+            if (!c.SpeakerDiarization.Enabled)
+            {
+                _logger.Info("Migration: SpeakerDiarization.Enabled=false → true (2.18.0: диаризация по умолчанию)", "Config");
+                c.SpeakerDiarization.Enabled = true;
+            }
+        }
+
         c.SchemaVersion = CurrentSchemaVersion;
     }
 
@@ -202,10 +291,34 @@ public class ConfigLoader
         if (config.MultiAgent.Scenarios.Count == 0)
         {
             // Пустые сценарии = мульти-агенты молча не работают (ProcessAsync вернёт [])
-            _logger.Warn("MultiAgent.Scenarios empty → filling defaults (5 scenarios)", "Config");
+            _logger.Warn("MultiAgent.Scenarios empty → filling defaults (6 scenarios)", "Config");
             var userProfile = config.MultiAgent.UserProfile;
             config.MultiAgent = MultiAgentConfig.CreateDefaults();
             config.MultiAgent.UserProfile = userProfile;
+        }
+        else
+        {
+            // Старым конфигам доезжают новые встроенные сценарии (2.8.x: «Обучение»),
+            // в каноничной позиции после ближайшего существующего предка.
+            var builtins = new List<ScenarioConfig>
+            {
+                ScenarioConfig.CreateInterview(), ScenarioConfig.CreateBrainstorm(),
+                ScenarioConfig.CreateCustomerCall(), ScenarioConfig.CreateCareerConsult(),
+                ScenarioConfig.CreateOneOnOne(), ScenarioConfig.CreateTraining()
+            };
+            for (var i = 0; i < builtins.Count; i++)
+            {
+                if (config.MultiAgent.Scenarios.Any(s => s.Id == builtins[i].Id)) continue;
+                var insertAt = -1;
+                for (var j = i - 1; j >= 0 && insertAt < 0; j--)
+                {
+                    var pos = config.MultiAgent.Scenarios.FindIndex(s => s.Id == builtins[j].Id);
+                    if (pos >= 0) insertAt = pos + 1;
+                }
+                if (insertAt < 0) insertAt = config.MultiAgent.Scenarios.Count;
+                config.MultiAgent.Scenarios.Insert(insertAt, builtins[i]);
+                _logger.Info($"Migration: scenario '{builtins[i].Id}' added to config", "Config");
+            }
         }
         // Пустое резюме вырождает фактологичность агентов (нечего цитировать → выдумки).
         // Восстанавливаем дефолтное выдуманное резюме, если юзер его не заполнил.
@@ -273,8 +386,8 @@ public class ConfigLoader
         }
         if (config.Advanced.MaxResponseTokens <= 0)
         {
-            _logger.Warn("Invalid MaxResponseTokens, using 180", "Config");
-            config.Advanced.MaxResponseTokens = 180;
+            _logger.Warn("Invalid MaxResponseTokens, using 400", "Config");
+            config.Advanced.MaxResponseTokens = 400;
         }
     }
 }

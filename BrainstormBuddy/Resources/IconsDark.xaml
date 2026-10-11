@@ -1,113 +1,79 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <!-- Набор иконок для ТЁМНОЙ темы — координаты 1:1 из newdesign/Overlay Final.dc.html (6a).
-         Каждый SVG-элемент отображён в WPF-примитив с теми же числами (viewBox 0 0 24 24):
-         <rect x y w h rx> → Rectangle Canvas.Left=x Canvas.Top=y Width=w Height=h RadiusX=rx;
-         <circle cx cy r> → Ellipse Canvas.Left=cx-r Canvas.Top=cy-r Width=2r Height=2r.
-         Цвета: нейтраль → IconBrush; «вырез»/фон → BgBrush; семантика — фикс из макета. -->
+    <!-- Иконки ТЁМНОЙ темы. Основной набор — BuddyV2 (предокрашенные DrawingImage из
+         Resources/BuddyV2Icons.xaml, мержится на уровне приложения): Icon*-ключ — это
+         Viewbox x:Shared="False" с <Image Source="{DynamicResource BuddyV2.Icon.*.Default}"/>.
+         DynamicResource обязателен: StaticResource внутри мержёного словаря не видит
+         ресурсы уровня App. Ключи без BuddyV2-аналога (ExportDone, спидометры, Home/Info/
+         Help/Calendar, Stop, ChevronRight) — старая Canvas-геометрия ниже, без изменений. -->
 
-    <!-- Логотип: 3 бара голосовой волны (титлбар 6a: fill #fff, viewBox24) -->
+    <!-- Логотип: BuddyV2 Waveform (3 бара голосовой волны) -->
     <Viewbox x:Key="IconAppLogo" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Rectangle Canvas.Left="7" Canvas.Top="8" Width="2.4" Height="8" RadiusX="1.2" RadiusY="1.2" Fill="{DynamicResource IconBrush}"/>
-            <Rectangle Canvas.Left="10.8" Canvas.Top="5" Width="2.4" Height="14" RadiusX="1.2" RadiusY="1.2" Fill="{DynamicResource IconBrush}"/>
-            <Rectangle Canvas.Left="14.6" Canvas.Top="9" Width="2.4" Height="6" RadiusX="1.2" RadiusY="1.2" Fill="{DynamicResource IconBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Waveform.Default}"/>
     </Viewbox>
 
-    <!-- Шеврон вниз (селектор промпта): stroke 2, #7f8ea8 -->
+    <!-- Шеврон вниз (селектор промпта) -->
     <Viewbox x:Key="IconChevronDown" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M7 10l5 5 5-5" Stroke="{DynamicResource TextDimBrush}" StrokeThickness="2"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.ChevronDown.Default}"/>
     </Viewbox>
 
-    <!-- Робот (пауза LLM): тело + рот(фон) + 2 глаза + антенна -->
+    <!-- Робот (LLM включён; выкл-вариант — IconLlmOff, переключает RefreshLlmOffButton) -->
     <Viewbox x:Key="IconLlm" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Rectangle Canvas.Left="4.5" Canvas.Top="7" Width="15" Height="11.5" RadiusX="4" RadiusY="4" Fill="{DynamicResource IconBrush}"/>
-            <Rectangle Canvas.Left="7.4" Canvas.Top="10.2" Width="9.2" Height="4.4" RadiusX="2.2" RadiusY="2.2" Fill="{DynamicResource BgBrush}"/>
-            <Ellipse Canvas.Left="9.4" Canvas.Top="11.4" Width="2" Height="2" Fill="{DynamicResource IconBrush}"/>
-            <Ellipse Canvas.Left="12.6" Canvas.Top="11.4" Width="2" Height="2" Fill="{DynamicResource IconBrush}"/>
-            <Rectangle Canvas.Left="11.2" Canvas.Top="4.4" Width="1.6" Height="2.8" RadiusX="0.8" RadiusY="0.8" Fill="{DynamicResource IconBrush}"/>
-            <Ellipse Canvas.Left="10.75" Canvas.Top="2.55" Width="2.5" Height="2.5" Fill="{DynamicResource IconBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Llm.Default}"/>
     </Viewbox>
 
-    <!-- Пауза аудио: 2 бара #9fb0cc -->
+    <!-- Пауза аудио -->
     <Viewbox x:Key="IconPause" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Rectangle Canvas.Left="7.6" Canvas.Top="5.5" Width="3.2" Height="13" RadiusX="1.6" RadiusY="1.6" Fill="{DynamicResource IconBrush}"/>
-            <Rectangle Canvas.Left="13.2" Canvas.Top="5.5" Width="3.2" Height="13" RadiusX="1.6" RadiusY="1.6" Fill="{DynamicResource IconBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Pause.Default}"/>
     </Viewbox>
 
-    <!-- Продолжить (пауза активна): треугольник #f0a860 -->
+    <!-- Продолжить (пауза активна) -->
     <Viewbox x:Key="IconPlay" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M8 5.5l11 6.5-11 6.5z" Fill="{DynamicResource WarnBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Play.Default}"/>
     </Viewbox>
 
-    <!-- Автоскролл: стрелка вниз + линия -->
+    <!-- Автоскролл -->
     <Viewbox x:Key="IconAutoScroll" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M10.8 4h2.4v7.5h3.4L12 17l-4.6-5.5h3.4z" Fill="{DynamicResource IconBrush}"/>
-            <Rectangle Canvas.Left="6" Canvas.Top="18.6" Width="12" Height="2.2" RadiusX="1.1" RadiusY="1.1" Fill="{DynamicResource IconBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.AutoScroll.Default}"/>
     </Viewbox>
 
-    <!-- Настройки: шестерёнка + вырез #0a0e17 -->
+    <!-- Настройки -->
     <Viewbox x:Key="IconSettings" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M10.3 2.9a2 2 0 0 1 3.4 0l.8 1.3 1.5-.2a2 2 0 0 1 2.4 2.4l-.2 1.5 1.3.8a2 2 0 0 1 0 3.4l-1.3.8.2 1.5a2 2 0 0 1-2.4 2.4l-1.5-.2-.8 1.3a2 2 0 0 1-3.4 0l-.8-1.3-1.5.2a2 2 0 0 1-2.4-2.4l.2-1.5-1.3-.8a2 2 0 0 1 0-3.4l1.3-.8-.2-1.5a2 2 0 0 1 2.4-2.4l1.5.2z"
-                  Fill="{DynamicResource IconBrush}"/>
-            <Ellipse Canvas.Left="9" Canvas.Top="8.2" Width="6" Height="6" Fill="{DynamicResource BgBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Settings.Default}"/>
     </Viewbox>
 
-    <!-- Свернуть окно: линия #8494ad -->
+    <!-- Свернуть окно -->
     <Viewbox x:Key="IconMinimize" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Rectangle Canvas.Left="6" Canvas.Top="11" Width="12" Height="2.2" RadiusX="1.1" RadiusY="1.1" Fill="{DynamicResource IconDimBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Minimize.Default}"/>
     </Viewbox>
 
-    <!-- Развернуть окно: квадрат-контур #8494ad -->
+    <!-- Развернуть окно -->
     <Viewbox x:Key="IconMaximize" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Rectangle Canvas.Left="4" Canvas.Top="4" Width="16" Height="16" RadiusX="2.5" RadiusY="2.5"
-                       Stroke="{DynamicResource IconDimBrush}" StrokeThickness="2"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Maximize.Default}"/>
     </Viewbox>
 
-    <!-- Закрыть/скрыть: крест #e88a95 stroke 2.4 -->
+    <!-- Восстановить окно (задел; BuddyV2 Restore) -->
+    <Viewbox x:Key="IconRestore" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Restore.Default}"/>
+    </Viewbox>
+
+    <!-- Закрыть/скрыть -->
     <Viewbox x:Key="IconClose" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M6.5 6.5l11 11M17.5 6.5l-11 11" Stroke="{DynamicResource CloseIconBrush}" StrokeThickness="2.4"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Close.Default}"/>
     </Viewbox>
 
-    <!-- Молния (отправить): fill #ffd769 -->
+    <!-- Молния (отправить) -->
     <Viewbox x:Key="IconSendNow" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M15 2.4L6.9 12.3a.5.5 0 0 0 .4.8h3.8l-1.6 8.1a.3.3 0 0 0 .55.25l8.1-9.9a.5.5 0 0 0-.4-.8h-3.8l1.6-8.1A.3.3 0 0 0 15 2.4z"
-                  Fill="{DynamicResource BoltBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.SendNow.Default}"/>
     </Viewbox>
 
-    <!-- Экспорт: стрелка вниз + лоток #9fb0cc -->
+    <!-- Экспорт -->
     <Viewbox x:Key="IconExport" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M10.8 3.5h2.4V10h3.4L12 15.5 7.4 10h3.4z M4.5 16.5h2.2V19a.3.3 0 0 0 .3.3h10a.3.3 0 0 0 .3-.3v-2.5h2.2V19a2.5 2.5 0 0 1-2.5 2.5H7A2.5 2.5 0 0 1 4.5 19z"
-                  Fill="{DynamicResource IconBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Export.Default}"/>
     </Viewbox>
 
-    <!-- Экспорт выполнен: галочка #7fe0ae -->
+    <!-- Экспорт выполнен: галочка #7fe0ae (нет BuddyV2-аналога — старая геометрия) -->
     <Viewbox x:Key="IconExportDone" x:Shared="False" Stretch="Uniform">
         <Canvas Width="24" Height="24">
             <Path Data="M5 12.5l4.5 4.5L19 7.5" Stroke="{DynamicResource SuccessIconBrush}" StrokeThickness="2.4"
@@ -115,25 +81,17 @@
         </Canvas>
     </Viewbox>
 
-    <!-- AI-протокол: документ + звезда(фон) + строка(фон) -->
+    <!-- AI-протокол -->
     <Viewbox x:Key="IconAiProtocol" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M6.5 3h7.2L18 7.3V20a1 1 0 0 1-1 1H6.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" Fill="{DynamicResource IconBrush}"/>
-            <Path Data="M11.7 9.6l.95 2.15 2.15.95-2.15.95-.95 2.15-.95-2.15-2.15-.95 2.15-.95z" Fill="{DynamicResource BgBrush}"/>
-            <Rectangle Canvas.Left="8.5" Canvas.Top="17" Width="7" Height="1.6" RadiusX="0.8" RadiusY="0.8" Fill="{DynamicResource BgBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.AiProtocol.Default}"/>
     </Viewbox>
 
-    <!-- Камера: корпус + объектив(фон) + линза -->
+    <!-- Камера -->
     <Viewbox x:Key="IconScreenshot" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M9.2 4.5h5.6L16.2 7H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2.8z" Fill="{DynamicResource IconBrush}"/>
-            <Ellipse Canvas.Left="8.4" Canvas.Top="9.8" Width="7.2" Height="7.2" Fill="{DynamicResource BgBrush}"/>
-            <Ellipse Canvas.Left="10" Canvas.Top="11.4" Width="4" Height="4" Fill="{DynamicResource IconBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Screenshot.Default}"/>
     </Viewbox>
 
-    <!-- Медленнее: спидометр 6.5, стрелка влево-вниз, центр r1.4 -->
+    <!-- Медленнее: спидометр 6.5, стрелка влево-вниз, центр r1.4 (нет BuddyV2-аналога) -->
     <Viewbox x:Key="IconSlowSpeech" x:Shared="False" Stretch="Uniform">
         <Canvas Width="24" Height="24">
             <Path Data="M5.5 15.5a6.5 6.5 0 0 1 13 0" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.1" StrokeStartLineCap="Round"/>
@@ -142,7 +100,7 @@
         </Canvas>
     </Viewbox>
 
-    <!-- Сброс темпа: спидометр, стрелка вверх, метка сверху -->
+    <!-- Сброс темпа: спидометр, стрелка вверх, метка сверху (нет BuddyV2-аналога) -->
     <Viewbox x:Key="IconResetSpeed" x:Shared="False" Stretch="Uniform">
         <Canvas Width="24" Height="24">
             <Path Data="M5.5 15.5a6.5 6.5 0 0 1 13 0" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.1" StrokeStartLineCap="Round"/>
@@ -153,7 +111,7 @@
         </Canvas>
     </Viewbox>
 
-    <!-- Быстрее: спидометр, стрелка вправо-вниз -->
+    <!-- Быстрее: спидометр, стрелка вправо-вниз (нет BuddyV2-аналога) -->
     <Viewbox x:Key="IconFastSpeech" x:Shared="False" Stretch="Uniform">
         <Canvas Width="24" Height="24">
             <Path Data="M5.5 15.5a6.5 6.5 0 0 1 13 0" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.1" StrokeStartLineCap="Round"/>
@@ -162,74 +120,54 @@
         </Canvas>
     </Viewbox>
 
-    <!-- Глаз «призрак» (сквозной): пунктирный контур + зрачок -->
+    <!-- Глаз «призрак» (сквозной режим) -->
     <Viewbox x:Key="IconCloak" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M3.5 12S6.5 6.5 12 6.5 20.5 12 20.5 12 17.5 17.5 12 17.5 3.5 12 3.5 12z"
-                  Stroke="{DynamicResource IconBrush}" StrokeThickness="1.9" StrokeStartLineCap="Round"
-                  StrokeDashArray="1.68 1.37"/>
-            <Ellipse Canvas.Left="9.6" Canvas.Top="9.6" Width="4.8" Height="4.8" Fill="{DynamicResource IconBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Cloak.Default}"/>
     </Viewbox>
 
-    <!-- Корзина: крышка + бак + прорезь(фон) #e07a8a -->
+    <!-- Корзина (очистка) -->
     <Viewbox x:Key="IconErase" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M10.2 3.4h3.6A1.8 1.8 0 0 1 15.6 5.2v.6h3.2a.9.9 0 0 1 0 1.8H5.2a.9.9 0 0 1 0-1.8h3.2v-.6A1.8 1.8 0 0 1 10.2 3.4zm.2 2.4h3.2v-.4a.4.4 0 0 0-.4-.4h-2.4a.4.4 0 0 0-.4.4z"
-                  Fill="{DynamicResource ErrorBrush}"/>
-            <Path Data="M6.3 9.2h11.4l-1 9.7a2.3 2.3 0 0 1-2.3 2.1H9.6a2.3 2.3 0 0 1-2.3-2.1z" Fill="{DynamicResource ErrorBrush}"/>
-            <Rectangle Canvas.Left="11.2" Canvas.Top="11.6" Width="1.6" Height="6" RadiusX="0.8" RadiusY="0.8" Fill="{DynamicResource BgBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Erase.Default}"/>
     </Viewbox>
 
-    <!-- Микрофон (нижняя пилюля): капсула + подставка #9fb0cc -->
+    <!-- Микрофон вкл (нижняя пилюля; выкл-вариант IconMicOff переключает RefreshMicMuteButton) -->
     <Viewbox x:Key="IconMic" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Rectangle Canvas.Left="9.2" Canvas.Top="3" Width="5.6" Height="11" RadiusX="2.8" RadiusY="2.8" Fill="{DynamicResource IconBrush}"/>
-            <Path Data="M6.5 11.5a5.5 5.5 0 0 0 11 0h2a7.5 7.5 0 0 1-6.5 7.4V21h3v2H8v-2h3v-2.1a7.5 7.5 0 0 1-6.5-7.4z" Fill="{DynamicResource IconBrush}"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.Mic.Default}"/>
     </Viewbox>
 
-    <!-- «LLM выкл» (нижняя пилюля): перечёркнутый чат-пузырь с точками. Под чертой — широкий
-         под-штрих BgBrush (та же техника «выреза», что у шестерёнки/камеры), иначе черта
-         сливалась бы с заливкой пузыря. -->
+    <!-- Микрофон выкл (перечёркнутый) -->
+    <Viewbox x:Key="IconMicOff" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.MicOff.Default}"/>
+    </Viewbox>
+
+    <!-- «LLM выкл» (чистый транскрибатор): перечёркнутый робот; ставится RefreshLlmOffButton
+         вместе с золотым IconBrush. -->
     <Viewbox x:Key="IconLlmOff" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Rectangle Canvas.Left="3" Canvas.Top="4.5" Width="18" Height="12" RadiusX="3.5" RadiusY="3.5" Fill="{DynamicResource IconBrush}"/>
-            <Path Data="M7 16v4.5l5-4.5z" Fill="{DynamicResource IconBrush}"/>
-            <Ellipse Canvas.Left="6.9" Canvas.Top="9.5" Width="2" Height="2" Fill="{DynamicResource BgBrush}"/>
-            <Ellipse Canvas.Left="11" Canvas.Top="9.5" Width="2" Height="2" Fill="{DynamicResource BgBrush}"/>
-            <Ellipse Canvas.Left="15.1" Canvas.Top="9.5" Width="2" Height="2" Fill="{DynamicResource BgBrush}"/>
-            <Path Data="M4.5 20.5L19.5 3.5" Stroke="{DynamicResource BgBrush}" StrokeThickness="4.4"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-            <Path Data="M4.5 20.5L19.5 3.5" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.2"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.LlmOff.Default}"/>
     </Viewbox>
 
-    <!-- «Динамик выкл» (нижняя пилюля): перечёркнутый динамик с волнами (тот же приём с просветом) -->
+    <!-- Динамик вкл (нижняя пилюля; выкл-вариант IconSpeakerOff переключает RefreshSpeakerMuteButton) -->
+    <Viewbox x:Key="IconSpeaker" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Speaker.Default}"/>
+    </Viewbox>
+
+    <!-- «Динамик выкл»: перечёркнутый динамик -->
     <Viewbox x:Key="IconSpeakerOff" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M4 9.5h3.2L12.5 5v14l-5.3-4.5H4z" Fill="{DynamicResource IconBrush}"/>
-            <Path Data="M15.5 9.2a4 4 0 0 1 0 5.6" Stroke="{DynamicResource IconBrush}" StrokeThickness="2"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-            <Path Data="M18 6.8a7.6 7.6 0 0 1 0 10.4" Stroke="{DynamicResource IconBrush}" StrokeThickness="2"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-            <Path Data="M4.5 20.5L19.5 3.5" Stroke="{DynamicResource BgBrush}" StrokeThickness="4.4"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-            <Path Data="M4.5 20.5L19.5 3.5" Stroke="{DynamicResource IconBrush}" StrokeThickness="2.2"
-                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.SpeakerOff.Default}"/>
     </Viewbox>
 
-    <!-- Отправка секретного (белый самолётик на градиенте): fill #fff -->
+    <!-- «Память» (нижняя пилюля): цвет IconBrush по-прежнему меняет RefreshMemoryButton
+         (0 off / 1 read / 2 write / 3 read+write); BuddyV2-арт предокрашен и тинт игнорирует. -->
+    <Viewbox x:Key="IconMemory" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Memory.Default}"/>
+    </Viewbox>
+
+    <!-- Отправка секретного (самолётик на градиенте) -->
     <Viewbox x:Key="IconChatSend" x:Shared="False" Stretch="Uniform">
-        <Canvas Width="24" Height="24">
-            <Path Data="M2.8 20.6L22 12 2.8 3.4l.6 6.8L16 12 3.4 13.8z" Fill="#ffffff"/>
-        </Canvas>
+        <Image Source="{DynamicResource BuddyV2.Icon.ChatSend.Default}"/>
     </Viewbox>
 
-    <!-- Дополнительные (задел) -->
+    <!-- Дополнительные (задел; BuddyV2-аналогов нет — старая геометрия) -->
     <Viewbox x:Key="IconHome" x:Shared="False" Stretch="Uniform">
         <Canvas Width="24" Height="24">
             <Path Data="M12 3.5l8.5 7.8h-2v8.2a1 1 0 0 1-1 1h-4v-5.5h-3v5.5h-4a1 1 0 0 1-1-1v-8.2h-2z" Fill="{DynamicResource IconBrush}"/>
@@ -267,6 +205,81 @@
             <Path Data="M10 7l5 5-5 5" Stroke="{DynamicResource IconBrush}" StrokeThickness="1.8"
                   StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
         </Canvas>
+    </Viewbox>
+
+    <!-- Pressed-варианты BuddyV2-алиасов: PressedIconSwap подставляет Icon*Pressed
+         пока кнопка зажата (baseKey + "Pressed"). Только для имён с BuddyV2-парой. -->
+    <Viewbox x:Key="IconAppLogoPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Waveform.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconChevronDownPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.ChevronDown.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconLlmPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Llm.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconPausePressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Pause.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconPlayPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Play.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconAutoScrollPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.AutoScroll.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconSettingsPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Settings.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconMinimizePressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Minimize.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconMaximizePressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Maximize.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconRestorePressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Restore.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconClosePressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Close.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconSendNowPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.SendNow.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconExportPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Export.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconAiProtocolPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.AiProtocol.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconScreenshotPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Screenshot.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconCloakPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Cloak.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconErasePressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Erase.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconMicPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Mic.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconMicOffPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.MicOff.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconLlmOffPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.LlmOff.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconSpeakerPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Speaker.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconSpeakerOffPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.SpeakerOff.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconMemoryPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.Memory.Pressed}"/>
+    </Viewbox>
+    <Viewbox x:Key="IconChatSendPressed" x:Shared="False" Stretch="Uniform">
+        <Image Source="{DynamicResource BuddyV2.Icon.ChatSend.Pressed}"/>
     </Viewbox>
 
 </ResourceDictionary>

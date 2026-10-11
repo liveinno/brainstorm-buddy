@@ -11,7 +11,7 @@ def _load(name):
     return m
 
 
-_MODS = [_load(n) for n in ['a1_start_overlay.py', 'a2_api_llm.py', 'a3_audio_stt.py', 'a4_filetranscription.py', 'a5_overlay_hotkeys_tray.py', 'a6_summary_agents_diag.py']]
+_MODS = [_load(n) for n in ['a1_start_overlay.py', 'a2_api_llm.py', 'a3_audio_stt.py', 'a4_filetranscription.py', 'a5_overlay_hotkeys_tray.py', 'a8_memory.py', 'a6_summary_agents_diag.py']]
 
 
 def build(h, version):

@@ -35,12 +35,12 @@ public partial class SettingsWindow
     {
         var (text, brushKey) = status switch
         {
-            LocalSttStatus.Running => ($"Работает — {App.Current.LocalStt.EndpointUrl}", "AccentBrush"),
-            LocalSttStatus.Starting => ("Запускается…", "TextMutedBrush"),
-            LocalSttStatus.Building => ("Сборка образа… (первый раз до 10 мин)", "TextMutedBrush"),
-            LocalSttStatus.Stopping => ("Останавливается…", "TextMutedBrush"),
-            LocalSttStatus.Error => ("Ошибка — смотри лог ниже", "ErrorBrush"),
-            _ => ("Остановлен", "TextMutedBrush"),
+            LocalSttStatus.Running => (string.Format((string)FindResource("L_LocalStt_Running"), App.Current.LocalStt.EndpointUrl), "AccentBrush"),
+            LocalSttStatus.Starting => ((string)FindResource("L_LocalStt_Starting"), "TextMutedBrush"),
+            LocalSttStatus.Building => ((string)FindResource("L_LocalStt_Building"), "TextMutedBrush"),
+            LocalSttStatus.Stopping => ((string)FindResource("L_LocalStt_Stopping"), "TextMutedBrush"),
+            LocalSttStatus.Error => ((string)FindResource("L_LocalStt_Error"), "ErrorBrush"),
+            _ => ((string)FindResource("L_LocalStt_Stopped"), "TextMutedBrush"),
         };
         LocalSttStatusText.Text = text;
         LocalSttStatusDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, brushKey);
@@ -59,7 +59,7 @@ public partial class SettingsWindow
         catch (Exception ex)
         {
             App.Current.Logger.Error("LocalStt start failed", ex, "LocalStt");
-            App.Current.Notifier.ShowError("Локальный STT", ex.Message);
+            App.Current.Notifier.ShowError((string)FindResource("L_LocalStt_Title"), ex.Message);
         }
     }
 
@@ -81,7 +81,7 @@ public partial class SettingsWindow
     {
         var ok = await App.Current.LocalStt.HealthCheckAsync();
         App.Current.Logger.Info($"Settings: LocalStt ping = {ok}", "LocalStt");
-        LocalSttLogBox.AppendText($"[ping] {(ok ? "OK" : "нет ответа")} ({App.Current.LocalStt.CurrentPingMs}){Environment.NewLine}");
+        LocalSttLogBox.AppendText($"[ping] {(ok ? "OK" : (string)FindResource("L_LocalStt_NoReply"))} ({App.Current.LocalStt.CurrentPingMs}){Environment.NewLine}");
         LocalSttLogBox.ScrollToEnd();
     }
 

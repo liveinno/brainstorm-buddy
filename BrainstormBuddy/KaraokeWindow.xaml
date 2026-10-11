@@ -9,27 +9,34 @@
         ShowActivated="False"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
+        FontFamily="{DynamicResource UiFontFamily}"
         Title="BrainstormBuddy Karaoke">
 
     <!-- Полоса-телесуфлёр: BgLayer — скруглённый фон-слой (при ShowBackground=false
-         скрывается, остаётся плавающий текст), поверх — лента строк LinesPanel,
-         прижатая к низу. Лента сдвигается TranslateTransform'ом (slide-in снизу),
-         старые строки гаснут по возрасту через Opacity. ClipToBounds обрезает
-         выходящие за полосу строки; OpacityMask на LinesPanel задаёт мягкое
-         затухание верхних 24% контента ленты, как mask-image в прототипе
-         karaoke-overlay-v1 (на Strip маска масштабировалась бы от высоты окна). -->
+         скрывается, остаётся плавающий текст), поверх — лента строк LinesPanel
+         внутри Strip-Canvas. Полоса РЕЗИНОВАЯ: высота окна = min(потолок по формуле
+         FontSize*1.38*min(MaxLines,4)+2*InnerPadding, реальный контент + padding'и)
+         — пересчёт в UpdateElasticHeight, якорь пересчитывается при смене высоты
+         (Bottom прирастает вверх, Top — вниз, Left/Right — от вертикального центра).
+         Пустая лента схлопывает окно в нулевую высоту. Когда контент превышает
+         потолок, лента скроллится вверх через Canvas.Top (старые строки
+         уплывают за верхний край), новая строка появляется снизу.
+         Старшие строки гаснут по возрасту через Opacity (HistoryFade/MinHistoryOpacity).
+         ClipToBounds обрезает выходящие за полосу строки; OpacityMask на LinesPanel
+         задаёт мягкое затухание верхних 24% контента ленты (как mask-image
+         в прототипе karaoke-overlay-v1) и отключается при HistoryFade=false.
+         ПОЧЕМУ Canvas, а не RenderTransform-скролл: при большом отрицательном
+         смещении TranslateTransform'а WPF локализовал детей StackPanel некорректно
+         (прорисовка всей ленты «отваливалась» — пустая полоса при overflow).
+         Canvas.Top — layout-позиция, culling/клиппинг стандартные. -->
     <Grid>
         <Border x:Name="BgLayer"
                 CornerRadius="20"
                 BorderThickness="1"/>
-        <Grid x:Name="Strip" ClipToBounds="True">
+        <Canvas x:Name="Strip" ClipToBounds="True">
             <StackPanel x:Name="LinesPanel"
                         Orientation="Vertical"
-                        VerticalAlignment="Bottom">
-                <StackPanel.RenderTransform>
-                    <TranslateTransform x:Name="LinesTransform" X="0" Y="0"/>
-                </StackPanel.RenderTransform>
-            </StackPanel>
-        </Grid>
+                        Canvas.Top="0"/>
+        </Canvas>
     </Grid>
 </Window>

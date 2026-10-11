@@ -31,7 +31,7 @@
 | Текст лицензии | `packaging/inno/LICENSE.txt` (в git, UTF-8 **с BOM**) |
 | Иконка | `BrainstormBuddy/Resources/Icons/app.ico` |
 | Публикация приложения | `publish/app-inno/` (gitignore) |
-| Модель STT | `publish/app-inno/models/{v2_ctc.onnx, labels.json}` |
+| Модели STT | `publish/app-inno/models/{v3_e2e_ctc.int8.onnx, v3_e2e_ctc_vocab.txt, v2_ctc.onnx, labels.json}` |
 | Готовый установщик | `installer-inno/BrainstormBuddy-Setup.exe` (gitignore) |
 
 ---
@@ -96,7 +96,7 @@ robocopy publish\app\models publish\app-inno\models   # exit code 1 = успех
 - **Приложение** → `{app}` (`Program Files\BrainstormBuddy` или
   `%LocalAppData%\Programs\BrainstormBuddy`). Каталог только на чтение —
   приложение туда ничего не пишет (проверено).
-- **Модель** → `{app}\models\v2_ctc.onnx` (+`labels.json`).
+- **Модели** → `{app}\models\{v3_e2e_ctc.int8.onnx, v3_e2e_ctc_vocab.txt}` (дефолтный движок v3) + `v2_ctc.onnx` (+`labels.json`).
 - **Настройки/логи/история** → `%APPDATA%\BrainstormBuddy` (Roaming). Установка и
   удаление их **не трогают** — конфиг переживает переустановку.
 - **`config.json` НЕ кладётся в `{app}`** — приложение читает конфиг только из
@@ -143,12 +143,13 @@ Start-Process "$env:LOCALAPPDATA\Programs\BrainstormBuddy\unins000.exe" -Wait `
   -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"
 ```
 Проверить после установки:
-- [ ] `{app}\BrainstormBuddy.exe`, `{app}\models\v2_ctc.onnx` есть; `config.json`
+- [ ] `{app}\BrainstormBuddy.exe`, `{app}\models\v3_e2e_ctc.int8.onnx` (+`v3_e2e_ctc_vocab.txt`),
+      `{app}\models\v2_ctc.onnx` есть; `config.json`
       и `*.pdb` — **нет**.
 - [ ] старый `%LocalAppData%\BrainstormBuddy` удалён (миграция).
 - [ ] ярлык в «Пуск» + запись в «Программах и компонентах» (`BrainstormBuddy 1.0.0`).
-- [ ] запуск `{app}\BrainstormBuddy.exe` → в логе `Native STT ready … (provider=CPU)`
-      и `STT engine: native`; ошибки `Docker Desktop не найден` **нет**.
+- [ ] запуск `{app}\BrainstormBuddy.exe` → в логе `Native STT ready (v3) … (provider=CPU)`
+      и `STT engine: native3`; ошибки `Docker Desktop не найден` **нет**.
 - [ ] `%APPDATA%\BrainstormBuddy\config.json` цел (размер не изменился).
 
 После удаления:

@@ -20,7 +20,6 @@ public class LocalSttService : IDisposable
     private readonly LocalSttConfig _config;
     private readonly LoggingService _logger;
     private readonly HttpClient _http;
-    private Process? _dockerProcess;
     private CancellationTokenSource? _buildCts;
     private string _previousSttBaseUrl = string.Empty;
     private string _previousSttModel = string.Empty;

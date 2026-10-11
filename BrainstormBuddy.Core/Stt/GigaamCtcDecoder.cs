@@ -41,4 +41,57 @@ public sealed class GigaamCtcDecoder
         }
         return sb.ToString().Trim();
     }
+
+    /// <summary>
+    /// То же жадное разбиение, что и Decode, но дополнительно выдаёт слова с
+    /// границами: StartSec — кадр первого токена слова, EndSec — кадр после
+    /// последнего токена слова (пробел закрывает слово, сам в слова не входит).
+    /// secondsPerFrame — длительность одного encoder-кадра (T log_probs /
+    /// длительность аудио); melFrames/2 (домен log2 с center=true) НЕ равен T.
+    /// Нулевая длительность слова → EndSec = StartSec + secondsPerFrame.
+    /// </summary>
+    public List<SttWordSpan> DecodeWords(float[][] logProbs, double secondsPerFrame)
+    {
+        var words = new List<SttWordSpan>(Math.Min(logProbs.Length / 8, 512));
+        var word = new System.Text.StringBuilder(32);
+        int wordStart = 0, wordEnd = 0;
+        int prev = -1;
+        for (int t = 0; t < logProbs.Length; t++)
+        {
+            var frame = logProbs[t];
+            int best = 0; float bestV = frame[0];
+            for (int v = 1; v < frame.Length; v++)
+                if (frame[v] > bestV) { bestV = frame[v]; best = v; }
+            if (best == prev || best == _blank)
+            {
+                // Повтор/blank — продолжение текущего символа; граница не двигается.
+            }
+            else
+            {
+                var label = _labels[best];
+                if (string.IsNullOrWhiteSpace(label))
+                    FlushWord();           // пробел-метка = конец слова
+                else
+                {
+                    if (word.Length == 0)
+                        wordStart = t;
+                    wordEnd = t;           // последний НЕпробельный кадр слова
+                    word.Append(label);
+                }
+            }
+            prev = best;
+        }
+        FlushWord();
+        return words;
+
+        void FlushWord()
+        {
+            if (word.Length == 0)
+                return;
+            var start = wordStart * secondsPerFrame;
+            var end = Math.Max(start + secondsPerFrame, (wordEnd + 1) * secondsPerFrame);
+            words.Add(new SttWordSpan(word.ToString(), start, end));
+            word.Clear();
+        }
+    }
 }

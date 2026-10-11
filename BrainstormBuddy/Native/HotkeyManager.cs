@@ -23,6 +23,7 @@ public class HotkeyManager : IDisposable
     private readonly Window _window;
     private readonly HwndSource _source;
     private readonly Dictionary<int, HotkeyDefinition> _registered = new();
+    private readonly Dictionary<string, int> _idsByAction = new();
     private int _nextId = 1;
 
     public event EventHandler<string>? HotkeyPressed;
@@ -47,14 +48,22 @@ public class HotkeyManager : IDisposable
             return false;
         }
         _registered[id] = new HotkeyDefinition(actionId, combination);
+        _idsByAction[actionId] = id;
         return true;
     }
+
+    /// <summary>
+    /// ActionId → числовой id RegisterHotKey. Нужен UI-автотестам: хоткей
+    /// воспроизводится PostMessage(overlayHwnd, WM_HOTKEY, id) без SendInput.
+    /// </summary>
+    public IReadOnlyDictionary<string, int> Ids => _idsByAction;
 
     public void UnregisterAll()
     {
         foreach (var id in _registered.Keys)
             UnregisterHotKey(_source.Handle, id);
         _registered.Clear();
+        _idsByAction.Clear();
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)

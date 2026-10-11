@@ -6,8 +6,20 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <!-- Иконки мержатся внутри темы (IconsDark/IconsLight) и меняются вместе с ней -->
+                <!-- Иконки BuddyV2 (предокрашенные, тема-независимые DrawingImage) — на уровне
+                     приложения; Icon*-вьюбоксы внутри темы (IconsDark/IconsLight) ссылаются на них. -->
+                <ResourceDictionary Source="Resources/BuddyV2Icons.xaml"/>
+                <!-- Иконки настроек (BuddySettings.Icon.*, Default/Pressed-пары) — кнопки
+                     SettingsWindow; PressedIconSwap свопает арт по Button.IsPressed. -->
+                <ResourceDictionary Source="Resources/BuddySettingsIcons.xaml"/>
+                <!-- Иконки BuddyExtra (Speech*/Pin/More/StatusWarning) + Brain — тема-независимые
+                     DrawingImage из пака brainstorm-buddy-extra-icons. -->
+                <ResourceDictionary Source="Resources/BuddyExtraIcons.xaml"/>
+                <ResourceDictionary Source="Resources/BrainIcon.xaml"/>
                 <ResourceDictionary Source="Themes/HackerTheme.xaml"/>
+                <!-- Типографика (волна 01): Inter 4.1 + шкала стилей *Text.
+                     После темы (MonoFont определён там), до Styles/окон-потребителей. -->
+                <ResourceDictionary Source="Resources/Typography.xaml"/>
                 <ResourceDictionary Source="Resources/Styles.xaml"/>
                 <ResourceDictionary Source="Resources/Strings.ru.xaml"/>
             </ResourceDictionary.MergedDictionaries>

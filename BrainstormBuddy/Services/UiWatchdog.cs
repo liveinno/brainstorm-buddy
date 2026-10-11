@@ -60,6 +60,10 @@ public sealed class UiWatchdog : IDisposable
                         TryWriteCrashLog(
                             $"UI thread hung for {hangSeconds:F0}s — self-terminating so the user isn't stuck " +
                             $"with an unkillable overlay. Check the last entries of app.log for the deadlock site.");
+                        // Дублируем в app.log СИНХРОННО (AppendAllText по месту) — иначе
+                        // FailFast не оставляет в основном логе никакого объяснения смерти.
+                        try { _logger.Error($"UiWatchdog: UI hung >= {HangThresholdSeconds}s — self-terminating", null, "App"); }
+                        catch { }
                         Environment.FailFast("BrainstormBuddy UI thread hang — watchdog self-termination");
                     }
                 }

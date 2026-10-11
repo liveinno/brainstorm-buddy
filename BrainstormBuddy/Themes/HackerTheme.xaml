@@ -22,6 +22,14 @@
     <SolidColorBrush x:Key="BorderBrush" Color="#26314a"/>
     <SolidColorBrush x:Key="HoverBrush" Color="#1c2540"/>
 
+    <!-- Волна 08: граница редактируемых полей, solid primary-кнопка, выбранная строка.
+         BorderBrush (#26314a) остаётся декоративной — поля используют InputBorderBrush. -->
+    <SolidColorBrush x:Key="InputBorderBrush" Color="#657391"/>
+    <SolidColorBrush x:Key="ActionPrimaryBrush" Color="#4f5fd5"/>
+    <SolidColorBrush x:Key="ActionPrimaryHoverBrush" Color="#5563e6"/>
+    <SolidColorBrush x:Key="ActionPrimaryPressedBrush" Color="#414fb8"/>
+    <SolidColorBrush x:Key="SelectedRowBrush" Color="#28365c"/>
+
     <!-- Фон окна: radial-gradient(130% 90% at 50% 0%, #141c2e 0%, #0a0e17 55%, #070a11 100%) -->
     <RadialGradientBrush x:Key="WindowBgBrush" Center="0.5,0" GradientOrigin="0.5,0" RadiusX="1.3" RadiusY="0.9">
         <GradientStop Color="#141c2e" Offset="0"/>

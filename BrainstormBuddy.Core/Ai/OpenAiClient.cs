@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using BrainstormBuddy.Config;
 using BrainstormBuddy.Services;
 
@@ -35,7 +36,7 @@ public class OpenAiClient : IApiClient
 
     public event EventHandler<ApiHealthEventArgs>? HealthChanged;
 
-    private void ReportHealth(ApiComponent component, bool healthy, string message)
+    private void ReportHealth(ApiComponent component, bool healthy, string message, int? httpStatus = null, SttHealthReason reason = SttHealthReason.None)
     {
         ref bool? last = ref (component == ApiComponent.Stt ? ref _sttHealthy : ref _llmHealthy);
         ref string lastMsg = ref (component == ApiComponent.Stt ? ref _sttMsg : ref _llmMsg);
@@ -44,7 +45,15 @@ public class OpenAiClient : IApiClient
         last = healthy;
         lastMsg = message;
         _logger.Info($"Health[{component}] → {(healthy ? "OK" : "DOWN")}: {message}", "Ai");
-        HealthChanged?.Invoke(this, new ApiHealthEventArgs(component, healthy, message));
+        HealthChanged?.Invoke(this, new ApiHealthEventArgs(component, healthy, message, httpStatus, reason));
+    }
+
+    // LLM-здоровье только для фоновых либо пользовательских запросов: background-
+    // вызовы (memory-пайплайн, суммаризер) не должны поднимать баннер «нет соединения»
+    // и менять статус-точку — их падения видны только в логе.
+    private void ReportLlmHealth(bool background, bool healthy, string message, int? httpStatus = null)
+    {
+        if (!background) ReportHealth(ApiComponent.Llm, healthy, message, httpStatus);
     }
 
     // Актуализирует Authorization/extra-заголовки LLM-профиля перед каждым LLM-запросом:
@@ -137,9 +146,13 @@ public class OpenAiClient : IApiClient
     {
         _config = config;
         _logger = logger;
+        // HttpClient.Timeout = Infinite: дедлайны задаются per-call linked CTS
+        // (Transcribe — 300с, Ask — requestTimeout/RequestTimeoutSeconds за попытку,
+        // checks — RequestTimeoutSeconds). Timeout у клиента нельзя трогать после
+        // первого запроса, а единый лимит резал длинные вызовы раньше их CTS.
         _http = handler == null
-            ? new HttpClient { Timeout = TimeSpan.FromSeconds(config.RequestTimeoutSeconds) }
-            : new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(config.RequestTimeoutSeconds) };
+            ? new HttpClient { Timeout = Timeout.InfiniteTimeSpan }
+            : new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
 
         ApplyAuth(); // стартовая авторизация; LLM-заголовки надеваются перед каждым запросом
         if (!string.IsNullOrEmpty(config.ApiKey))
@@ -195,7 +208,7 @@ public class OpenAiClient : IApiClient
                         await Backoff(attempt, token);
                         continue;
                     }
-                    ReportHealth(ApiComponent.Stt, false, $"STT-сервер ответил ошибкой {(int)response.StatusCode}");
+                    ReportHealth(ApiComponent.Stt, false, $"STT-сервер ответил ошибкой {(int)response.StatusCode}", (int)response.StatusCode, SttHealthReason.ServerError);
                     return null;
                 }
 
@@ -220,25 +233,18 @@ public class OpenAiClient : IApiClient
             }
             catch (TaskCanceledException ex)
             {
-                if (IsConnectivityError(ex, attempt))
-                {
-                    ReportHealth(ApiComponent.Stt, false, "STT-сервер не отвечает (таймаут)");
-                    return null;
-                }
+                // token живёт только от timeoutCts(300с) и ct: раз сюда дошло при
+                // живом ct — общий дедлайн вызова сгорел, ретраить нечего (новый
+                // PostAsync всё равно получит уже отменённый token).
                 _logger.Warn($"STT timeout attempt {attempt + 1}: {ex.Message}", "Ai");
-                if (attempt < _config.MaxRetries)
-                {
-                    await Backoff(attempt, token);
-                    continue;
-                }
-                ReportHealth(ApiComponent.Stt, false, "STT-сервер не отвечает (таймаут)");
+                ReportHealth(ApiComponent.Stt, false, "STT-сервер не отвечает (таймаут)", reason: SttHealthReason.Timeout);
                 return null;
             }
             catch (HttpRequestException ex)
             {
                 if (IsConnectivityError(ex, attempt))
                 {
-                    ReportHealth(ApiComponent.Stt, false, "STT-сервер недоступен (нет соединения)");
+                    ReportHealth(ApiComponent.Stt, false, "STT-сервер недоступен (нет соединения)", reason: SttHealthReason.Unreachable);
                     return null;
                 }
                 _logger.Warn($"STT HTTP error attempt {attempt + 1}: {ex.Message}", "Ai");
@@ -247,14 +253,14 @@ public class OpenAiClient : IApiClient
                     await Backoff(attempt, token);
                     continue;
                 }
-                ReportHealth(ApiComponent.Stt, false, "STT-сервер недоступен (нет соединения)");
+                ReportHealth(ApiComponent.Stt, false, "STT-сервер недоступен (нет соединения)", reason: SttHealthReason.Unreachable);
                 return null;
             }
         }
         return null;
     }
 
-    public async Task<AskResult> AskAsync(string userText, string systemPrompt, int maxTokens, List<ChatMessage> history, CancellationToken ct = default, Action<string>? onDelta = null)
+    public async Task<AskResult> AskAsync(string userText, string systemPrompt, int maxTokens, List<ChatMessage> history, CancellationToken ct = default, Action<string>? onDelta = null, bool background = false, TimeSpan? requestTimeout = null)
     {
         if (string.IsNullOrWhiteSpace(userText)) return AskResult.Empty;
         ApplyHeaders();
@@ -264,20 +270,30 @@ public class OpenAiClient : IApiClient
 
         if (_config.RateLimitSeconds > 0)
         {
-            await _rateLimitGate.WaitAsync(ct);
+            // Отмена во время ожидания rate-limit — не ошибка: выходим AsCanceled,
+            // чтобы caller не рисовал красную плашку.
             try
             {
-                var elapsed = (DateTime.UtcNow - _lastAskUtc).TotalSeconds;
-                var wait = _config.RateLimitSeconds - elapsed;
-                if (wait > 0)
+                await _rateLimitGate.WaitAsync(ct);
+                try
                 {
-                    _logger.Debug($"Ask rate-limit: sleeping {wait:F1}s (limit={_config.RateLimitSeconds}s, last={elapsed:F1}s ago)", "Ai");
-                    await Task.Delay(TimeSpan.FromSeconds(wait), ct);
+                    var elapsed = (DateTime.UtcNow - _lastAskUtc).TotalSeconds;
+                    var wait = _config.RateLimitSeconds - elapsed;
+                    if (wait > 0)
+                    {
+                        _logger.Debug($"Ask rate-limit: sleeping {wait:F1}s (limit={_config.RateLimitSeconds}s, last={elapsed:F1}s ago)", "Ai");
+                        await Task.Delay(TimeSpan.FromSeconds(wait), ct);
+                    }
+                }
+                finally
+                {
+                    _rateLimitGate.Release();
                 }
             }
-            finally
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                _rateLimitGate.Release();
+                _logger.Info("Ask cancelled during rate-limit wait", "Ai");
+                return AskResult.AsCanceled;
             }
         }
 
@@ -287,6 +303,13 @@ public class OpenAiClient : IApiClient
 
         for (int attempt = 0; attempt <= _config.MaxRetries; attempt++)
         {
+            // Дедлайн ПОПЫТКИ отдельным CTS поверх ct вызывающего: таймаут
+            // отличим от отмены (attemptCts.IsCancellationRequested), а
+            // HttpClient.Timeout=Infinite сам ничего не режет.
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            attemptCts.CancelAfter(requestTimeout ?? TimeSpan.FromSeconds(_config.RequestTimeoutSeconds));
+            var rct = attemptCts.Token;
+
             try
             {
                 var messages = new List<object>
@@ -342,18 +365,18 @@ public class OpenAiClient : IApiClient
                     {
                         Content = new StringContent(JsonSerializer.Serialize(req, _jsonOpts), Encoding.UTF8, "application/json")
                     };
-                    response = await _http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct);
+                    response = await _http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, rct);
                     var ctHeader = response.Content.Headers.ContentType?.MediaType;
                     if (response.IsSuccessStatusCode &&
                         ctHeader != null && ctHeader.StartsWith("text/event-stream", StringComparison.OrdinalIgnoreCase))
                         isSse = true;
                     else
-                        body = await response.Content.ReadAsStringAsync(ct);
+                        body = await response.Content.ReadAsStringAsync(rct);
                 }
                 else
                 {
-                    response = await _http.PostAsJsonAsync(url, req, _jsonOpts, ct);
-                    body = await response.Content.ReadAsStringAsync(ct);
+                    response = await _http.PostAsJsonAsync(url, req, _jsonOpts, rct);
+                    body = await response.Content.ReadAsStringAsync(rct);
                 }
                 using (response)
                 {
@@ -366,21 +389,21 @@ public class OpenAiClient : IApiClient
                     if (response.StatusCode == HttpStatusCode.Unauthorized)
                     {
                         _logger.Error("Auth error: invalid API key (401)", null, "Ai");
-                        ReportHealth(ApiComponent.Llm, false, apiErr);
+                        ReportLlmHealth(background, false, apiErr, (int)response.StatusCode);
                         RaiseExchange(isRequest: false, apiErr, isError: true);
                         return AskResult.Failed(apiErr);
                     }
                     if ((int)response.StatusCode == 402 && maxTokens > 50)
                     {
                         _logger.Warn($"Payment required (402): reducing max_tokens from {maxTokens} to 50 and retrying", "Ai");
-                        return await AskAsync(userText, systemPrompt, 50, history, ct, onDelta);
+                        return await AskAsync(userText, systemPrompt, 50, history, ct, onDelta, background, requestTimeout);
                     }
                     if ((int)response.StatusCode == 402 && maxTokens <= 50)
                     {
                         _logger.Error("Payment required (402): no credits left. Top up at openrouter.ai/settings/credits", null, "Ai");
                         // №5 бэклога: человеческое объяснение первой строкой, сырой текст — второй.
                         var friendly402 = HumanizeApiError(response.StatusCode, apiErr);
-                        ReportHealth(ApiComponent.Llm, false, friendly402);
+                        ReportLlmHealth(background, false, friendly402, (int)response.StatusCode);
                         RaiseExchange(isRequest: false, apiErr, isError: true);
                         return AskResult.Failed(friendly402);
                     }
@@ -388,7 +411,7 @@ public class OpenAiClient : IApiClient
                     {
                         _logger.Warn($"Context length exceeded (history={history.Count}), trimming to 2", "Ai");
                         history.RemoveRange(0, history.Count - 2);
-                        return await AskAsync(userText, systemPrompt, maxTokens, history, ct, onDelta);
+                        return await AskAsync(userText, systemPrompt, maxTokens, history, ct, onDelta, background, requestTimeout);
                     }
                     if (IsRetryable(response.StatusCode) && attempt < _config.MaxRetries)
                     {
@@ -398,13 +421,13 @@ public class OpenAiClient : IApiClient
                     }
                     // Сюда доходит и 429 после исчерпанных ретраев — тоже даём человеческий текст.
                     var friendly = HumanizeApiError(response.StatusCode, apiErr);
-                    ReportHealth(ApiComponent.Llm, false, friendly);
+                    ReportLlmHealth(background, false, friendly, (int)response.StatusCode);
                     RaiseExchange(isRequest: false, apiErr, isError: true);
                     return AskResult.Failed(friendly);
                 }
 
                 // Дошёл ответ 200 — LLM-сервер жив.
-                ReportHealth(ApiComponent.Llm, true, "LLM-сервер отвечает");
+                ReportLlmHealth(background, true, "LLM-сервер отвечает");
 
                 string? content_str = null;
                 int promptTokens = 0, completionTokens = 0, totalTokens = 0;
@@ -420,7 +443,7 @@ public class OpenAiClient : IApiClient
                     SseResult sse;
                     try
                     {
-                        sse = await ReadSseStreamAsync(response, onDelta!, ct);
+                        sse = await ReadSseStreamAsync(response, onDelta!, rct);
                     }
                     // Обрыв живого потока (таймаут/разрыв посреди ответа) — это НЕ
                     // «нет соединения»: connectivity-ветка ниже дала бы юзеру ложный
@@ -428,15 +451,18 @@ public class OpenAiClient : IApiClient
                     catch (Exception ex) when ((ex is TaskCanceledException or HttpRequestException) && !ct.IsCancellationRequested)
                     {
                         sw.Stop();
-                        _logger.Warn($"Ask: SSE-поток оборвался ({ex.GetType().Name}: {ex.Message})", "Ai");
-                        RaiseExchange(isRequest: false, "Ответ LLM оборвался (поток прерван)", sw.Elapsed.TotalSeconds, 0, isError: true);
-                        return AskResult.Failed("Ответ LLM оборвался (поток прерван)");
+                        var timedOut = attemptCts.IsCancellationRequested;
+                        var sseErr = timedOut ? "LLM-сервер не отвечает (таймаут)" : "Ответ LLM оборвался (поток прерван)";
+                        _logger.Warn($"Ask: SSE-поток оборвался ({(timedOut ? "таймаут" : ex.GetType().Name)}: {ex.Message})", "Ai");
+                        ReportLlmHealth(background, false, sseErr);
+                        RaiseExchange(isRequest: false, sseErr, sw.Elapsed.TotalSeconds, 0, isError: true);
+                        return AskResult.Failed(sseErr);
                     }
                     sw.Stop();
                     if (sse.Aborted)
                     {
                         _logger.Warn("Ask: SSE-поток оборвался без data: [DONE]", "Ai");
-                        ReportHealth(ApiComponent.Llm, false, "Ответ LLM оборвался");
+                        ReportLlmHealth(background, false, "Ответ LLM оборвался");
                         RaiseExchange(isRequest: false, "Ответ LLM оборвался (поток прерван)", sw.Elapsed.TotalSeconds, sse.TotalTokens, isError: true);
                         return AskResult.Failed("Ответ LLM оборвался (поток прерван)");
                     }
@@ -446,6 +472,10 @@ public class OpenAiClient : IApiClient
                     completionTokens = sse.CompletionTokens;
                     totalTokens = sse.TotalTokens;
                     finishReason = sse.FinishReason;
+                    // gpt-oss-стрим: ответ может быть целиком в delta.reasoning при
+                    // пустом content — ниже та же ветка фолбэка, что у буферного.
+                    reasoningText = sse.Reasoning;
+                    sawReasoningOnly = sse.Reasoning != null;
 
                     // Авто-фолбэк со стрима на буферный запрос (2.7.1). Два симптома
                     // глючного шлюза: completion > maxTokens*1.25 — кап проигнорирован
@@ -478,8 +508,9 @@ public class OpenAiClient : IApiClient
                 // Модель прислала ТОЛЬКО рассуждения (CoT) без ответа. Текст сохраняем,
                 // но НЕ показываем юзеру сразу (раньше сюда проваливался CoT
                 // deepseek-v4.1-flash и шёл на экран как «ответ»). Фолбэк на него —
-                // только после ретрая и только для reasoning-моделей (A6:
-                // space-bunny-free держит ответ в reasoning_content by design).
+                // только для allowlist-моделей (A6: space-bunny-free держит ответ в
+                // reasoning_content by design), только после boost-ретрая и только
+                // через эвристику «финальный ответ» (2.8.x п.2).
 
                 try
                 {
@@ -495,6 +526,9 @@ public class OpenAiClient : IApiClient
                                  rd.ValueKind == JsonValueKind.Array && rd.GetArrayLength() > 0 &&
                                  rd[0].TryGetProperty("text", out var rdt) && !string.IsNullOrWhiteSpace(rdt.GetString()))
                             reasoningText = rdt.GetString();
+                        else if (m.TryGetProperty("reasoning", out var rsn) &&
+                                 rsn.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(rsn.GetString()))
+                            reasoningText = rsn.GetString(); // Groq (gpt-oss-120b): ответ живёт в message.reasoning
                         sawReasoningOnly = reasoningText != null;
                     }
                     if (TryGetByPath(root, Profile.UsagePath) is JsonElement u && u.ValueKind == JsonValueKind.Object)
@@ -513,24 +547,41 @@ public class OpenAiClient : IApiClient
                 }
                 }
 
-            // Срезаем протечку DSML-разметки функ-вызовов ДО проверки пустоты —
-            // ответ из одних маркеров уходит в ветку «модель вернула пустой ответ».
-            content_str = LlmAnswerSanitizer.Sanitize(content_str);
+            // Срезаем протечку DSML-разметки функ-вызовов и CoT-преамбулу ДО проверки
+            // пустоты — ответ из одних маркеров/размышлений уходит в ветку «пустой ответ».
+            content_str = LlmAnswerSanitizer.Sanitize(content_str, m => _logger.Debug(m, "Ai"));
             if (string.IsNullOrWhiteSpace(content_str))
             {
                 var cot = sawReasoningOnly ? ", в ответе только рассуждения" : "";
-                // A6: space-bunny-free кладёт ОТВЕТ в reasoning_content при пустом
-                // content по дизайну — берём его сразу (ретрай для неё бесполезен:
-                // content останется пустым). Маркер фолбэка — только в лог, в текст
-                // ответа не добавляем (он виден в оверлее).
-                // Для прочих reasoning-моделей (deepseek-v* и др.) reasoning ≠ ответ —
-                // иначе CoT deepseek-v4.1-flash опять протечёт на экран.
-                if (AnswersInReasoningContent(modelLower) && !string.IsNullOrWhiteSpace(reasoningText))
+                // 2.8.x п.2: allowlist-модели (A6: space-bunny-free на OpenCode, Groq
+                // gpt-oss-120b — ответ может лежать в reasoning_content/reasoning при
+                // пустом content) сначала идут в boost-ретрай, как ветка «reasoning-
+                // модель съела лимит»: повторный запрос может вернуть нормальный
+                // content. ТОЛЬКО если и после ретрая content пуст — берём reasoning,
+                // и лишь когда он проходит эвристику «похоже на финальный ответ»
+                // (иначе в reasoning сидит сырой CoT — баг: «мысли» на экране).
+                // Эвристика не прошла → дружелюбное молчание, reasoning не показываем.
+                // Для НЕ-allowlist reasoning-моделей (deepseek-v* и др.) — как раньше:
+                // пустой content → null, их CoT ответом не считаем вообще.
+                var reasoningFallback = AnswersInReasoningContent(modelLower) && !string.IsNullOrWhiteSpace(reasoningText);
+                if (reasoningFallback && maxTokens < 1024)
                 {
-                    var fb = reasoningText.Trim();
-                    _logger.Warn($"Ask: content пуст, fallback на reasoning_content (модель отвечает в reasoning, len={fb.Length})", "Ai");
-                    RaiseExchange(isRequest: false, fb, sw.Elapsed.TotalSeconds, totalTokens);
-                    return new AskResult(fb, promptTokens, completionTokens, totalTokens);
+                    var boosted = Math.Max(1024, maxTokens * 4);
+                    _logger.Warn($"Ask: 200, content пуст (у allowlist-модели есть reasoning{cot}) — boost-ретрай с max_tokens={boosted} до фолбэка на reasoning", "Ai");
+                    return await AskAsync(userText, systemPrompt, boosted, history, ct, onDelta);
+                }
+                if (reasoningFallback)
+                {
+                    var fb = LlmAnswerSanitizer.Sanitize(reasoningText, m => _logger.Debug(m, "Ai"))?.Trim();
+                    if (!string.IsNullOrEmpty(fb) && LooksLikeFinalAnswer(fb))
+                    {
+                        _logger.Warn($"Ask: content пуст и после ретрая — fallback на reasoning (эвристика «финальный ответ» ок, len={fb.Length})", "Ai");
+                        RaiseExchange(isRequest: false, fb, sw.Elapsed.TotalSeconds, totalTokens);
+                        return new AskResult(fb, promptTokens, completionTokens, totalTokens) { WasTruncated = finishReason == "length" };
+                    }
+                    _logger.Warn($"Ask: reasoning отклонён эвристикой «финальный ответ» (len={reasoningText!.Length}) — CoT на экран не выводим, считаем молчанием", "Ai");
+                    RaiseExchange(isRequest: false, "(молчание)", sw.Elapsed.TotalSeconds, totalTokens);
+                    return new AskResult(null, promptTokens, completionTokens, totalTokens) { IsSilent = true };
                 }
                 // finish_reason="stop" при пустом content = осознанное молчание
                 // (промпт суфлёра сам требует тишины на small talk/шуме). Не
@@ -549,7 +600,7 @@ public class OpenAiClient : IApiClient
                 {
                     var boosted = Math.Max(1024, maxTokens * 4);
                     _logger.Warn($"Ask: 200, но content пуст (completion={completionTokens}/{maxTokens}{cot}) — авто-ретрай с max_tokens={boosted}", "Ai");
-                    return await AskAsync(userText, systemPrompt, boosted, history, ct, onDelta);
+                    return await AskAsync(userText, systemPrompt, boosted, history, ct, onDelta, background, requestTimeout);
                 }
                 var emptyMsg = sawReasoningOnly
                     ? $"пустой ответ (200: модель прислала только рассуждения, completion={completionTokens}/{maxTokens})"
@@ -557,6 +608,18 @@ public class OpenAiClient : IApiClient
                 RaiseExchange(isRequest: false, emptyMsg, sw.Elapsed.TotalSeconds, totalTokens, isError: true);
                 return new AskResult(null, promptTokens, completionTokens, totalTokens);
             }
+            // Литеральный «маркер молчания» вместо пустого content (2.16.0): модели
+            // пишут «(empty)», «пустой ответ», «[silent]», «(空)» словами — это НЕ
+            // ответ. Перехватываем ПОСЛЕ 200/sanitize, ДО отдачи на экран — в обеих
+            // ветках (буфер и SSE: к этому месту контент уже склеен целиком).
+            // Считаем осознанным молчанием, как finish_reason=stop при пустом content.
+            if (LlmAnswerSanitizer.IsSilentMarkerAnswer(content_str))
+            {
+                _logger.Warn($"Ask: модель вернула литеральный маркер молчания «{Truncate(content_str!.Trim(), 60)}» — считаем молчанием", "Ai");
+                RaiseExchange(isRequest: false, "(молчание)", sw.Elapsed.TotalSeconds, totalTokens);
+                return new AskResult(null, promptTokens, completionTokens, totalTokens) { IsSilent = true };
+            }
+
             var result = content_str.Trim();
 
             if (finishReason == "length")
@@ -568,29 +631,57 @@ public class OpenAiClient : IApiClient
             _logger.Info($"Ask tokens: prompt={promptTokens}, completion={completionTokens}, total={totalTokens}", "Ai");
             _lastAskUtc = DateTime.UtcNow;
             RaiseExchange(isRequest: false, result, sw.Elapsed.TotalSeconds, totalTokens);
-            return new AskResult(result, promptTokens, completionTokens, totalTokens);
+            return new AskResult(result, promptTokens, completionTokens, totalTokens) { WasTruncated = finishReason == "length" };
             }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                // Отмена токеном (UI cancel / закрытие / memory-воркер) — не ошибка:
+                // возвращаем AsCanceled, а не бросаем, чтобы caller не показал красную плашку.
                 _logger.Info("Ask cancelled by parent token", "Ai");
-                throw;
+                return AskResult.AsCanceled;
             }
-            catch (Exception ex) when (ex is TaskCanceledException or HttpRequestException)
+            catch (OperationCanceledException) when (attemptCts.IsCancellationRequested)
+            {
+                // Дедлайн ПОПЫТКИ сгорел (медленный сервер), а не отмена юзера.
+                // Это не «нет соединения»: TCP/HTTP коннект был, просто ответа не
+                // дождались. Ретраим — у каждой попытки свой attemptCts.
+                var sec = (int)(requestTimeout ?? TimeSpan.FromSeconds(_config.RequestTimeoutSeconds)).TotalSeconds;
+                _logger.Warn($"Ask error attempt {attempt + 1}: request timeout ({sec}s)", "Ai");
+                if (attempt < _config.MaxRetries)
+                {
+                    try { await Backoff(attempt, ct); }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        _logger.Info("Ask cancelled during retry backoff", "Ai");
+                        return AskResult.AsCanceled;
+                    }
+                    continue;
+                }
+                ReportLlmHealth(background, false, "LLM-сервер не отвечает (таймаут)");
+                RaiseExchange(isRequest: false, "LLM-сервер не отвечает (таймаут)", isError: true);
+                return AskResult.Failed("LLM-сервер не отвечает (таймаут)");
+            }
+            catch (HttpRequestException ex)
             {
                 if (IsConnectivityError(ex, attempt))
                 {
-                    ReportHealth(ApiComponent.Llm, false, "LLM-сервер недоступен (нет соединения)");
+                    ReportLlmHealth(background, false, "LLM-сервер недоступен (нет соединения)");
                     RaiseExchange(isRequest: false, "LLM-сервер недоступен (нет соединения)", isError: true);
                     return AskResult.Failed("LLM-сервер недоступен (нет соединения)");
                 }
                 _logger.Warn($"Ask error attempt {attempt + 1}: {ex.Message}", "Ai");
                 if (attempt < _config.MaxRetries)
                 {
-                    await Backoff(attempt, ct);
+                    try { await Backoff(attempt, ct); }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        _logger.Info("Ask cancelled during retry backoff", "Ai");
+                        return AskResult.AsCanceled;
+                    }
                     continue;
                 }
-                ReportHealth(ApiComponent.Llm, false, "LLM-сервер недоступен (нет соединения)");
+                ReportLlmHealth(background, false, "LLM-сервер недоступен (нет соединения)");
                 RaiseExchange(isRequest: false, "LLM-сервер недоступен (нет соединения)", isError: true);
                 return AskResult.Empty;
             }
@@ -602,10 +693,14 @@ public class OpenAiClient : IApiClient
     {
         var url = EndpointUrl(Profile.ModelsPath);
         _logger.Debug($"CheckConnection → GET {url}", "Ai");
+        // Дедлайн на весь чек: HttpClient.Timeout=Infinite ничего не режет.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(_config.RequestTimeoutSeconds));
+
         try
         {
             var sw = Stopwatch.StartNew();
-            using var response = await _http.GetAsync(url, ct);
+            using var response = await _http.GetAsync(url, timeoutCts.Token);
             sw.Stop();
             _logger.Info($"CheckConnection ← {(int)response.StatusCode} in {sw.ElapsedMilliseconds}ms", "Ai");
             return response.IsSuccessStatusCode;
@@ -629,13 +724,46 @@ public class OpenAiClient : IApiClient
         modelLower.Contains("deepseek-r") || modelLower.Contains("deepseek-v") ||
         modelLower.Contains("qwq") || modelLower.Contains("think");
 
-    // Модели, у которых ФИНАЛЬНЫЙ ответ живёт в reasoning_content при пустом content
-    // (бэклог A6: space-bunny-free на OpenCode). Для них — мгновенный fallback на
-    // reasoning (ретрай бесполезен: content останется пустым); для прочих
-    // reasoning-моделей (deepseek-v* и т.п.) пустой content = null, иначе их CoT
-    // утекает на экран (баг deepseek-v4.1-flash).
+    // Модели, у которых ФИНАЛЬНЫЙ ответ может жить в reasoning_content/reasoning при
+    // пустом content (бэклог A6: space-bunny-free на OpenCode; Groq gpt-oss-120b
+    // кладёт ответ в message.reasoning — прод-логи diagnostics_20261005). 2.8.x п.2:
+    // для них — boost-ретрай, и ТОЛЬКО потом fallback на reasoning через эвристику
+    // LooksLikeFinalAnswer (иначе их CoT — «Okay, the user wants…» — утекает на
+    // экран); для прочих reasoning-моделей (deepseek-v* и т.п.) пустой content =
+    // null, их CoT ответом не считаем вообще (баг deepseek-v4.1-flash).
     private static bool AnswersInReasoningContent(string modelLower) =>
-        modelLower.Contains("space-bunny");
+        modelLower.Contains("space-bunny") || modelLower.Contains("gpt-oss");
+
+    // Эвристика «reasoning похож на ФИНАЛЬНЫЙ ответ, а не на размышление вслух»
+    // (2.8.x п.2): страховка от показа сырого CoT. Отклоняем: 1) старт с типового
+    // CoT-маркера («Okay,», «Let me», «The user», «Итак», «Хм»…); 2) длину <2 или
+    // >2000 символов (простыня — почти всегда дамп мыслей); 3) нумерованный список
+    // шагов («1. …», «2) …», «Step N», «Шаг N») в ≥2 строках. Маркеры держим
+    // синхронно с s_cotPreambleStart в LlmAnswerSanitizer.
+    private static readonly Regex s_cotHead = new(
+        @"^\s*(?:" +
+        @"okay\b|ok\b|so[,\s]|let me|let's\b|the user|the (?:question|request|task|prompt|input|message|phrase|text)|" +
+        @"i (?:need|have|must|should|will|am|want)|first[,\s]|hmm+\b|wait\b|alright\b|well[,\s]|" +
+        @"итак\b|хм+\b|думаю\b|мне нужно|сначала|давайте?|ну[,\s])",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex s_stepLine = new(
+        @"^\s*(?:\d+[.)]\s|(?:step|шаг)\s+\d+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static bool LooksLikeFinalAnswer(string? reasoning)
+    {
+        if (string.IsNullOrWhiteSpace(reasoning)) return false;
+        var s = reasoning.Trim();
+        if (s.Length < 2 || s.Length > 2000) return false;
+        var firstLine = s.Split('\n', 2)[0];
+        if (s_cotHead.IsMatch(firstLine)) return false;
+        var stepLines = 0;
+        foreach (var line in s.Split('\n'))
+            if (s_stepLine.IsMatch(line)) stepLines++;
+        if (stepLines >= 2) return false;
+        return true;
+    }
 
     public async Task<(bool ok, string detail)> CheckLlmConnectionAsync(CancellationToken ct = default)
         => Collapse(await CheckLlmConnectionDetailedAsync(ct));
@@ -671,6 +799,12 @@ public class OpenAiClient : IApiClient
     private async Task<List<CheckStepResult>> CheckLlmDetailedCoreAsync(int realMaxTokens, string? systemPrompt, CancellationToken ct)
     {
         var steps = new List<CheckStepResult>();
+        // Один дедлайн на весь чек: HttpClient.Timeout=Infinite ничего не режет,
+        // а зависший прокси без CTS повесил бы «Проверить» навсегда.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(_config.RequestTimeoutSeconds));
+        ct = timeoutCts.Token;
+
         var profile = Profile;
         var baseUrl = _config.BaseUrl.TrimEnd('/');
 
@@ -765,7 +899,7 @@ public class OpenAiClient : IApiClient
                 {
                     _logger.Warn($"CheckLlm chat ← {(int)r2.StatusCode}: {Truncate(b2, 400)}", "Ai");
                     var err = $"Модель «{chatModel}»: {HumanizeApiError(r2.StatusCode, ShortApiError(r2.StatusCode, b2))}";
-                    ReportHealth(ApiComponent.Llm, false, err); // реальная ошибка — в плашку тоже
+                    ReportHealth(ApiComponent.Llm, false, err, (int)r2.StatusCode); // реальная ошибка — в плашку тоже
                     return new CheckStepResult("Chat", false, err);
                 }
 
@@ -792,6 +926,9 @@ public class OpenAiClient : IApiClient
                                  rd.ValueKind == JsonValueKind.Array && rd.GetArrayLength() > 0 &&
                                  rd[0].TryGetProperty("text", out var rdt) && !string.IsNullOrWhiteSpace(rdt.GetString()))
                             content = rdt.GetString()!;
+                        else if (m.TryGetProperty("reasoning", out var rsn) &&
+                                 rsn.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(rsn.GetString()))
+                            content = rsn.GetString()!; // Groq gpt-oss: ответ в message.reasoning
                     }
                 }
                 catch { /* нестандартный ответ провайдера — считаем пустым */ }
@@ -814,7 +951,7 @@ public class OpenAiClient : IApiClient
                 var errEmpty = $"Модель «{chatModel}» вернула ПУСТОЙ ответ при лимите {maxTokens} токенов — " +
                                "reasoning-модель «съедает» лимит на размышления. Увеличьте «Максимум токенов ответа» или смените модель.";
                 _logger.Warn($"CheckLlm: 200, но content пуст (модель {chatModel}, maxTokens={maxTokens})", "Ai");
-                ReportHealth(ApiComponent.Llm, false, errEmpty);
+                ReportHealth(ApiComponent.Llm, false, errEmpty, (int)r2.StatusCode);
                 return new CheckStepResult("Chat", false, errEmpty);
             }
             catch (Exception ex)
@@ -832,6 +969,11 @@ public class OpenAiClient : IApiClient
     public async Task<List<string>> GetModelsAsync(CancellationToken ct = default)
     {
         var result = new List<string>();
+        // Дедлайн как у остальных check-вызовов (HttpClient.Timeout=Infinite).
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(_config.RequestTimeoutSeconds));
+        ct = timeoutCts.Token;
+
         try
         {
             ApplyHeaders();
@@ -924,24 +1066,30 @@ public class OpenAiClient : IApiClient
            !root.TryGetProperty("choices", out _) && d.TryGetProperty("choices", out _)
             ? d : root;
 
-    // Результат чтения SSE-стрима: склеенный контент, usage из финального чанка,
-    // finish_reason последнего choice-чанка. Aborted — поток кончился без [DONE].
+    // Результат чтения SSE-стрима: склеенный контент, склеенные reasoning-дельты
+    // (у gpt-oss ответ может лежать в delta.reasoning при пустом content), usage
+    // из финального чанка, finish_reason последнего choice-чанка. Aborted —
+    // поток кончился без [DONE].
     private sealed record SseResult(string Content, string? FinishReason,
-        int PromptTokens, int CompletionTokens, int TotalTokens, int DeltaCount, bool Aborted);
+        int PromptTokens, int CompletionTokens, int TotalTokens, int DeltaCount, bool Aborted,
+        string? Reasoning);
 
     // Читает text/event-stream построчно: data: {json}-чанки → дельты по
     // Profile.DeltaPath → onDelta (на потоке вызывающего), data: [DONE] — конец.
-    // Битый JSON-чанк пропускаем (warn), reasoning_content в дельтах игнорируем —
-    // на экран идёт только content. Исключение из onDelta гасим: баг в UI-колбэке
-    // не должен убивать стрим.
+    // Битый JSON-чанк пропускаем (warn). reasoning-дельты в буфер копим (у
+    // gpt-oss весь ответ может прийти в delta.reasoning при пустом content —
+    // иначе стрим ушёл бы в IsSilent/ретрай), но на экран через onDelta не идут.
+    // Исключение из onDelta гасим: баг в UI-колбэке не должен убивать стрим.
     private async Task<SseResult> ReadSseStreamAsync(HttpResponseMessage response, Action<string> onDelta, CancellationToken ct)
     {
         var sb = new StringBuilder();
+        var rsn = new StringBuilder();
         string? finishReason = null;
         int promptTokens = 0, completionTokens = 0, totalTokens = 0, deltaCount = 0;
         var done = false;
         var deltaPath = string.IsNullOrEmpty(Profile.DeltaPath) ? "choices[0].delta.content" : Profile.DeltaPath;
         var onDeltaThrew = false;
+        var deltaPrefix = deltaPath[..(deltaPath.LastIndexOf('.') + 1)]; // "choices[0].delta."
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream, Encoding.UTF8);
@@ -980,6 +1128,19 @@ public class OpenAiClient : IApiClient
                     }
                 }
             }
+            // Тот же порядок, что у буферного парсинга: reasoning_content →
+            // reasoning_details[0].text → reasoning (Groq gpt-oss). Дельты
+            // склеиваем — фолбэк на ответ из reasoning делается в AskAsync.
+            if (TryGetByPath(chunkRoot, deltaPrefix + "reasoning_content") is JsonElement rc &&
+                rc.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(rc.GetString()))
+                rsn.Append(rc.GetString());
+            else if (TryGetByPath(chunkRoot, deltaPrefix + "reasoning_details") is JsonElement rd &&
+                     rd.ValueKind == JsonValueKind.Array && rd.GetArrayLength() > 0 &&
+                     rd[0].TryGetProperty("text", out var rdt) && !string.IsNullOrEmpty(rdt.GetString()))
+                rsn.Append(rdt.GetString());
+            else if (TryGetByPath(chunkRoot, deltaPrefix + "reasoning") is JsonElement rsnEl &&
+                     rsnEl.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(rsnEl.GetString()))
+                rsn.Append(rsnEl.GetString());
             if (TryGetByPath(chunkRoot, "choices[0].finish_reason") is JsonElement fr &&
                 fr.ValueKind == JsonValueKind.String)
                 finishReason = fr.GetString();
@@ -992,7 +1153,8 @@ public class OpenAiClient : IApiClient
                 if (u.TryGetProperty("total_tokens", out var tt)) totalTokens = tt.GetInt32();
             }
         }
-        return new SseResult(sb.ToString(), finishReason, promptTokens, completionTokens, totalTokens, deltaCount, Aborted: !done);
+        return new SseResult(sb.ToString(), finishReason, promptTokens, completionTokens, totalTokens, deltaCount,
+            Aborted: !done, Reasoning: rsn.Length > 0 ? rsn.ToString() : null);
     }
 
     private static bool IsRetryable(HttpStatusCode code)
@@ -1004,14 +1166,13 @@ public class OpenAiClient : IApiClient
     private bool IsConnectivityError(Exception ex, int attempt)
     {
         if (attempt > 0) return false;
-        var isConnectivity = ex is TaskCanceledException ||
-                             (ex is HttpRequestException hre &&
+        var isConnectivity = ex is HttpRequestException hre &&
                               (hre.Message.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
                                hre.Message.Contains("refused", StringComparison.OrdinalIgnoreCase) ||
                                hre.Message.Contains("resolve", StringComparison.OrdinalIgnoreCase) ||
                                hre.Message.Contains("Name or service", StringComparison.OrdinalIgnoreCase) ||
                                hre.Message.Contains("No such host", StringComparison.OrdinalIgnoreCase) ||
-                               hre.InnerException?.Message?.Contains("connection", StringComparison.OrdinalIgnoreCase) == true));
+                               hre.InnerException?.Message?.Contains("connection", StringComparison.OrdinalIgnoreCase) == true);
         if (isConnectivity)
             _logger.Warn($"Connectivity error on first attempt — fail fast: {ex.Message}", "Ai");
         return isConnectivity;

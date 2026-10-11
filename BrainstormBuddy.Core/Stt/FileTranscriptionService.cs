@@ -24,17 +24,17 @@ public sealed class FileTranscriptResult
 }
 
 /// <summary>
-/// Транскрибирует длинную аудиодорожку встроенным GigaAM с ПОСЕГМЕНТНЫМИ тайм-кодами.
+/// Транскрибирует длинную аудиодорожку встроенным GigaAM (v2/v3) с ПОСЕГМЕНТНЫМИ тайм-кодами.
 /// Режет 16кГц-моно поток на окна фикс. длины (по умолчанию 18с — меньше внутреннего
 /// чанка движка 24с, чтобы окно шло одним проходом) и метит каждое временем начала.
 /// Границу окна подвигает к тихому месту, чтобы реже резать слова.
 /// </summary>
 public sealed class FileTranscriptionService
 {
-    private readonly NativeGigaamSttService _stt;
+    private readonly IGigaamSttEngine _stt;
     private readonly int _segmentSec;
 
-    public FileTranscriptionService(NativeGigaamSttService stt, int segmentSec = 18)
+    public FileTranscriptionService(IGigaamSttEngine stt, int segmentSec = 18)
     {
         _stt = stt;
         _segmentSec = Math.Clamp(segmentSec, 5, 23);

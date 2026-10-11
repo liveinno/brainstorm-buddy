@@ -11,7 +11,7 @@ public class SettingsViewModel : INotifyPropertyChanged
     private AppConfig _config;
     private readonly List<string> _presets = new()
     {
-        "Groq (llama3-8b-8192, t-one)",
+        "Groq (openai/gpt-oss-120b, t-one)",
         "OpenAI (gpt-4o-mini, t-one)",
         "OpenRouter (openai/gpt-oss-120b, t-one)",
         "OpenRouter (openrouter/free, t-one)",
@@ -38,7 +38,7 @@ public class SettingsViewModel : INotifyPropertyChanged
         "- [Динамик] — собеседник (другая сторона). Отвечай на его вопросы и реплики.\n" +
         "- [Микрофон] — сам пользователь. Это КОНТЕКСТ (что он уже сказал): учитывай, но не отвечай на него и не молчи ради ответа.\n" +
         "- [secret] — прямая команда пользователя тебе: выполни её обязательно и в первую очередь.\n" +
-        "- Нечего добавить, идёт small talk, шум или обрывок — молчи (пустой ответ), не комментируй.\n" +
+        "- Нечего добавить, идёт small talk, шум или обрывок — молчи: верни ПУСТОЙ ответ (без единого символа). НЕ пиши слова вроде (empty), «пустой ответ», «silent», скобок или иероглифов.\n" +
         "- НИКОГДА не показывай свои рассуждения, анализ или ход мыслей — выводи только готовый текст ответа, который пользователь может произнести вслух.\n" +
         "- Не выдумывай факты, цифры и названия. Бери их из разговора; чего не знаешь — формулируй общими словами.\n\n";
 
@@ -121,6 +121,20 @@ public class SettingsViewModel : INotifyPropertyChanged
                 SuffleurRules +
                 "## ЗАДАЧА\n" +
                 "На технический вопрос или проблему дай конкретный ответ: команда, архитектурный паттерн, best practice, короткое определение термина. Код оборачивай в ```. Без общих слов — по сути."
+        },
+        new NamedPrompt
+        {
+            Name = "Обучение (лекция)",
+            Content = "Ты — суфлёр пользователя на ЛЕКЦИИ/обучении.\n" +
+                "- [Динамик] — преподаватель: монолог, объяснения, вопросы аудитории.\n" +
+                "- [Микрофон] — сам пользователь: его реплики — контекст.\n\n" +
+                SourceDataSection +
+                SuffleurRules +
+                "## РЕЖИМ: СЛУШАТЬ\n" +
+                "Это НЕ диалог: преподаватель ведёт монолог. НЕ комментируй каждую фразу — при пустом ответе приложение просто слушает дальше.\n\n" +
+                "## ЗАДАЧА\n" +
+                "Отвечай ТОЛЬКО когда преподаватель задаёт ЯВНЫЙ ВОПРОС (вопросительная интонация/фраза, «как вы думаете», «кто помнит», «как называется…», вопрос в конце). На явный вопрос дай короткий готовый ответ (1-3 предложения, точный факт).\n\n" +
+                "МОЛЧИ (верни ПУСТОЙ ответ, без единого символа) на: изложение материала, примеры, истории, риторические обращения («понятно?», «идём дальше»), паузы и шум. НЕ пиши слова вроде (empty), «пустой ответ», «silent», скобок или иероглифов."
         }
     };
 
@@ -130,7 +144,9 @@ public class SettingsViewModel : INotifyPropertyChanged
         ApiClient = apiClient;
         Presets = new ObservableCollection<string>(_presets);
         AudioDevices = new ObservableCollection<AudioDeviceInfo>(AudioDeviceEnumerator.GetAvailableDevices());
-        SelectedPreset = DetectPreset();
+        // Только вычисляем подпись пресета — присваиваем ПОЛЕ, а не свойство: setter → ApplyPreset
+        // затирал бы сохранённые BaseUrl/ChatModel при каждом старте (SettingsVm создаётся в App.OnStartup).
+        _selectedPreset = DetectPreset();
 
         if (_config.Advanced.SystemPromptPresets == null || _config.Advanced.SystemPromptPresets.Count == 0)
         {
@@ -140,11 +156,24 @@ public class SettingsViewModel : INotifyPropertyChanged
         {
             // Освежаем встроенные пресеты до актуальных текстов (по имени), сохраняя
             // пользовательские. Так отточенные промпты доезжают до уже сохранённых конфигов.
-            foreach (var def in DefaultPromptPresets)
+            // Новый встроенный пресет вставляем в позицию по порядку DefaultPromptPresets
+            // (иначе «Обучение (лекция)» приземлился бы в хвост, а не после «Технический
+            // консультант» — заданный порядок комбо ломался у старых конфигов).
+            for (var i = 0; i < DefaultPromptPresets.Count; i++)
             {
-                var existing = _config.Advanced.SystemPromptPresets.FirstOrDefault(p => p.Name == def.Name);
-                if (existing != null) existing.Content = def.Content;
-                else _config.Advanced.SystemPromptPresets.Add(def);
+                var def = DefaultPromptPresets[i];
+                var list = _config.Advanced.SystemPromptPresets;
+                var existing = list.FirstOrDefault(p => p.Name == def.Name);
+                if (existing != null) { existing.Content = def.Content; continue; }
+
+                var insertAt = -1;
+                for (var j = i - 1; j >= 0 && insertAt < 0; j--)
+                {
+                    var pos = list.FindIndex(p => p.Name == DefaultPromptPresets[j].Name);
+                    if (pos >= 0) insertAt = pos + 1;
+                }
+                if (insertAt < 0) insertAt = list.Count; // предков в конфиге нет — в конец
+                list.Insert(insertAt, def);
             }
         }
         SystemPromptPresets = new ObservableCollection<NamedPrompt>(_config.Advanced.SystemPromptPresets);
@@ -248,6 +277,21 @@ public class SettingsViewModel : INotifyPropertyChanged
 
     /// <summary>Перечитать список провайдеров (после правок custom-профилей).</summary>
     public void RefreshLlmProviders() => OnPropertyChanged(nameof(LlmProviders));
+
+    /// <summary>
+    /// Список моделей для редактируемого комбо: пресеты провайдера + текущая модель
+    /// первым пунктом, если её там нет. Editable ComboBox обнуляет Text, когда
+    /// SelectedItem не находится в новом ItemsSource (OnSelectionChanged →
+    /// SelectedItemUpdated), и TwoWay-биндинг затирает сохранённый ChatModel —
+    /// поэтому текущее значение обязано присутствовать в списке.
+    /// </summary>
+    public static List<string> ModelItemsWithCurrent(IEnumerable<string>? presets, string? current)
+    {
+        var list = presets == null ? new List<string>() : new List<string>(presets);
+        if (!string.IsNullOrWhiteSpace(current) && !list.Contains(current))
+            list.Insert(0, current);
+        return list;
+    }
 
     /// <summary>Глобальный reasoning effort (Api.ReasoningEffortOverride) для комбо в UI.
     /// Маппинг getter: null → "по профилю", "" → "не слать", иначе само значение.
@@ -398,49 +442,37 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Audio.PostRollMs = value; OnPropertyChanged(); }
     }
 
-    private string _selectedAudioPreset = "Свой";
-    public string SelectedAudioPreset
+    private string _selectedAudioPresetId = "custom";
+
+    /// <summary>Выбранный аудио-пресет по ID (Tag в XAML): custom/standard/fast/slow.
+    /// UI-подписи локализованы в Strings.*.xaml, поэтому храним стабильный ID.</summary>
+    public string SelectedAudioPresetId
     {
-        get => _selectedAudioPreset;
+        get => _selectedAudioPresetId;
         set
         {
-            _selectedAudioPreset = value;
+            _selectedAudioPresetId = value;
             ApplyAudioPreset(value);
             OnPropertyChanged();
         }
     }
 
-    public ObservableCollection<string> AudioPresets { get; } = new()
-    {
-        "Свой",
-        "Стандарт",
-        "Быстрая речь",
-        "Медленная/Вдумчивая"
-    };
-
-    // Режим нарезки речи (эндпойнтинг). В авто-режимах порог тишины подстраивается сам,
-    // ручные пресеты/слайдер ниже становятся неактивны (их держит контроллер).
-    public ObservableCollection<string> EndpointModes { get; } = new()
-    {
-        "Ручной (пресеты ниже)",
-        "Авто — по паузам",
-        "Авто — умная склейка",
-    };
-
-    public string SelectedEndpointMode
+    // Режим нарезки речи (эндпойнтинг): manual/adaptive/semantic (Tag в XAML).
+    // В авто-режимах порог тишины подстраивается сам, ручные пресеты/слайдер неактивны.
+    public string SelectedEndpointModeId
     {
         get => _config.Audio.EndpointMode?.ToLowerInvariant() switch
         {
-            "adaptive" => "Авто — по паузам",
-            "semantic" => "Авто — умная склейка",
-            _ => "Ручной (пресеты ниже)",
+            "adaptive" => "adaptive",
+            "semantic" => "semantic",
+            _ => "manual",
         };
         set
         {
             _config.Audio.EndpointMode = value switch
             {
-                "Авто — по паузам" => "adaptive",
-                "Авто — умная склейка" => "semantic",
+                "adaptive" => "adaptive",
+                "semantic" => "semantic",
                 _ => "manual",
             };
             OnPropertyChanged();
@@ -453,23 +485,23 @@ public class SettingsViewModel : INotifyPropertyChanged
         string.Equals(_config.Audio.EndpointMode, "manual", StringComparison.OrdinalIgnoreCase)
         || string.IsNullOrEmpty(_config.Audio.EndpointMode);
 
-    private void ApplyAudioPreset(string preset)
+    private void ApplyAudioPreset(string presetId)
     {
-        switch (preset)
+        switch (presetId)
         {
-            case "Стандарт":
+            case "standard":
                 SilenceThresholdMs = 1800;
                 MinSpeechMsUi = 1000;
                 PreRollMsUi = 400;
                 PostRollMsUi = 500;
                 break;
-            case "Быстрая речь":
+            case "fast":
                 SilenceThresholdMs = 600;
                 MinSpeechMsUi = 300;
                 PreRollMsUi = 150;
                 PostRollMsUi = 150;
                 break;
-            case "Медленная/Вдумчивая":
+            case "slow":
                 SilenceThresholdMs = 2000;
                 MinSpeechMsUi = 2000;
                 PreRollMsUi = 500;
@@ -524,6 +556,37 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Ui.HideTrayIcon = value; OnPropertyChanged(); }
     }
 
+    // Лимит символов ответа LLM в оверлее. 0 = без обрезки (2.18.0).
+    public int MaxAnswerChars
+    {
+        get => _config.Ui.MaxAnswerChars;
+        set { _config.Ui.MaxAnswerChars = Math.Clamp(value, 0, 20000); OnPropertyChanged(); }
+    }
+
+    // Отступы текста внутри пузырей вопроса/ответа в оверлее (px, 2.18.0).
+    public double BubblePadding
+    {
+        get => _config.Ui.BubblePadding;
+        set { _config.Ui.BubblePadding = Math.Clamp(value, 0, 40); OnPropertyChanged(); }
+    }
+
+    // Кастомный промпт AI-саммари встречи; пусто = встроенный дефолт (2.18.0).
+    public string SummaryPrompt
+    {
+        get => _config.Advanced.SummaryPrompt;
+        set { _config.Advanced.SummaryPrompt = value ?? string.Empty; OnPropertyChanged(); }
+    }
+
+    /// <summary>
+    /// Alias имени процесса для Диспетчера задач (стелс-режим). Пусто = выкл.
+    /// Базовое имя без «.exe»; применяется при следующем запуске приложения.
+    /// </summary>
+    public string StealthProcessName
+    {
+        get => _config.Ui.StealthProcessName;
+        set { _config.Ui.StealthProcessName = value?.Trim() ?? string.Empty; OnPropertyChanged(); }
+    }
+
     public string ToggleVisibilityHotkey
     {
         get => _config.Hotkeys.ToggleVisibility;
@@ -557,10 +620,182 @@ public class SettingsViewModel : INotifyPropertyChanged
     /// <summary>Дёрнуть INPC для KaraokeEnabled — хоткей меняет Config напрямую, без сеттера VM.</summary>
     public void NotifyKaraokeEnabledChanged() => OnPropertyChanged(nameof(KaraokeEnabled));
 
+    public string ToggleScreenOcrHotkey
+    {
+        get => _config.Hotkeys.ToggleScreenOcr;
+        set { _config.Hotkeys.ToggleScreenOcr = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Хоткей «распознать экран сейчас» — разовый проход без включения наблюдения.</summary>
+    public string ScreenOcrRecognizeNowHotkey
+    {
+        get => _config.Hotkeys.ScreenOcrRecognizeNow;
+        set { _config.Hotkeys.ScreenOcrRecognizeNow = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Движок OCR: "tesseract" | "windows". Неизвестные значения трактуются как tesseract.</summary>
+    public string ScreenOcrEngine
+    {
+        get => _config.ScreenOcr.Engine;
+        set { _config.ScreenOcr.Engine = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Дёрнуть INPC для ScreenOcrEnabled — хоткей меняет Config напрямую, без сеттера VM.</summary>
+    public void NotifyScreenOcrEnabledChanged() => OnPropertyChanged(nameof(ScreenOcrEnabled));
+
+    public bool ScreenOcrEnabled
+    {
+        get => _config.ScreenOcr.Enabled;
+        set { _config.ScreenOcr.Enabled = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>-1 = основной монитор; 0..N — конкретный монитор из списка.</summary>
+    public int ScreenOcrMonitorIndex
+    {
+        get => _config.ScreenOcr.MonitorIndex;
+        set { _config.ScreenOcr.MonitorIndex = value; OnPropertyChanged(); }
+    }
+
+    public int ScreenOcrPollIntervalMs
+    {
+        get => _config.ScreenOcr.PollIntervalMs;
+        set { _config.ScreenOcr.PollIntervalMs = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Интервал опроса в секундах — для слайдера 0.5–10 с (конфиг хранит мс).</summary>
+    public double ScreenOcrPollIntervalSeconds
+    {
+        get => _config.ScreenOcr.PollIntervalMs / 1000.0;
+        set
+        {
+            _config.ScreenOcr.PollIntervalMs = (int)Math.Round(Math.Clamp(value, 0.5, 10.0) * 1000);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ScreenOcrPollIntervalMs));
+        }
+    }
+
+    public double ScreenOcrChangeThreshold
+    {
+        get => _config.ScreenOcr.ChangeThreshold;
+        set { _config.ScreenOcr.ChangeThreshold = value; OnPropertyChanged(); }
+    }
+
+    public double ScreenOcrCooldownSec
+    {
+        get => _config.ScreenOcr.CooldownSec;
+        set { _config.ScreenOcr.CooldownSec = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Минимальная длина текста-кандидата (4–64 символов).</summary>
+    public int ScreenOcrMinTextLength
+    {
+        get => _config.ScreenOcr.MinTextLength;
+        set { _config.ScreenOcr.MinTextLength = Math.Clamp(value, 4, 64); OnPropertyChanged(); }
+    }
+
+    public bool ScreenOcrAutoAnswer
+    {
+        get => _config.ScreenOcr.AutoAnswer;
+        set { _config.ScreenOcr.AutoAnswer = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Фоновое слежение за экраном (ScreenTextWatcher). Хоткей «распознать сейчас» от него не зависит.</summary>
+    public bool ScreenOcrAutoWatch
+    {
+        get => _config.ScreenOcr.AutoWatchEnabled;
+        set { _config.ScreenOcr.AutoWatchEnabled = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Полупрозрачный шар состояния в правом нижнем углу (скрыт от захвата экрана).</summary>
+    public bool ScreenOcrShowIndicator
+    {
+        get => _config.ScreenOcr.ShowStatusIndicator;
+        set { _config.ScreenOcr.ShowStatusIndicator = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Разделение собеседников (диаризация) на loopback-чанках. Opt-in.</summary>
+    public bool SpeakerDiarizationEnabled
+    {
+        get => _config.SpeakerDiarization.Enabled;
+        set { _config.SpeakerDiarization.Enabled = value; OnPropertyChanged(); OnPropertyChanged(nameof(SpeakerStatusText)); }
+    }
+
+    /// <summary>Бэкенд nemo-speech: "auto" | "cpu" | "vulkan" | "cuda". Только для Nemotron.</summary>
+    public string SpeakerBackend
+    {
+        get => _config.SpeakerDiarization.NemotronBackend;
+        set { _config.SpeakerDiarization.NemotronBackend = value; OnPropertyChanged(); OnPropertyChanged(nameof(SpeakerStatusText)); }
+    }
+
+    /// <summary>Статус диаризации для настроек: выкл/нет модели/готов (+бэкенд для Nemotron).
+    /// VM живёт в Core (без WPF-ресурсов) — строки дублируют ключи L_SpeakerDiar_St_*
+    /// из Strings.ru/en.xaml, выбор по Config.Ui.Language.</summary>
+    public string SpeakerStatusText
+    {
+        get
+        {
+            var cfg = _config.SpeakerDiarization;
+            if (!cfg.Enabled)
+                return SpeakerTr("выключено", "disabled");
+            // auto-порядок резолвера: cuda → vulkan → cpu; если диаризатор
+            // уже работает — показываем фактический бэкенд через «→».
+            var req = string.Equals(cfg.NemotronBackend, "auto", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(cfg.NemotronBackend)
+                ? SpeakerTr("авто (CUDA→Vulkan→CPU)", "auto (CUDA→Vulkan→CPU)")
+                : cfg.NemotronBackend.ToLowerInvariant();
+            var act = Core.Speaker.NemotronDiarizer.LastActiveBackend;
+            var be = act != null ? $"{req} → {act}" : req;
+            if (ResolveNemotronModelPath() != null)
+                return SpeakerTr($"Nemotron v3, {be}, модель найдена", $"Nemotron v3, {be}, model found");
+            var shown = !string.IsNullOrWhiteSpace(cfg.NemotronModelPath)
+                ? cfg.NemotronModelPath!
+                : Path.Combine(AppContext.BaseDirectory, "models", NemotronModelFile);
+            return SpeakerTr($"Nemotron v3, {be}, модель отсутствует: {shown}",
+                             $"Nemotron v3, {be}, model missing: {shown}");
+        }
+    }
+
+    // GGUF-модель Nemotron-3 (Sortformer) — имя совпадает с резолвером Nemotron-диаризатора.
+    private const string NemotronModelFile = "Nemotron-3-Diarization.Q8_0.gguf";
+
+    private string SpeakerTr(string ru, string en) =>
+        string.Equals(_config.Ui.Language, "en", StringComparison.OrdinalIgnoreCase) ? en : ru;
+
+    // Тот же каскад для GGUF Nemotron (контракт резолюции общий с Core-диаризатором).
+    private string? ResolveNemotronModelPath()
+    {
+        var cfgPath = _config.SpeakerDiarization.NemotronModelPath;
+        var appData = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BrainstormBuddy");
+        var candidates = new[]
+        {
+            cfgPath,
+            Path.Combine(appData, "models", NemotronModelFile),
+            Path.Combine(AppContext.BaseDirectory, "models", NemotronModelFile),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..",
+                "artifacts", "speaker", NemotronModelFile)),
+        };
+        return candidates.FirstOrDefault(c => !string.IsNullOrWhiteSpace(c) && File.Exists(c));
+    }
+
     public string ShowTrayIconHotkey
     {
         get => _config.Hotkeys.ShowTrayIcon;
         set { _config.Hotkeys.ShowTrayIcon = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Хоткей «Ask Memory» — окно вопроса к памяти (спека «ASK MEMORY»).</summary>
+    public string AskMemoryHotkey
+    {
+        get => _config.Hotkeys.AskMemory;
+        set { _config.Hotkeys.AskMemory = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Хоткей «Память вкл/выкл» — UseMemory для текущей встречи + дефолт.</summary>
+    public string MemoryToggleHotkey
+    {
+        get => _config.Hotkeys.MemoryToggle;
+        set { _config.Hotkeys.MemoryToggle = value; OnPropertyChanged(); }
     }
 
     /// <summary>Дёрнуть INPC для HideTrayIcon — хоткей возврата иконки меняет Config напрямую, без сеттера VM.</summary>
@@ -590,6 +825,12 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Ui.ShowTimingLine = value; OnPropertyChanged(); }
     }
 
+    public bool ShowQuestionTimingLine
+    {
+        get => _config.Ui.ShowQuestionTimingLine;
+        set { _config.Ui.ShowQuestionTimingLine = value; OnPropertyChanged(); }
+    }
+
     // Инженерный режим: показывать на главном оверлее тонкие настройки (слайдеры паузы/чанка,
     // пресеты скорости речи, эквалайзер). Применяется по «Сохранить».
     public bool EngineerMode
@@ -610,6 +851,12 @@ public class SettingsViewModel : INotifyPropertyChanged
     {
         get => _config.Karaoke.Position;
         set { _config.Karaoke.Position = value; OnPropertyChanged(); }
+    }
+
+    public string KaraokeContentAnchor
+    {
+        get => _config.Karaoke.ContentAnchor;
+        set { _config.Karaoke.ContentAnchor = value; OnPropertyChanged(); }
     }
 
     public int KaraokeWidthPct
@@ -738,10 +985,28 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Karaoke.ShowUserLines = value; OnPropertyChanged(); }
     }
 
-    public bool KaraokeDimByAge
+    public bool KaraokeHistoryFade
     {
-        get => _config.Karaoke.DimByAge;
-        set { _config.Karaoke.DimByAge = value; OnPropertyChanged(); }
+        get => _config.Karaoke.HistoryFade;
+        set { _config.Karaoke.HistoryFade = value; OnPropertyChanged(); }
+    }
+
+    public double KaraokeMinHistoryOpacity
+    {
+        get => _config.Karaoke.MinHistoryOpacity;
+        set { _config.Karaoke.MinHistoryOpacity = value; OnPropertyChanged(); }
+    }
+
+    public int KaraokeHistoryLineCount
+    {
+        get => _config.Karaoke.HistoryLineCount;
+        set { _config.Karaoke.HistoryLineCount = value; OnPropertyChanged(); }
+    }
+
+    public string KaraokeQuestionColor
+    {
+        get => _config.Karaoke.QuestionColor;
+        set { _config.Karaoke.QuestionColor = value; OnPropertyChanged(); }
     }
 
     public bool KaraokeAgeColorFade
@@ -772,6 +1037,136 @@ public class SettingsViewModel : INotifyPropertyChanged
     {
         get => _config.Karaoke.WordWrap;
         set { _config.Karaoke.WordWrap = value; OnPropertyChanged(); }
+    }
+
+    // ===== Memory Properties =====
+
+    public bool MemoryEnabled
+    {
+        get => _config.Memory.Enabled;
+        set { _config.Memory.Enabled = value; OnPropertyChanged(); }
+    }
+
+    public bool MemoryDefaultUse
+    {
+        get => _config.Memory.DefaultUseMemory;
+        set { _config.Memory.DefaultUseMemory = value; OnPropertyChanged(); }
+    }
+
+    public bool MemoryDefaultWrite
+    {
+        get => _config.Memory.DefaultWriteMemory;
+        set { _config.Memory.DefaultWriteMemory = value; OnPropertyChanged(); }
+    }
+
+    public string MemorySaveMode
+    {
+        get => _config.Memory.SaveMode;
+        set { _config.Memory.SaveMode = value; OnPropertyChanged(); }
+    }
+
+    public string MemoryReviewMode
+    {
+        get => _config.Memory.ReviewMode;
+        set { _config.Memory.ReviewMode = value; OnPropertyChanged(); }
+    }
+
+    public string MemoryModelMode
+    {
+        get => _config.Memory.MemoryModelMode;
+        set { _config.Memory.MemoryModelMode = value; OnPropertyChanged(); }
+    }
+
+    public string MemoryProviderId
+    {
+        get => _config.Memory.MemoryProviderId;
+        set { _config.Memory.MemoryProviderId = value; OnPropertyChanged(); }
+    }
+
+    public string MemoryModel
+    {
+        get => _config.Memory.MemoryModel;
+        set { _config.Memory.MemoryModel = value; OnPropertyChanged(); }
+    }
+
+    public string MemoryEmbeddingsMode
+    {
+        get => _config.Memory.EmbeddingsMode;
+        set { _config.Memory.EmbeddingsMode = value; OnPropertyChanged(); }
+    }
+
+    public string MemoryEmbeddingsModel
+    {
+        get => _config.Memory.EmbeddingsModel;
+        set { _config.Memory.EmbeddingsModel = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Режим удержания E5 в RAM: alwaysloaded|balanced|memorysaver (спека §10-§13).</summary>
+    public string MemoryLocalRuntimeMode
+    {
+        get => _config.Memory.LocalEmbeddingRuntimeMode;
+        set { _config.Memory.LocalEmbeddingRuntimeMode = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Idle-выгрузка Balanced, минуты (1|5|10|30|60).</summary>
+    public int MemoryLocalUnloadMinutes
+    {
+        get => _config.Memory.LocalEmbeddingUnloadAfterIdleMinutes;
+        set { _config.Memory.LocalEmbeddingUnloadAfterIdleMinutes = value; OnPropertyChanged(); }
+    }
+
+    public bool MemoryAutoRecall
+    {
+        get => _config.Memory.AutoRecall;
+        set { _config.Memory.AutoRecall = value; OnPropertyChanged(); }
+    }
+
+    public int MemoryRecallMaxTokens
+    {
+        get => _config.Memory.RecallMaxTokens;
+        set { _config.Memory.RecallMaxTokens = value; OnPropertyChanged(); }
+    }
+
+    public int MemoryRecallMaxItems
+    {
+        get => _config.Memory.RecallMaxItems;
+        set { _config.Memory.RecallMaxItems = value; OnPropertyChanged(); }
+    }
+
+    public string MemoryTranscriptRetention
+    {
+        get => _config.Memory.TranscriptRetention;
+        set { _config.Memory.TranscriptRetention = value; OnPropertyChanged(); }
+    }
+
+    public string MemoryRetention
+    {
+        get => _config.Memory.MemoryRetention;
+        set { _config.Memory.MemoryRetention = value; OnPropertyChanged(); }
+    }
+
+    public int MemoryRetentionDays
+    {
+        get => _config.Memory.MemoryRetentionDays;
+        set { _config.Memory.MemoryRetentionDays = value; OnPropertyChanged(); }
+    }
+
+    public double MemoryDedupeSimilarity
+    {
+        get => _config.Memory.DedupeSimilarity;
+        set { _config.Memory.DedupeSimilarity = value; OnPropertyChanged(); }
+    }
+
+    public int MemoryJobStaleSec
+    {
+        get => _config.Memory.JobStaleSec;
+        set { _config.Memory.JobStaleSec = value; OnPropertyChanged(); }
+    }
+
+    public long? MemoryActiveProjectId
+    {
+        get => _config.Memory.ActiveProjectId;
+        set { _config.Memory.ActiveProjectId = value; OnPropertyChanged(); }
     }
 
     public string SystemPrompt
@@ -975,9 +1370,9 @@ public class SettingsViewModel : INotifyPropertyChanged
         // «Распознавание речи (STT)» — пресет его не трогает (иначе затирал бы адрес пользователя).
         switch (preset)
         {
-            case "Groq (llama3-8b-8192, t-one)":
+            case "Groq (openai/gpt-oss-120b, t-one)":
                 BaseUrl = "https://api.groq.com/openai/v1";
-                ChatModel = "llama3-8b-8192";
+                ChatModel = "openai/gpt-oss-120b";
                 break;
             case "OpenAI (gpt-4o-mini, t-one)":
                 BaseUrl = "https://api.openai.com/v1";

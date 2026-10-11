@@ -1,0 +1,227 @@
+<Window x:Class="BrainstormBuddy.AskMemoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{DynamicResource L_AM_Title}" Height="460" Width="560" MinHeight="340" MinWidth="440"
+        Topmost="True" WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource BgBrush}" Foreground="{DynamicResource TextBrush}"
+        FontFamily="{DynamicResource UiFontFamily}" FontSize="13"
+        TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType"
+        KeyDown="OnWindowKeyDown">
+
+    <Window.Resources>
+        <!-- Кнопка — глобальный шаблон волны 02 (r8, HoverBrush-hover, BgBrush-press,
+             фокус-рамка 2px); тут только размер текста. -->
+        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="{DynamicResource BgMediumBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+
+
+        <!-- Режим «Поиск | Ответ»: RadioButton-чип вместо нетемированного кружка -->
+        <Style x:Key="ModeChip" TargetType="RadioButton">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bd" Background="{DynamicResource PanelBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                CornerRadius="12" Padding="10,3">
+                            <ContentPresenter x:Name="Cp" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              TextElement.Foreground="{DynamicResource TextMutedBrush}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentDimBrush}"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                                <Setter TargetName="Cp" Property="TextElement.Foreground" Value="{DynamicResource AccentTextBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ListBox (тёмный, свой шаблон) -->
+        <Style TargetType="ListBox">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBox">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+                            <ScrollViewer Focusable="False" Padding="{TemplateBinding Padding}"
+                                          HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                                <ItemsPresenter/>
+                            </ScrollViewer>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ListBoxItem">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <ContentPresenter/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Чип-бейдж (тип / scope) -->
+        <Style x:Key="ChipBadge" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource BgLightBrush}"/>
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Padding" Value="6,2"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Заголовок -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="{DynamicResource L_AM_Title}" Style="{StaticResource DialogTitleText}"
+                       Foreground="{DynamicResource AccentBrush}"/>
+            <TextBlock Text="{DynamicResource L_AM_Subtitle}" Style="{StaticResource MetaText}" Margin="0,6,0,0"
+                       Foreground="{DynamicResource TextMutedBrush}"/>
+        </StackPanel>
+
+        <!-- Ввод: вопрос + режим + кнопка -->
+        <Border Grid.Row="1" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1" CornerRadius="12" Padding="10" Margin="0,0,0,10">
+            <StackPanel>
+                <TextBox x:Name="QuestionBox" Style="{StaticResource InputText}"
+                         ToolTip="{DynamicResource L_AM_TT_Question}"
+                         KeyDown="OnQuestionKeyDown"/>
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <RadioButton x:Name="ModeSearch" Style="{StaticResource ModeChip}"
+                                     GroupName="AskMode" IsChecked="True"
+                                     Content="{DynamicResource L_AM_ModeSearch}"/>
+                        <RadioButton x:Name="ModeAnswer" Style="{StaticResource ModeChip}"
+                                     GroupName="AskMode" Margin="6,0,0,0"
+                                     Content="{DynamicResource L_AM_ModeAnswer}"/>
+                    </StackPanel>
+                    <Button Grid.Column="2" x:Name="AskBtn" Content="{DynamicResource L_AM_Ask}"
+                            Style="{StaticResource PrimaryActionButton}" IsDefault="True"
+                            Click="OnAsk"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Результаты: панель LLM-ответа сверху, список hits (=источники) ниже -->
+        <Grid Grid.Row="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- LLM-ответ (показывается в режиме «Ответ») -->
+            <Border Grid.Row="0" x:Name="AnswerPanel" Visibility="Collapsed"
+                    Background="{DynamicResource BgMediumBrush}" BorderBrush="{DynamicResource AccentBrush}"
+                    BorderThickness="1" CornerRadius="10" Padding="10" Margin="0,0,0,8">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{DynamicResource L_AM_AnswerHeader}"
+                               Style="{StaticResource LabelText}"
+                               Foreground="{DynamicResource AccentSoftBrush}" Margin="0,0,0,4"/>
+                    <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
+                        <TextBlock x:Name="AnswerText" Style="{StaticResource DocumentText}" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TextBrightBrush}"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <TextBlock Grid.Row="1" x:Name="HitsHeader" Text="{DynamicResource L_AM_HitsHeader}"
+                       Style="{StaticResource LabelText}" Foreground="{DynamicResource TextDimBrush}"
+                       Margin="2,0,0,4" Visibility="Collapsed"/>
+
+            <Grid Grid.Row="2">
+                <ListBox x:Name="HitsList" Background="Transparent">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="{DynamicResource PanelBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="8,6" Margin="0,0,0,6">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Border Style="{StaticResource ChipBadge}">
+                                            <TextBlock Text="{Binding TypeLabel}" Style="{StaticResource BadgeText}"
+                                                       Foreground="{DynamicResource AccentSoftBrush}"/>
+                                        </Border>
+                                        <Border Style="{StaticResource ChipBadge}">
+                                            <TextBlock Text="{Binding ScopeLabel}" Style="{StaticResource BadgeText}"
+                                                       Foreground="{DynamicResource TextMutedBrush}"/>
+                                        </Border>
+                                        <TextBlock Text="{Binding ScoreText}" Style="{StaticResource MetaText}"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextDimBrush}"/>
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding Content}" Style="{StaticResource BodyText}" TextWrapping="Wrap"
+                                               Margin="0,4,0,0" Foreground="{DynamicResource TextBrush}"/>
+                                    <TextBlock Text="{Binding MetaText}" Style="{StaticResource MetaText}"
+                                               Margin="0,3,0,0" TextTrimming="CharacterEllipsis"
+                                               Foreground="{DynamicResource TextDimBrush}"/>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <!-- «В памяти этого нет» / «задайте вопрос» -->
+                <TextBlock x:Name="EmptyText" Text="{DynamicResource L_AM_Empty}"
+                           Style="{StaticResource BodyText}"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                           TextWrapping="Wrap" TextAlignment="Center"
+                           Foreground="{DynamicResource TextDimBrush}"
+                           Visibility="Collapsed"/>
+
+                <!-- Индикатор «думаю…» -->
+                <StackPanel x:Name="BusyPanel" HorizontalAlignment="Center" VerticalAlignment="Center"
+                            Visibility="Collapsed">
+                    <ProgressBar IsIndeterminate="True" Width="140" Height="6"/>
+                    <TextBlock x:Name="BusyText" Text="{DynamicResource L_St_Thinking}"
+                               Style="{StaticResource MetaText}" Margin="0,8,0,0" TextAlignment="Center"
+                               Foreground="{DynamicResource TextMutedBrush}"/>
+                </StackPanel>
+            </Grid>
+        </Grid>
+
+        <!-- Статусная строка -->
+        <TextBlock Grid.Row="3" x:Name="StatusText" Style="{StaticResource MetaText}" Margin="2,8,0,0"
+                   Foreground="{DynamicResource TextDimBrush}" TextTrimming="CharacterEllipsis"/>
+    </Grid>
+</Window>

@@ -1,6 +1,11 @@
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Globalization;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Media;
 using BrainstormBuddy.Ai;
 using BrainstormBuddy.Media;
@@ -12,23 +17,43 @@ namespace BrainstormBuddy;
 /// <summary>
 /// Окно локальной транскрибации медиафайлов встроенным GigaAM:
 /// извлечение аудио (mp4/webm/…) → распознавание с тайм-кодами → AI-саммари.
-/// История хранится в %APPDATA%\BrainstormBuddy\transcriptions.
+/// Поддерживает мульти-выбор: файлы обрабатываются ПОСЛЕДОВАТЕЛЬНО (движок один),
+/// каждый — отдельной карточкой со своим текстом и кнопками.
+/// История хранится в %APPDATA%\BrainstormBuddy\transcriptions — по записи на файл.
 /// </summary>
 public partial class FileTranscriptionWindow : Window
 {
     private static readonly string[] NeedsFfmpeg = { ".webm", ".ogg", ".opus", ".mkv", ".flac", ".oga" };
 
+    /// <summary>
+    /// Дефолтный системный промпт AI-саммари (протокол встречи) — алиас на
+    /// <see cref="BrainstormBuddy.Transcription.MeetingSummarizer.DefaultSummaryPrompt"/>:
+    /// единый источник дефолта для обоих путей саммари (история встреч + файл).
+    /// Пустой Advanced.SummaryPrompt в конфиге → используется этот текст (2.18.0).
+    /// </summary>
+    public const string DefaultSummaryPrompt = BrainstormBuddy.Transcription.MeetingSummarizer.DefaultSummaryPrompt;
+
+    // Остальные промпты саммари-пути (map-reduce и короткий текст) — НЕ кастомизируются,
+    // вынесены в константы только для читабельности SummarizeAsync.
+    private const string SummaryShortUserPrompt = "Составь протокол встречи по транскрибации выше.";
+    private const string SummaryMapUserPrompt =
+        "Выпиши из фрагмента ключевое, СОХРАНЯЯ тайм-коды [мм:сс]: темы, факты, цифры, имена/роли, " +
+        "решения и договорённости. Списком, только по тексту, без воды.";
+    private const string SummaryMapSystemPrompt = "Ты обрабатываешь фрагмент транскрибации встречи.\n\n";
+    private const string SummaryReduceUserPrompt =
+        "Собери из этих конспектов частей ЕДИНЫЙ протокол встречи строго по формату выше.";
+
     private readonly TranscriptionHistoryStore _history;
     private readonly MediaAudioExtractor _extractor = new();
+    private readonly ObservableCollection<QueueFileItem> _resultItems = new();
+    private readonly List<string> _selectedFiles = new();
     private CancellationTokenSource? _cts;
-    private string? _selectedPath;
-    private FileTranscriptResult? _currentResult;
-    private TranscriptionRecord? _currentRecord;
     private bool _busy;
 
     public FileTranscriptionWindow()
     {
         InitializeComponent();
+        ResultsList.ItemsSource = _resultItems;
         _history = new TranscriptionHistoryStore(App.Current.AppDataDir);
         LoadHistory();
         // По умолчанию — как глобальный движок (если выбран Whisper, окно тоже на Whisper).
@@ -38,6 +63,9 @@ public partial class FileTranscriptionWindow : Window
     }
 
     private string EngineChoice() => (EngineCombo?.SelectedValue as string) ?? "gigaam";
+    // Локализованная строка UI (ресурсы приложения): ключ → текст текущего языка.
+    private string L(string key) => (string)FindResource(key);
+
 
     private void OnEngineChanged(object sender, SelectionChangedEventArgs e) => UpdateEngineChip();
 
@@ -46,7 +74,7 @@ public partial class FileTranscriptionWindow : Window
     private void PopulateHardwareCombo()
     {
         HardwareCombo.Items.Clear();
-        HardwareCombo.Items.Add(new ComboBoxItem { Content = "Авто (как в настройках)", Tag = "auto|-1" });
+        HardwareCombo.Items.Add(new ComboBoxItem { Content = L("L_FileTr_HwAuto"), Tag = "auto|-1" });
         HardwareCombo.Items.Add(new ComboBoxItem { Content = "CPU", Tag = "cpu|-1" });
         try
         {
@@ -82,55 +110,112 @@ public partial class FileTranscriptionWindow : Window
         return (cfg.FileSttAccel ?? "auto").ToLowerInvariant() switch
         {
             "cpu" => "CPU",
-            "gpu" => $"GPU #{(cfg.FileSttGpuDevice >= 0 ? cfg.FileSttGpuDevice.ToString() : "авто")}",
-            _ => "авто"
+            "gpu" => cfg.FileSttGpuDevice >= 0
+                ? string.Format(L("L_FileTr_HwGpuFmt"), cfg.FileSttGpuDevice)
+                : $"GPU ({L("L_FileTr_HwAutoWord")})",
+            _ => L("L_FileTr_HwAutoWord")
         };
+    }
+
+    // Фактическая версия GigaAM, с которой будет работать файловая транскрибация:
+    // "native" → жёстко v2; "native3"/пусто → v3 при наличии файлов, иначе откат на v2
+    // (та же логика, что в App.CreateGigaamEngineForVersion — без загрузки движка).
+    private static string GigaamVersionTag()
+    {
+        var eng = App.Current.Config.Audio.SttEngine?.ToLowerInvariant();
+        return (eng != "native" && App.Current.HasGigaamV3Model()) ? "v3" : "v2";
     }
 
     private void UpdateEngineChip()
     {
         if (EngineText == null) return;
+        string ver = GigaamVersionTag();
+        // Подпись в комбо следует за фактической версией — меняем текст айтема, Tag не трогаем.
+        if (GigaamItem != null) GigaamItem.Content = string.Format(L("L_FileTr_GigaamItemFmt"), ver);
         bool ff = MediaAudioExtractor.TryFindFfmpeg(out _);
-        string ffNote = ff ? "ffmpeg ✓" : "webm: нужен ffmpeg";
+        string ffNote = ff ? "ffmpeg ✓" : L("L_FileTr_FfmpegNeed");
         if (EngineChoice() == "whisper")
         {
             bool have = App.Current.ResolveWhisperModel() != null;
-            EngineText.Text = (have ? "Whisper готов" : "⚠ модель Whisper не скачана (Настройки → Локальный STT)") + $" · {HardwareNote()} · " + ffNote;
+            EngineText.Text = (have ? L("L_FileTr_WhisperReady") : L("L_FileTr_WhisperNoModel"))
+                              + $" · {HardwareNote()} · " + ffNote;
         }
         else
         {
-            EngineText.Text = $"GigaAM — быстрый, русский · {HardwareNote()} · " + ffNote;
+            bool haveModel = ver == "v3" || App.Current.GetGigaamModelPath() != null;
+            EngineText.Text = (haveModel ? string.Format(L("L_FileTr_GigaamReadyFmt"), ver)
+                                         : L("L_FileTr_GigaamNoModel"))
+                              + $" · {HardwareNote()} · " + ffNote;
         }
     }
 
     private void LoadHistory() => HistoryList.ItemsSource = _history.LoadAll();
 
-    // ---- Выбор файла ----
+    // ---- Выбор файлов (мульти-выбор → очередь) ----
     private void OnSelectFile(object sender, RoutedEventArgs e)
     {
         if (_busy) return;
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
-            Title = "Выберите аудио или видео файл",
-            Filter = "Медиа (аудио/видео)|*.mp4;*.webm;*.mkv;*.mov;*.avi;*.m4a;*.mp3;*.wav;*.aac;*.ogg;*.opus;*.flac|Все файлы|*.*"
+            Title = L("L_FileTr_OpenDlgTitle"),
+            Multiselect = true,
+            Filter = L("L_FileTr_OpenDlgFilter")
         };
-        if (dlg.ShowDialog() == true)
+        if (dlg.ShowDialog() != true || dlg.FileNames.Length == 0) return;
+
+        // Выбор новой пачки заменяет список результатов (как раньше заменялся результат одного файла).
+        _resultItems.Clear();
+        _selectedFiles.Clear();
+        foreach (var p in dlg.FileNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
         {
-            _selectedPath = dlg.FileName;
-            FileNameText.Text = Path.GetFileName(_selectedPath);
-            FileNameText.Foreground = (Brush)FindResource("TextBrightBrush");
-            TranscribeBtn.IsEnabled = true;
-            UpdateFfmpegBanner();
+            _selectedFiles.Add(p);
+            _resultItems.Add(new QueueFileItem(p));
         }
+
+        FileNameText.Text = dlg.FileNames.Length == 1
+            ? Path.GetFileName(dlg.FileNames[0])
+            : string.Format(L("L_FileTr_SelectedCountFmt"), dlg.FileNames.Length);
+        FileNameText.Foreground = (Brush)FindResource("TextBrightBrush");
+        ProgressPanel.Visibility = Visibility.Collapsed;
+        StatusText.Text = "";
+        ResultsHint.Visibility = Visibility.Collapsed;
+        HistoryList.SelectedItem = null;
+        UpdateStartButton();
+        UpdateFfmpegBanner();
+        App.Current.Logger.Info($"FileTranscription: выбрано файлов: {dlg.FileNames.Length}", "UI");
     }
 
-    // Показывает жёлтую плашку, если выбран webm/mkv-подобный файл, а ffmpeg не найден.
+    // «Старт» активен, пока в списке есть файлы, ждущие очереди (в т.ч. после частичной
+    // отмены — можно доиграть остаток), либо когда на экране карточка из истории,
+    // чей файл ещё на месте — её можно распознать заново.
+    private void UpdateStartButton() =>
+        TranscribeBtn.IsEnabled = !_busy
+            && _resultItems.Any(i => i.Status == QueueFileStatus.Queued
+                                     || (i.FromHistory && File.Exists(i.FilePath)));
+
+    // Показывает жёлтую плашку, если хоть один выбранный файл требует ffmpeg, а он не найден.
     private void UpdateFfmpegBanner()
     {
-        bool need = !string.IsNullOrEmpty(_selectedPath)
-                    && NeedsFfmpeg.Contains(Path.GetExtension(_selectedPath).ToLowerInvariant())
+        bool need = _selectedFiles.Any(p => NeedsFfmpeg.Contains(Path.GetExtension(p).ToLowerInvariant()))
                     && !MediaAudioExtractor.TryFindFfmpeg(out _);
         FfmpegBanner.Visibility = need ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // «Новый файл»: полный сброс — очередь, карточки и выбранные файлы.
+    private void OnReset(object sender, RoutedEventArgs e)
+    {
+        if (_busy) return;
+        _resultItems.Clear();
+        _selectedFiles.Clear();
+        FileNameText.Text = L("L_FileTr_NoFiles");
+        FileNameText.Foreground = (Brush)FindResource("TextMutedBrush");
+        ProgressPanel.Visibility = Visibility.Collapsed;
+        StatusText.Text = "";
+        ResultsHint.Visibility = Visibility.Visible;
+        HistoryList.SelectedItem = null;
+        UpdateStartButton();
+        UpdateFfmpegBanner();
+        App.Current.Logger.Info("FileTranscription: сброс состояния (кнопка «Новый файл»)", "UI");
     }
 
     private async void OnDownloadFfmpeg(object sender, RoutedEventArgs e)
@@ -141,7 +226,7 @@ public partial class FileTranscriptionWindow : Window
         Progress.IsIndeterminate = false;
         Progress.Value = 0;
         ProgressPanel.Visibility = Visibility.Visible;
-        StatusText.Text = "Скачивание ffmpeg…";
+        StatusText.Text = L("L_FileTr_FfmpegDownloading");
         _cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
         var ct = _cts.Token;
         try
@@ -150,21 +235,19 @@ public partial class FileTranscriptionWindow : Window
             var progress = new Progress<double>(f => Dispatcher.Invoke(() =>
             {
                 Progress.Value = f;
-                StatusText.Text = $"Скачивание ffmpeg… {f * 100:F0}%";
+                StatusText.Text = string.Format(L("L_FileTr_FfmpegDownloadingFmt"), f * 100);
             }));
             await installer.InstallAsync(MediaAudioExtractor.DownloadedFfmpegDir, progress, ct);
-            StatusText.Text = "ffmpeg установлен ✓ — webm теперь поддерживается.";
+            StatusText.Text = L("L_FileTr_FfmpegDone");
             FfmpegBanner.Visibility = Visibility.Collapsed;
             UpdateEngineChip();
-            App.Current.Notifier?.ShowInfo("Транскрибация файла", "ffmpeg установлен");
+            App.Current.Notifier?.ShowInfo(L("L_FileTr_ToastTitle"), L("L_FileTr_FfmpegDoneShort"));
         }
-        catch (OperationCanceledException) { StatusText.Text = "Скачивание ffmpeg отменено."; }
+        catch (OperationCanceledException) { StatusText.Text = L("L_FileTr_FfmpegCanceled"); }
         catch (Exception ex)
         {
-            StatusText.Text = "Не удалось скачать ffmpeg.";
-            ShowError("Не удалось скачать ffmpeg: " + ex.Message +
-                      "\n\nБез интернета: переустановите приложение с галочкой «ffmpeg», " +
-                      "либо положите ffmpeg.exe в:\n" + MediaAudioExtractor.DownloadedFfmpegDir);
+            StatusText.Text = L("L_FileTr_FfmpegFailed");
+            ShowError(string.Format(L("L_FileTr_FfmpegFailedFmt"), ex.Message, MediaAudioExtractor.DownloadedFfmpegDir));
         }
         finally
         {
@@ -175,19 +258,15 @@ public partial class FileTranscriptionWindow : Window
         }
     }
 
-    // ---- Транскрибация ----
+    // ---- Транскрибация: ПОСЛЕДОВАТЕЛЬНАЯ очередь (модель одна → файлы по одному) ----
     private async void OnTranscribe(object sender, RoutedEventArgs e)
     {
-        if (_busy || string.IsNullOrEmpty(_selectedPath)) return;
-        if (!File.Exists(_selectedPath)) { ShowError("Файл не найден (возможно, перемещён)."); return; }
-
-        if (NeedsFfmpeg.Contains(Path.GetExtension(_selectedPath).ToLowerInvariant())
-            && !MediaAudioExtractor.TryFindFfmpeg(out _))
-        {
-            UpdateFfmpegBanner();
-            ShowError("Для этого формата (webm/mkv/opus) нужен ffmpeg. Нажмите «Скачать ffmpeg (~80 МБ)» в жёлтой плашке.");
-            return;
-        }
+        if (_busy) return;
+        // Что запускать: все карточки «в очереди» (свежая пачка или остаток после отмены),
+        // плюс карточка из истории — единственная, у которой статус Done до старта.
+        var batch = _resultItems.Where(i => i.Status == QueueFileStatus.Queued || i.FromHistory).ToList();
+        if (batch.Count == 0) { ShowError(L("L_FileTr_SelectFirst")); return; }
+        if (batch.All(i => !File.Exists(i.FilePath))) { ShowError(L("L_FileTr_FilesNotFound")); return; }
 
         var choice = EngineChoice();
         var transcriber = App.Current.ResolveFileTranscriber(choice, out var err);
@@ -196,83 +275,130 @@ public partial class FileTranscriptionWindow : Window
             if (choice == "whisper")
             {
                 UpdateEngineChip();
-                App.Current.Notifier?.ShowError("Whisper", err ?? "Модель Whisper не найдена. Скачайте её в Настройки → Локальный STT.");
+                App.Current.Notifier?.ShowError("Whisper", err ?? L("L_FileTr_WhisperNoModelToast"));
             }
-            else ShowError(err ?? "Встроенный движок недоступен.");
+            else ShowError(err ?? L("L_FileTr_EngineUnavailable"));
             return;
         }
 
-        var path = _selectedPath;
         SetBusy(true);
-        Progress.IsIndeterminate = true;
-        StatusText.Text = choice == "whisper" ? "Извлечение аудио… (Whisper грузится ~10с при первом запуске)" : "Извлечение аудио…";
+        Progress.IsIndeterminate = false;
+        Progress.Value = 0;
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
+        bool cancelled = false;
+        int done = 0, failed = 0;
         try
         {
-            var result = await Task.Run(() =>
+            // Движок резолвится ОДИН раз на всю очередь (модель грузится один раз),
+            // файлы идут строго по очереди — параллельно нельзя.
+            for (int i = 0; i < batch.Count; i++)
             {
-                var audio = _extractor.Extract(path, ct);
-                Dispatcher.Invoke(() =>
+                ct.ThrowIfCancellationRequested();
+                var item = batch[i];
+                var path = item.FilePath;
+                item.Status = QueueFileStatus.Active;
+                item.ProgressText = choice == "whisper"
+                    ? L("L_FileTr_ExtractingWhisper")
+                    : L("L_FileTr_Extracting");
+                StatusText.Text = string.Format(L("L_FileTr_FileOfFmt"), i + 1, batch.Count, item.FileName);
+                try
                 {
-                    Progress.IsIndeterminate = false;
-                    Progress.Value = 0;
-                    StatusText.Text = "Распознавание…";
-                });
-                return transcriber.Transcribe(audio.Samples, audio.Duration, audio.Method,
-                    (frac, status) => Dispatcher.Invoke(() =>
+                    if (!File.Exists(path))
+                        throw new FileNotFoundException(L("L_FileTr_FileNotFound"), path);
+
+                    var result = await Task.Run(() =>
                     {
-                        Progress.Value = frac;
-                        StatusText.Text = $"Распознавание · {status}";
-                    }), ct);
-            }, ct);
+                        var audio = _extractor.Extract(path, ct);
+                        Dispatcher.Invoke(() => item.ProgressText = L("L_FileTr_Recognizing"));
+                        return transcriber.Transcribe(audio.Samples, audio.Duration, audio.Method,
+                            (frac, status) => Dispatcher.Invoke(() =>
+                            {
+                                item.ProgressText = string.Format(L("L_FileTr_RecognizingFmt"), status);
+                                // Общий прогресс = доля готовых файлов + доля текущего.
+                                Progress.Value = Math.Min(1.0, (i + frac) / batch.Count);
+                            }), ct);
+                    }, ct);
 
-            _currentResult = result;
-            TranscriptBox.Text = result.Segments.Count > 0 ? result.TimestampedText : "(речь не распознана)";
-            SummaryBox.Text = "";
-            SummaryBtn.IsEnabled = result.Segments.Count > 0;
+                    item.TranscriptText = result.Segments.Count > 0 ? result.TimestampedText : L("L_FileTr_NoSpeech");
+                    item.HasTranscript = result.Segments.Count > 0;
+                    item.Status = QueueFileStatus.Done;
+                    item.ProgressText = string.Format(L("L_FileTr_DoneFmt"), result.Segments.Count, FileTranscriptResult.Fmt(result.Duration));
 
-            var rec = new TranscriptionRecord
-            {
-                SourcePath = path,
-                FileName = Path.GetFileName(path),
-                DurationSeconds = result.Duration.TotalSeconds,
-                ExtractMethod = result.ExtractMethod,
-                TimestampedText = result.TimestampedText,
-                PlainText = result.PlainText,
-                Summary = ""
-            };
-            _history.Save(rec);
-            _currentRecord = rec;
-            LoadHistory();
-            StatusText.Text = $"Готово · {transcriber.EngineName} · сегментов: {result.Segments.Count} · {FileTranscriptResult.Fmt(result.Duration)}";
+                    // Каждый файл — отдельная запись истории (своё саммари потом допишется в неё же).
+                    var rec = new TranscriptionRecord
+                    {
+                        SourcePath = path,
+                        FileName = item.FileName,
+                        DurationSeconds = result.Duration.TotalSeconds,
+                        ExtractMethod = result.ExtractMethod,
+                        TimestampedText = result.TimestampedText,
+                        PlainText = result.PlainText,
+                        Summary = ""
+                    };
+                    _history.Save(rec);
+                    item.Record = rec;
+                    item.FromHistory = false;
+                    LoadHistory(); // файл появляется в истории сразу по готовности
+                    done++;
+                }
+                catch (OperationCanceledException)
+                {
+                    item.Status = QueueFileStatus.Queued;
+                    item.ProgressText = L("L_FileTr_Stopped");
+                    throw; // останавливает всю очередь
+                }
+                catch (Exception ex)
+                {
+                    // Ошибка одного файла НЕ роняет очередь — идём к следующему.
+                    item.Status = QueueFileStatus.Error;
+                    item.ProgressText = "⚠ " + ex.Message;
+                    failed++;
+                    App.Current.Logger.Warn($"FileTranscription: '{item.FileName}': {ex.Message}", "UI");
+                }
+                Progress.Value = (double)(i + 1) / batch.Count;
+            }
         }
-        catch (OperationCanceledException) { StatusText.Text = "Отменено."; }
-        catch (Exception ex) { ShowError(ex.Message); StatusText.Text = "Ошибка."; }
+        catch (OperationCanceledException) { cancelled = true; }
         finally
         {
+            string engineName;
+            try { engineName = transcriber.EngineName; } catch { engineName = ""; }
             transcriber.Dispose();
             SetBusy(false);
             _cts?.Dispose();
             _cts = null;
+            Progress.IsIndeterminate = false;
+            int total = done + failed;
+            StatusText.Text = cancelled
+                ? string.Format(L("L_FileTr_QueueStoppedFmt"), done, failed, batch.Count - total)
+                : string.Format(L("L_FileTr_QueueDoneFmt"), done, batch.Count)
+                  + (failed > 0 ? string.Format(L("L_FileTr_ErrorsSuffixFmt"), failed) : "")
+                  + (string.IsNullOrEmpty(engineName) ? "" : $" · {engineName}");
         }
     }
 
     private void OnCancel(object sender, RoutedEventArgs e) => _cts?.Cancel();
 
-    // ---- AI-саммари ----
-    private async void OnGenerateSummary(object sender, RoutedEventArgs e)
+    // ---- AI-саммари (на карточке конкретного файла) ----
+    private async void OnItemSummary(object sender, RoutedEventArgs e)
     {
-        if (_busy) return;
+        if (_busy || sender is not FrameworkElement fe || fe.DataContext is not QueueFileItem item) return;
         // В саммари подаём текст С ТАЙМ-КОДАМИ — чтобы в протоколе были тайм-коды.
-        string transcript = _currentResult?.TimestampedText ?? _currentRecord?.TimestampedText ?? "";
-        if (string.IsNullOrWhiteSpace(transcript)) { ShowError("Нет транскрипта для саммари."); return; }
+        string transcript = item.TranscriptText;
+        if (string.IsNullOrWhiteSpace(transcript) || !item.HasTranscript)
+        {
+            item.ProgressText = L("L_FileTr_NoTranscriptForSummary");
+            return;
+        }
 
         SetBusy(true);
+        item.SummaryBusy = true;
         Progress.IsIndeterminate = true;
         ProgressPanel.Visibility = Visibility.Visible;
-        StatusText.Text = "Генерация протокола через LLM…";
+        StatusText.Text = string.Format(L("L_FileTr_SummaryGeneratingFmt"), item.FileName);
         _cts = new CancellationTokenSource(TimeSpan.FromMinutes(8));
+        item.SummaryCts = _cts;
         var ct = _cts.Token;
         try
         {
@@ -280,36 +406,65 @@ public partial class FileTranscriptionWindow : Window
             Progress.IsIndeterminate = false;            // <- баг: бегунок продолжал крутиться
             if (string.IsNullOrWhiteSpace(summary))
             {
-                StatusText.Text = "LLM не ответил.";
-                App.Current.Notifier?.ShowError("AI-саммари",
-                    "LLM недоступен или не ответил. Проверьте, что Ollama запущен (или облачный провайдер доступен): Настройки → LLM.");
+                StatusText.Text = L("L_FileTr_LlmNoAnswer");
+                item.ProgressText = L("L_FileTr_SummaryNoResult");
+                App.Current.Notifier?.ShowError(L("L_FileTr_AiSummaryTitle"), L("L_FileTr_LlmUnavailable"));
             }
             else
             {
                 Progress.Value = Progress.Maximum;
-                SummaryBox.Text = summary;
-                StatusText.Text = "Саммари готово.";
-                if (_currentRecord != null)
+                item.SummaryText = summary;
+                item.ProgressText = L("L_FileTr_SummaryDone");
+                StatusText.Text = string.Format(L("L_FileTr_SummaryDoneFileFmt"), item.FileName);
+                if (item.Record != null)
                 {
-                    _currentRecord.Summary = summary;
-                    _history.Save(_currentRecord);
+                    item.Record.Summary = summary;
+                    _history.Save(item.Record);
                     LoadHistory();
                 }
             }
         }
-        catch (OperationCanceledException) { StatusText.Text = "Саммари отменено."; }
+        catch (OperationCanceledException)
+        {
+            StatusText.Text = L("L_FileTr_SummaryCanceled");
+            item.ProgressText = L("L_FileTr_SummaryCanceled");
+        }
         catch (Exception ex)
         {
-            StatusText.Text = "Ошибка саммари.";
-            App.Current.Notifier?.ShowError("AI-саммари", "Не удалось сделать саммари: " + ex.Message);
+            StatusText.Text = L("L_FileTr_SummaryError");
+            item.ProgressText = string.Format(L("L_FileTr_SummaryErrorFmt"), ex.Message);
+            App.Current.Notifier?.ShowError(L("L_FileTr_AiSummaryTitle"), string.Format(L("L_FileTr_SummaryFailedFmt"), ex.Message));
         }
         finally
         {
             Progress.IsIndeterminate = false;
+            item.SummaryCts = null;
+            item.SummaryBusy = false;
             SetBusy(false);
             _cts?.Dispose();
             _cts = null;
         }
+    }
+
+    private void OnItemSummaryCancel(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is QueueFileItem item)
+            item.SummaryCts?.Cancel();
+    }
+
+    // ---- Извлечение фактов транскрипта в долговременную память ----
+    private void OnItemExtractToMemory(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.DataContext is not QueueFileItem item) return;
+        var transcript = item.TranscriptText;
+        if (string.IsNullOrWhiteSpace(transcript) || !item.HasTranscript)
+        {
+            item.ProgressText = L("L_FileTr_TranscribeFirst");
+            App.Current.Notifier?.ShowInfo(L("L_FileTr_ExtractToastTitle"), L("L_FileTr_TranscribeFirstShort"));
+            return;
+        }
+        var dlg = new TranscriptExtractDialog(transcript) { Owner = this };
+        dlg.ShowDialog();
     }
 
     /// <summary>
@@ -322,23 +477,18 @@ public partial class FileTranscriptionWindow : Window
         var api = App.Current.ApiClient;
         const int chunkChars = 6000;
 
-        const string protocolSys =
-            "Ты составляешь ПРОТОКОЛ ВСТРЕЧИ по транскрибации (реплики с тайм-кодами [мм:сс]). " +
-            "Опирайся ТОЛЬКО на текст, ничего не выдумывай. Если имя/название/компания НЕ звучит в " +
-            "тексте — НЕ придумывай их, указывай роль (например «интервьюер», «кандидат»). " +
-            "Не пересказывай реплики дословно — обобщай по смыслу. Формат ответа (Markdown, по-русски):\n\n" +
-            "## Протокол встречи\n" +
-            "**Тема:** <определи по содержанию>  \n" +
-            "### Участники и роли\n<кто говорит и их роли, если понятно из реплик>\n" +
-            "### Ход встречи\n<по темам; каждый пункт начинай с тайм-кода [мм:сс]; сохраняй цифры, названия, факты>\n" +
-            "### Договорённости и решения\n<конкретные договорённости>\n" +
-            "### Открытые вопросы\n<что осталось нерешённым>\n\n" +
-            "Пиши конкретно и по делу, без общих фраз.";
+        // Пустой Advanced.SummaryPrompt → встроенный дефолт (настройки показывают его же).
+        var protocolSys = string.IsNullOrWhiteSpace(App.Current.Config.Advanced.SummaryPrompt)
+            ? DefaultSummaryPrompt
+            : App.Current.Config.Advanced.SummaryPrompt;
 
         if (transcript.Length <= chunkChars)
         {
-            var r = await api.AskAsync("Составь протокол встречи по транскрибации выше.",
+            var r = await api.AskAsync(SummaryShortUserPrompt,
                 protocolSys + "\n\nТРАНСКРИБАЦИЯ:\n" + transcript, 1500, new List<ChatMessage>(), ct);
+            // AskAsync при отмене возвращает Canceled-результат (не бросает) —
+            // бросаем сами, чтобы показать «Саммари отменено», а не «готово».
+            ct.ThrowIfCancellationRequested();
             return (r.Content ?? "").Trim();
         }
 
@@ -349,22 +499,23 @@ public partial class FileTranscriptionWindow : Window
         {
             ct.ThrowIfCancellationRequested();
             int idx = i;
-            Dispatcher.Invoke(() => StatusText.Text = $"Протокол · разбор части {idx + 1}/{chunks.Count}…");
+            StatusText.Text = string.Format(L("L_FileTr_SummaryMapFmt"), idx + 1, chunks.Count);
             var r = await api.AskAsync(
-                "Выпиши из фрагмента ключевое, СОХРАНЯЯ тайм-коды [мм:сс]: темы, факты, цифры, имена/роли, " +
-                "решения и договорённости. Списком, только по тексту, без воды.",
-                "Ты обрабатываешь фрагмент транскрибации встречи.\n\n" + chunks[i],
+                SummaryMapUserPrompt,
+                SummaryMapSystemPrompt + chunks[i],
                 600, new List<ChatMessage>(), ct);
             if (!string.IsNullOrWhiteSpace(r.Content)) partials.Add(r.Content!.Trim());
+            ct.ThrowIfCancellationRequested();
         }
         if (partials.Count == 0) return "";
 
         // REDUCE: собрать протокол из конспектов частей.
-        Dispatcher.Invoke(() => StatusText.Text = "Протокол · сведение…");
+        StatusText.Text = L("L_FileTr_SummaryReduce");
         var combined = string.Join("\n", partials);
         var final = await api.AskAsync(
-            "Собери из этих конспектов частей ЕДИНЫЙ протокол встречи строго по формату выше.",
+            SummaryReduceUserPrompt,
             protocolSys + "\n\nКОНСПЕКТЫ ЧАСТЕЙ (с тайм-кодами):\n" + combined, 1800, new List<ChatMessage>(), ct);
+        ct.ThrowIfCancellationRequested();
         return string.IsNullOrWhiteSpace(final.Content) ? combined : final.Content!.Trim();
     }
 
@@ -376,28 +527,46 @@ public partial class FileTranscriptionWindow : Window
         return list;
     }
 
-    // ---- Копирование / скачивание ----
-    private void OnCopyTranscript(object sender, RoutedEventArgs e) => CopyText(TranscriptBox.Text, "Транскрипт скопирован");
-    private void OnCopySummary(object sender, RoutedEventArgs e) => CopyText(SummaryBox.Text, "Саммари скопировано");
+    // ---- Копирование / скачивание (на карточке конкретного файла) ----
+    private void OnItemCopyTranscript(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is QueueFileItem item)
+            CopyText(item.TranscriptText, L("L_FileTr_TranscriptCopied"));
+    }
+
+    private void OnItemCopySummary(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is QueueFileItem item)
+            CopyText(item.SummaryText, L("L_FileTr_SummaryCopied"));
+    }
 
     private void CopyText(string text, string ok)
     {
         if (string.IsNullOrEmpty(text)) return;
-        try { Clipboard.SetText(text); App.Current.Notifier?.ShowInfo("Транскрибация файла", ok); }
+        try { Clipboard.SetText(text); App.Current.Notifier?.ShowInfo(L("L_FileTr_ToastTitle"), ok); }
         catch { /* буфер иногда занят другим процессом */ }
     }
 
-    private void OnDownloadTranscript(object sender, RoutedEventArgs e) => SaveText(TranscriptBox.Text, "transcript");
-    private void OnDownloadSummary(object sender, RoutedEventArgs e) => SaveText(SummaryBox.Text, "summary");
-
-    private void SaveText(string text, string kind)
+    private void OnItemSaveTranscript(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrEmpty(text)) { ShowError("Пока нечего сохранять."); return; }
-        var baseName = Path.GetFileNameWithoutExtension(_currentRecord?.FileName ?? "file");
-        var dlg = new Microsoft.Win32.SaveFileDialog { Filter = "Текстовый файл|*.txt", FileName = $"{baseName}_{kind}.txt" };
+        if (sender is FrameworkElement fe && fe.DataContext is QueueFileItem item)
+            SaveText(item.TranscriptText, item.FileName, "transcript");
+    }
+
+    private void OnItemSaveSummary(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is QueueFileItem item)
+            SaveText(item.SummaryText, item.FileName, "summary");
+    }
+
+    private void SaveText(string text, string baseName, string kind)
+    {
+        if (string.IsNullOrEmpty(text)) { ShowError(L("L_FileTr_NothingToSave")); return; }
+        var name = Path.GetFileNameWithoutExtension(string.IsNullOrEmpty(baseName) ? "file" : baseName);
+        var dlg = new Microsoft.Win32.SaveFileDialog { Filter = L("L_FileTr_SaveDlgFilter"), FileName = $"{name}_{kind}.txt" };
         if (dlg.ShowDialog() == true)
         {
-            try { File.WriteAllText(dlg.FileName, text); App.Current.Notifier?.ShowInfo("Транскрибация файла", "Файл сохранён"); }
+            try { File.WriteAllText(dlg.FileName, text); App.Current.Notifier?.ShowInfo(L("L_FileTr_ToastTitle"), L("L_FileTr_FileSaved")); }
             catch (Exception ex) { ShowError(ex.Message); }
         }
     }
@@ -407,17 +576,31 @@ public partial class FileTranscriptionWindow : Window
     {
         if (_busy) return;
         if (HistoryList.SelectedItem is not TranscriptionRecord rec) return;
-        _currentRecord = rec;
-        _currentResult = null;
-        _selectedPath = rec.SourcePath;
+
+        // Запись истории показываем той же карточкой результата — одна на файл.
+        _resultItems.Clear();
+        _selectedFiles.Clear();
         bool exists = File.Exists(rec.SourcePath);
-        FileNameText.Text = rec.FileName + (exists ? "" : "  (файл перемещён)");
+        if (exists) _selectedFiles.Add(rec.SourcePath);
+        var item = new QueueFileItem(rec.SourcePath)
+        {
+            FileName = rec.FileName,
+            Status = QueueFileStatus.Done,
+            FromHistory = true,
+            Record = rec,
+            TranscriptText = string.IsNullOrEmpty(rec.TimestampedText) ? L("L_FileTr_EmptyTranscript") : rec.TimestampedText,
+            HasTranscript = !string.IsNullOrWhiteSpace(rec.PlainText),
+            SummaryText = rec.Summary ?? "",
+            ProgressText = string.Format(L("L_FileTr_FromHistoryFmt"), rec.CreatedAt, FileTranscriptResult.Fmt(TimeSpan.FromSeconds(rec.DurationSeconds)))
+                           + (exists ? "" : L("L_FileTr_FileMovedSuffix"))
+        };
+        _resultItems.Add(item);
+
+        FileNameText.Text = rec.FileName + (exists ? "" : L("L_FileTr_FileMovedParen"));
         FileNameText.Foreground = (Brush)FindResource("TextBrightBrush");
-        TranscribeBtn.IsEnabled = exists;
-        TranscriptBox.Text = string.IsNullOrEmpty(rec.TimestampedText) ? "(пусто)" : rec.TimestampedText;
-        SummaryBox.Text = rec.Summary ?? "";
-        SummaryBtn.IsEnabled = !string.IsNullOrWhiteSpace(rec.PlainText);
         ProgressPanel.Visibility = Visibility.Collapsed;
+        ResultsHint.Visibility = Visibility.Collapsed;
+        UpdateStartButton();
         UpdateFfmpegBanner();
     }
 
@@ -425,7 +608,10 @@ public partial class FileTranscriptionWindow : Window
     {
         if (HistoryList.SelectedItem is not TranscriptionRecord rec) return;
         _history.Delete(rec.Id);
-        if (_currentRecord?.Id == rec.Id) _currentRecord = null;
+        // Карточка этого файла на экране больше не привязана к записи — иначе
+        // саммари на ней «воскресило» бы удалённый файл истории.
+        foreach (var item in _resultItems)
+            if (item.Record?.Id == rec.Id) item.Record = null;
         LoadHistory();
     }
 
@@ -440,10 +626,11 @@ public partial class FileTranscriptionWindow : Window
             if (TryFindResource("TextMutedBrush") is System.Windows.Media.Brush mb)
                 StatusText.Foreground = mb;
         }
-        TranscribeBtn.IsEnabled = !busy && !string.IsNullOrEmpty(_selectedPath) && File.Exists(_selectedPath ?? "");
+        SelectFileBtn.IsEnabled = !busy;
+        ResetBtn.IsEnabled = !busy;
         CancelBtn.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         HistoryList.IsEnabled = !busy;
-        if (busy) SummaryBtn.IsEnabled = false;
+        UpdateStartButton();
     }
 
     private void ShowError(string msg)
@@ -458,6 +645,133 @@ public partial class FileTranscriptionWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         try { _cts?.Cancel(); } catch { /* уже закрыто */ }
+        try { foreach (var i in _resultItems) i.SummaryCts?.Cancel(); } catch { /* уже закрыто */ }
         base.OnClosed(e);
     }
+}
+
+/// <summary>Состояние карточки файла в очереди транскрибации.</summary>
+public enum QueueFileStatus { Queued, Active, Done, Error }
+
+/// <summary>
+/// Элемент списка результатов: один файл очереди (или запись истории).
+/// Хранит статус, транскрипт и саммари конкретного файла — карточки независимы.
+/// </summary>
+public sealed class QueueFileItem : INotifyPropertyChanged
+{
+    public QueueFileItem(string path)
+    {
+        FilePath = path;
+        FileName = Path.GetFileName(path);
+    }
+
+    /// <summary>Полный путь к исходному файлу.</summary>
+    public string FilePath { get; }
+    /// <summary>Отображаемое имя (для истории — из записи, могло отличаться от пути).</summary>
+    public string FileName { get; set; } = "";
+    /// <summary>Карточка показывает запись истории (а не свежий запуск очереди).</summary>
+    public bool FromHistory { get; set; }
+    /// <summary>Запись в истории транскрибаций (null, если ещё не сохранялась).</summary>
+    public TranscriptionRecord? Record { get; set; }
+    /// <summary>CTS именно саммари этой карточки (отдельная кнопка «Остановить саммари»).</summary>
+    public CancellationTokenSource? SummaryCts { get; set; }
+
+    private QueueFileStatus _status = QueueFileStatus.Queued;
+    public QueueFileStatus Status
+    {
+        get => _status;
+        set { if (_status == value) return; _status = value; Npc(); Npc(nameof(StatusLabel)); }
+    }
+
+    public string StatusLabel => Status switch
+    {
+        QueueFileStatus.Active => App.Current.T("L_FileTr_StatusActive"),
+        QueueFileStatus.Done => App.Current.T("L_FileTr_StatusDone"),
+        QueueFileStatus.Error => App.Current.T("L_FileTr_StatusError"),
+        _ => App.Current.T("L_FileTr_StatusQueued")
+    };
+
+    private string _progressText = App.Current.T("L_FileTr_QueuedText");
+    /// <summary>Строка состояния под именем: прогресс / итог / ошибка.</summary>
+    public string ProgressText
+    {
+        get => _progressText;
+        set { if (_progressText == value) return; _progressText = value; Npc(); }
+    }
+
+    private string _transcriptText = "";
+    public string TranscriptText
+    {
+        get => _transcriptText;
+        set { if (_transcriptText == value) return; _transcriptText = value; Npc(); }
+    }
+
+    private bool _hasTranscript;
+    /// <summary>Есть ли осмысленный транскрипт (для кнопки «Сгенерировать саммари»).</summary>
+    public bool HasTranscript
+    {
+        get => _hasTranscript;
+        set { if (_hasTranscript == value) return; _hasTranscript = value; Npc(); Npc(nameof(CanGenerateSummary)); }
+    }
+
+    private string _summaryText = "";
+    public string SummaryText
+    {
+        get => _summaryText;
+        set { if (_summaryText == value) return; _summaryText = value; Npc(); Npc(nameof(HasSummary)); }
+    }
+
+    public bool HasSummary => !string.IsNullOrWhiteSpace(SummaryText);
+
+    private bool _summaryBusy;
+    /// <summary>Идёт генерация саммари именно этого файла.</summary>
+    public bool SummaryBusy
+    {
+        get => _summaryBusy;
+        set { if (_summaryBusy == value) return; _summaryBusy = value; Npc(); Npc(nameof(CanGenerateSummary)); }
+    }
+
+    public bool CanGenerateSummary => HasTranscript && !SummaryBusy;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void Npc([CallerMemberName] string? name = null) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+/// <summary>
+/// Адаптивный порог ширины (волна 04): ActualWidth (double, DIP) → bool «ширина ≥ порога».
+/// ConverterParameter — порог в DIP (например, "760"/"680"), парсится инвариантно.
+/// Используется DataTrigger'ами XAML для перекладки панели движка и строки команд.
+/// </summary>
+public sealed class FtWidthThresholdConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        double threshold = parameter is string s
+            && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var t) ? t : 0;
+        return value is double w && w >= threshold;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => System.Windows.Data.Binding.DoNothing;
+}
+
+/// <summary>
+/// Ширина колонки истории (волна 04): 256 DIP при клиентской ширине окна ≥1000, иначе 224.
+/// Биндится к RootGrid.ActualWidth; ConverterParameter — суммарный горизонтальный Margin
+/// корневой сетки (20+20=40): ActualWidth+Margin = клиентская область окна в DIP
+/// (та же методика, что в MeetingHistoryWindow — консистентность порогов между окнами).
+/// Возвращает double для биндинга к FrameworkElement.Width. Минимум окна не трогает.
+/// </summary>
+public sealed class FtHistoryColumnWidthConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        double extra = parameter is string s
+            && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var e) ? e : 0;
+        return value is double w && w + extra >= 1000 ? 256.0 : 224.0;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => System.Windows.Data.Binding.DoNothing;
 }

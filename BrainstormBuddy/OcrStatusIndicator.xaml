@@ -1,0 +1,20 @@
+<Window x:Class="BrainstormBuddy.OcrStatusIndicatorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Opacity="0.75"
+        Width="30" Height="30"
+        ResizeMode="NoResize"
+        Title="BrainstormBuddy OCR Status">
+
+    <!-- Шар состояния экранного OCR: круг 28px в правом нижнем углу над таскбаром.
+         Click-through + exclude-from-capture навешиваются кодом (WindowHelper),
+         поэтому на скриншотах и демонстрации экрана шар не виден. -->
+    <Ellipse x:Name="Dot" Width="28" Height="28"
+             Stroke="#66000000" StrokeThickness="1"/>
+</Window>

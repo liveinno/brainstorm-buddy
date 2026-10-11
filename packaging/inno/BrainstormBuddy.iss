@@ -7,7 +7,7 @@
 ; ============================================================================
 
 #define MyAppName "BrainstormBuddy"
-#define MyAppVersion "2.7.2"
+#define MyAppVersion "2.28.2"
 #define MyAppPublisher "BrainstormBuddy"
 #define MyAppExeName "BrainstormBuddy.exe"
 ; Стабильный AppId — НЕ менять между версиями (иначе апгрейд не найдёт прошлую установку).
@@ -106,11 +106,11 @@ english.CustomType=Custom installation
 russian.AppComp=Приложение BrainstormBuddy
 english.AppComp=BrainstormBuddy application
 #ifdef IncludeWhisper
-russian.ModelComp=Офлайн-модели распознавания: GigaAM + Whisper (~1.5 ГБ)
-english.ModelComp=Offline speech models: GigaAM + Whisper (~1.5 GB)
+russian.ModelComp=Офлайн-модели распознавания: GigaAM v3+v2 + Whisper (~1.8 ГБ)
+english.ModelComp=Offline speech models: GigaAM v3+v2 + Whisper (~1.8 GB)
 #else
-russian.ModelComp=Офлайн-модель распознавания речи GigaAM (~1 ГБ)
-english.ModelComp=Offline speech recognition model GigaAM (~1 GB)
+russian.ModelComp=Офлайн-модели распознавания речи GigaAM v3+v2 (~1.2 ГБ)
+english.ModelComp=Offline speech recognition models GigaAM v3+v2 (~1.2 GB)
 #endif
 russian.FfmpegComp=ffmpeg — поддержка webm/mkv/opus (иначе докачается в приложении)
 english.FfmpegComp=ffmpeg — webm/mkv/opus support (otherwise downloaded in-app)
@@ -150,14 +150,40 @@ Name: "autostart";   Description: "{cm:AutostartTask}"; GroupDescription: "{cm:A
 ; Сюда попадает и THIRD-PARTY-NOTICES.txt — build-installer.sh кладёт его в publish\app-inno\
 ; (обязательство MIT — приложить копирайты). Отдельная запись Source не использовалась:
 ; при относительном пути ISCC молча не паковал файл, поэтому кладём его в общий свип.
-Source: "..\..\publish\app-inno\*"; DestDir: "{app}"; Excludes: "models\*,config.json,*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: app
+Source: "..\..\publish\app-inno\*"; DestDir: "{app}"; Excludes: "models\*,tessdata\*,nemo-speech\*,config.json,*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: app
 ; Офлайн-модель — только если выбран компонент "model" (тип "full").
 Source: "..\..\publish\app-inno\models\v2_ctc.onnx"; DestDir: "{app}\models"; Flags: ignoreversion; Components: model
 Source: "..\..\publish\app-inno\models\labels.json"; DestDir: "{app}\models"; Flags: ignoreversion; Components: model
+; GigaAM v3 (v3_e2e_ctc.int8.onnx + vocab, ~215 МБ) — ДЕФОЛТНЫЙ движок (Audio.SttEngine="native3"),
+; поэтому файлы обязательны в обеих сборках (Lite и Full) в компоненте "model", без
+; skipifsourcedoesntexist: отсутствие должно ронять сборку в build-installer.sh.
+Source: "..\..\publish\app-inno\models\v3_e2e_ctc.int8.onnx"; DestDir: "{app}\models"; Flags: ignoreversion; Components: model
+Source: "..\..\publish\app-inno\models\v3_e2e_ctc_vocab.txt"; DestDir: "{app}\models"; Flags: ignoreversion; Components: model
+; Движок диаризации Nemotron (Sortformer через nemo_speech_asr_c.dll) — опционально:
+; бандл nemo-speech vulkan (покрывает cpu) в {app}\nemo-speech (~56 МБ), GGUF-модель
+; (~82 МБ) в {app}\models. Раскладка — packaging/fetch-nemo.sh → build-installer.sh;
+; при отсутствии источника фича молча отключается (skipifsourcedoesntexist).
+Source: "..\..\publish\app-inno\nemo-speech\*"; DestDir: "{app}\nemo-speech"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Components: app
+Source: "..\..\publish\app-inno\models\Nemotron-3-Diarization.q8_0.gguf"; DestDir: "{app}\models"; Flags: ignoreversion skipifsourcedoesntexist; Components: app
+; Модели Tesseract (rus+eng+osd) для вкладки «Экран OCR» — всегда, отдельным каталогом:
+; TesseractRecognizer ищет их только в {app}\tessdata. Из свипа исключены (см. Excludes),
+; чтобы зависимость OCR была видна в инсталляторе явно, а не «где-то в свипе».
+Source: "..\..\publish\app-inno\tessdata\*"; DestDir: "{app}\tessdata"; Flags: ignoreversion; Components: app
 #ifdef IncludeWhisper
 ; Whisper large-v3-turbo — только в полной «Full»-сборке (офлайн-транскрибация файлов + английский).
 Source: "..\..\publish\app-inno\models\ggml-large-v3-turbo-q5_0.bin"; DestDir: "{app}\models"; Flags: ignoreversion; Components: model
 #endif
+#ifdef IncludeWhisper
+; E5-эмбеддинги памяти (multilingual-e5-small, FP32 ~470 МБ) — только в Full
+; («память из коробки», с 2.16.0). Бандл опционален: если build-installer.sh не
+; положил artifacts\e5 → записи пропускаются, Lite-сценарий «докачать по кнопке»
+; остаётся рабочим (E5ModelDownloader в настройках).
+Source: "..\..\publish\app-inno\models\e5\model.onnx"; DestDir: "{app}\models\e5"; Flags: ignoreversion skipifsourcedoesntexist; Components: model
+Source: "..\..\publish\app-inno\models\e5\sentencepiece.bpe.model"; DestDir: "{app}\models\e5"; Flags: ignoreversion skipifsourcedoesntexist; Components: model
+Source: "..\..\publish\app-inno\models\e5\config.json"; DestDir: "{app}\models\e5"; Flags: ignoreversion skipifsourcedoesntexist; Components: model
+Source: "..\..\publish\app-inno\models\e5\tokenizer_config.json"; DestDir: "{app}\models\e5"; Flags: ignoreversion skipifsourcedoesntexist; Components: model
+#endif
+
 #if HaveFfmpeg
 ; Опциональный бандл ffmpeg (для webm/mkv), если положен в packaging\inno\ffmpeg\.
 Source: "ffmpeg\ffmpeg.exe"; DestDir: "{app}\ffmpeg"; Flags: ignoreversion; Components: ffmpeg
@@ -374,3 +400,4 @@ begin
       Log('ВНИМАНИЕ: не удалось создать папку экспорта: ' + ExportDir);
   end;
 end;
+

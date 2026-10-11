@@ -78,7 +78,8 @@ public static class SimpleVad
 /// потока (от начала подачи). Reason: "silence" (закрыт паузой), "forced" (лимит длины),
 /// "flush" (хвост на EOF).
 /// </summary>
-public readonly record struct ChunkInfo(long OnsetSample, long SpeechEndSample, long EmitSample, int SampleRate, string Reason)
+public readonly record struct ChunkInfo(long OnsetSample, long SpeechEndSample, long EmitSample,
+    int SampleRate, string Reason, long WavStartSample = -1)
 {
     public double OnsetSec => OnsetSample / (double)SampleRate;
     public double SpeechEndSec => SpeechEndSample / (double)SampleRate;
@@ -156,7 +157,12 @@ public class AudioBuffer
     // в офлайн-харнессе эндпойнтинга. Не влияет на аудио-логику.
     private long _consumedSamples;
     private long _onsetSample;
+    // Абсолютный сэмпл начала WAV-файла чанка (= onset − preRoll внутри activeBuffer).
+    // Фиксируется при латче речи: preRoll на тот момент уже скопирован в activeBuffer.
+    // Нужен внутричанковой разметке спикеров: позиции токенов/срезов wav ↔ шкала потока.
+    private long _wavStartSample;
     private long _lastSpeechSample;
+
 
     // Адаптивный эндпойнтинг (opt-in). По умолчанию null → старое поведение байт-в-байт.
     private PauseAdaptiveController? _adaptive;
@@ -239,7 +245,6 @@ public class AudioBuffer
         get { lock (_lock) return _activeBuffer.Count + _preRoll.Count; }
     }
 
-    private float _lastComputedRms;
     private volatile float _cachedRms;
 
     // Возвращает 0, если кадры давно не приходили: WASAPI loopback при паузе рендера вообще
@@ -257,11 +262,23 @@ public class AudioBuffer
     /// <summary>Текущий фактический порог детекции речи (в авто-режиме — калиброванный по шуму).</summary>
     public double CurrentEffectiveThreshold { get { lock (_lock) return EffectiveRmsThreshold(); } }
     public bool IsAutoCalibrating { get { lock (_lock) return _autoCalibrate; } }
+    /// <summary>VAD держит открытую фразу. Watchdog захвата отличает по ней «фраза висит
+    /// без входных кадров» (зомби WASAPI-захват) от «просто тихо» (пауза рендера):
+    /// во втором случае keepalive-тишина миксера закрывает фразу за ~1-2с.</summary>
+    public bool IsSpeaking { get { lock (_lock) return _isSpeaking; } }
+
 
     public int UtterancesEmitted => _utterancesEmitted;
     public int ChunksSuppressed => _chunksSuppressed;
     public int ForcedEmits => _forcedEmits;
     public bool VadAvailable => true;
+    /// <summary>Суммарно сэмплов, принятых AddSamples (обработанные кадры + хвост в _rawBuffer).
+    /// Та же абсолютная шкала, что у ChunkInfo (Onset/SpeechEnd отсчитываются от начала подачи).
+    /// Нужна Nemotron-диаризации: baseline её стрима = значение на момент первого пуша.</summary>
+    public long PushedSamples
+    {
+        get { lock (_lock) return _consumedSamples + _rawBuffer.Count; }
+    }
     public double VadAgreement => _framesProcessed == 0 ? 0 : (double)_vadTrueCount / _framesProcessed;
 
     public void AddSamples(float[] samples)
@@ -362,12 +379,14 @@ public class AudioBuffer
                     return;
                 _isSpeaking = true;
                 _onsetSample = _consumedSamples;
+                // preRoll уже содержит текущий кадр (AddRange выше); wav начнётся с
+                // копии preRoll → начало wav = конец onset-кадра − длина preRoll.
+                _wavStartSample = _consumedSamples + _frameSamples - _preRoll.Count;
                 _speechStartTime = _timeProvider.GetUtcNow().DateTime;
                 _silenceFrameCounter = 0;
                 _silenceTail.Clear();
                 _activeBuffer.AddRange(_preRoll);
                 _activeBuffer.AddRange(frame);
-                _logger?.Debug($"VAD: speech start (consecutive={_consecutiveSpeechFrames}, preRoll={_preRollSamples}spls copied, active={_activeBuffer.Count})", "Audio");
             }
             else
             {
@@ -429,7 +448,7 @@ public class AudioBuffer
                 {
                     _forcedEmits++;
                     _utterancesEmitted++;
-                    info = new ChunkInfo(_onsetSample, _lastSpeechSample, _consumedSamples, _sampleRate, "forced");
+                    info = new ChunkInfo(_onsetSample, _lastSpeechSample, _consumedSamples, _sampleRate, "forced", _wavStartSample);
                     wav = ExtractWavLocked();
                 }
                 return wav.Length > 0;
@@ -457,7 +476,7 @@ public class AudioBuffer
                 if (forced) _forcedEmits++;
                 _utterancesEmitted++;
                 var reason = bySilence ? "silence" : (byLatch && !byMax ? "latch" : "forced");
-                info = new ChunkInfo(_onsetSample, _lastSpeechSample, _consumedSamples, _sampleRate, reason);
+                info = new ChunkInfo(_onsetSample, _lastSpeechSample, _consumedSamples, _sampleRate, reason, _wavStartSample);
                 _logger?.Debug($"VAD: {reason} emission (silence_frames={_silenceFrameCounter}, threshold={_silenceFrameThreshold}, aboveThrRun={_aboveThrRun}, speech_ms={speechDuration:F0}, active_samples={_activeBuffer.Count})", "Audio");
                 wav = ExtractWavLocked();
                 return true;
@@ -479,7 +498,7 @@ public class AudioBuffer
                 wav = Array.Empty<byte>();
                 return false;
             }
-            info = new ChunkInfo(_onsetSample, _lastSpeechSample, _consumedSamples, _sampleRate, "flush");
+            info = new ChunkInfo(_onsetSample, _lastSpeechSample, _consumedSamples, _sampleRate, "flush", _wavStartSample);
             _utterancesEmitted++;
             wav = ExtractWavLocked();
             return true;
