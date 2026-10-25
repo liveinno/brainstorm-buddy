@@ -334,6 +334,12 @@ public class AudioCaptureEngine : IDisposable
         catch { }
     }
 
+    // Флаг «об этой эпизоде отказа уже сообщили»: ретрай из MixTick повторяет
+    // TryStartLoopback каждые ~5с — без дедупа каждый фейл снова шлёт DeviceError,
+    // и тост «Только микрофон» спамится бесконечно. Сбрасывается при успешном
+    // поднятии захвата (следующий реальный отказ опять дойдёт до пользователя).
+    private bool _loopbackFailReported;
+
     private void TryStartLoopback()
     {
         _logger.Debug("TryStartLoopback: creating WasapiLoopbackCapture...", "Audio");
@@ -368,15 +374,28 @@ public class AudioCaptureEngine : IDisposable
             if (prev != null)
                 _ = Task.Run(() => { try { SafeStopRecording(prev); prev.Dispose(); } catch { } });
             _logger.Info("WASAPI loopback started", "Audio");
+            _loopbackFailReported = false;
         }
         catch (Exception ex)
         {
-            _logger.Warn($"Loopback init failed, continuing with mic only: {ex.Message}", "Audio");
+            if (!_loopbackFailReported)
+            {
+                _logger.Warn($"Loopback init failed, continuing with mic only: {ex.Message}", "Audio");
+            }
+            else
+            {
+                _logger.Debug($"Loopback retry still failing: {ex.Message}", "Audio");
+            }
             capture?.Dispose();
             lock (_captureLock) { _loopbackCapture = null; }
-            DeviceError?.Invoke(this, "loopback");
+            if (!_loopbackFailReported)
+            {
+                _loopbackFailReported = true;
+                DeviceError?.Invoke(this, "loopback");
+            }
         }
     }
+
 
     // Честная привязка к устройству из настроек (раньше LoopbackDeviceId никем не читался,
     // выпадашка была декоративной). Пустой Id = «По умолчанию»: системный дефолт вывода +
@@ -656,9 +675,32 @@ public class AudioCaptureEngine : IDisposable
     // гистерезис вставлял бы кадры тишины посреди речи. На закрытие фраз не влияет
     // (порог паузы ≥ 800мс).
     private const int IdleTicksBeforeSilence = 6;
+    // Ретрай мёртвого старта loopback в MixTick: раз в ~5с на фоне, пока захвата нет.
+    private int _loopbackRetryPending;
+    private long _lastLoopbackRetryTicks;
+    private const int LoopbackRetryEveryMs = 5000;
 
     private void MixTick()
     {
+        // Самолечение после мёртвого старта: если TryStartLoopback упал на init
+        // (Audiosrv мёртв/рестартит, эндпойнта не было — живой кейс 2026-10-12:
+        // служба Windows Audio крашилась 14 раз подряд), без этого счётчика канал
+        // оставался глухим до рестарта приложения. Ретраим на фоне раз в ~5с —
+        // только когда loopback нужен, но не создан. TryStartLoopback сам идемпотентен
+        // и молча отвалится при живой ошибке устройства.
+        if (_started && !_disposed && !_config.MicOnly && !LoopbackActive
+            && Environment.TickCount64 - _lastLoopbackRetryTicks >= LoopbackRetryEveryMs
+            && Interlocked.CompareExchange(ref _loopbackRetryPending, 1, 0) == 0)
+        {
+            _lastLoopbackRetryTicks = Environment.TickCount64;
+            Task.Run(() =>
+            {
+                try { TryStartLoopback(); }
+                catch (Exception ex) { _logger.Debug($"Loopback retry failed: {ex.Message}", "Audio"); }
+                finally { Interlocked.Exchange(ref _loopbackRetryPending, 0); }
+            });
+        }
+
         bool hasMic = _micQueue.TryDequeue(out var micFrame);
         bool hasLoop = _loopbackQueue.TryDequeue(out var loopFrame);
         // «Динамик выкл»: кадр выброшен ДО буфера — дальше канал ведёт себя как «рендер на

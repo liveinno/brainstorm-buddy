@@ -16,6 +16,7 @@
                      DrawingImage из пака brainstorm-buddy-extra-icons. -->
                 <ResourceDictionary Source="Resources/BuddyExtraIcons.xaml"/>
                 <ResourceDictionary Source="Resources/BrainIcon.xaml"/>
+                <ResourceDictionary Source="Resources/AttachmentIcons.xaml"/>
                 <ResourceDictionary Source="Themes/HackerTheme.xaml"/>
                 <!-- Типографика (волна 01): Inter 4.1 + шкала стилей *Text.
                      После темы (MonoFont определён там), до Styles/окон-потребителей. -->

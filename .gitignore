@@ -13,6 +13,7 @@ __pycache__/
 # Generated manual outputs (rebuild via docs/manuals/build_manuals_bb.py)
 docs/manuals/*.docx
 docs/manuals/*.pdf
+docs/manuals/*.html
 # Test results
 TestResults/
 coverage/
@@ -57,8 +58,17 @@ packaging/inno/ffmpeg/
 report_install.html
 report_install_keep.html
 report_uninstall.html
+# Отчёты UI-тестера MCP-приёмки (генерируются каждым прогоном)
+report_mcp_youtrack.html
+BrainstormBuddy.UITests/report_mcp_youtrack.html
+# Отчёт UI-тестера markdown-приёмки (генерируется каждым прогоном)
+BrainstormBuddy.UITests/report_markdown.html
 .work/
+# Локальные PDF/документы для UI-проверок (не часть дистрибутива)
+testdocs/
 diagnostics_*.zip
+# Резервные копии профиля (пользовательские данные, крупные) — не в git
+*.bbpack
 
 # Разовый QA-отчёт прогона (коммитится вручную при сборке отчёта)
 docs/QA_REPORT_*.md
@@ -72,17 +82,12 @@ testaudios/*_transcript.txt
 memory.txt
 2026-10-*_transcript.txt
 
-# локальные скриншоты (не для публикации)
-pdf_imgs/
-
-# Отчёты UI-тестера установки (тестовый мусор)
-report_install.html
-report_install_keep.html
-report_uninstall.html
-
 # Local release instructions, evidence and private work notes
 /.release-private/
 /AGENTS.md
 /.omp/RULES.md
 /SESSION_LOG_*.md
 /BACKLOG_LOCAL.md
+
+# локальные скриншоты (не для публикации)
+pdf_imgs/

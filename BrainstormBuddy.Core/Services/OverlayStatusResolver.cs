@@ -2,7 +2,7 @@ using BrainstormBuddy.Ai;
 
 namespace BrainstormBuddy.Services;
 
-public enum OverlayStatusKind { Ready, Paused, LlmPaused, Preparing, Transcribing, SttUnavailable }
+public enum OverlayStatusKind { Ready, Paused, LlmPaused, Preparing, Transcribing, Thinking, SttUnavailable }
 
 public sealed record OverlayStatusInput(
     bool IsAudioPaused,
@@ -12,7 +12,11 @@ public sealed record OverlayStatusInput(
     bool SttWarmedUp,
     bool Transcribing,
     int? SttHttpStatus,
-    SttHealthReason SttErrKind);
+    SttHealthReason SttErrKind,
+    /// <summary>Метка активного LLM-запроса («[secret]», «[screen]», «S1: …»)
+    /// — null, когда ответов никто не ждёт. Thinking показываем после
+    /// пауз/ошибок STT: они важнее («LLM на паузе» > «Думаю…»).</summary>
+    string? ThinkingLabel = null);
 
 public sealed record OverlayStatus(OverlayStatusKind Kind, string Title, string? Detail, bool IsError);
 
@@ -65,6 +69,18 @@ public static class OverlayStatusResolver
             return new OverlayStatus(
                 OverlayStatusKind.Transcribing,
                 tr("L_Ovl_Transcribing", "Распознаю речь…"),
+                Detail: null,
+                IsError: false);
+        }
+
+        // «Думаю над <label>…» — есть незавершённый LLM-запрос и никакое
+        // более приоритетное состояние не показывается. Снимается само при
+        // завершении запроса (pending → 0 → Resolve отдаёт Ready).
+        if (s.ThinkingLabel != null)
+        {
+            return new OverlayStatus(
+                OverlayStatusKind.Thinking,
+                string.Format(tr("L_Ovl_ThinkingFmt", "Думаю над {0}…"), s.ThinkingLabel),
                 Detail: null,
                 IsError: false);
         }

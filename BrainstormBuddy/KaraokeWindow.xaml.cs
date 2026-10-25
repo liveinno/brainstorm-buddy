@@ -98,11 +98,13 @@ public partial class KaraokeWindow : Window
     private readonly DispatcherTimer _demoTimer;
     private int _demoIndex;
 
-    // Активная стрим-строка (SSE): создаётся BeginStreamLine, дописывается
-    // AppendToStreamLine, отпускается EndStreamLine. _streamSuppressed — Begin
-    // прошёл, но роль отфильтрована/полоса скрыта: дельты проглатываем, как PushLine.
-    private LineEntry? _streamEntry;
-    private bool _streamSuppressed;
+
+    // Активные стрим-строки (SSE) по streamId: BeginStreamLine(role) возвращает id,
+    // дельты идут AppendToStreamLine(id,…), финал — EndStreamLine/DropStreamLine(id).
+    // Несколько параллельных стримов не смешиваются: у каждого свой LineEntry.
+    // suppressed — Begin прошёл, но роль отфильтрована/полоса скрыта: дельты глушим.
+    private readonly Dictionary<int, (LineEntry? entry, bool suppressed)> _streamEntries = new();
+    private int _nextStreamId;
 
     // Текущая цель позиции ленты (Canvas.Top LinesPanel): >0 — контент ниже
     // вьюпорта, прижат к нижнему краю (пустота сверху); <0 — лента сдвинута
@@ -307,65 +309,81 @@ public partial class KaraokeWindow : Window
     }
 
     /// <summary>Стриминг (SSE): начать новую пустую строку ленты роли role
-    /// ("answer"|"user"). Потокобезопасно — маршаллится на UI-диспетчер, как PushLine.
+    /// ("answer"|"user"). Возвращает streamId для AppendToStreamLine/End/Drop.
+    /// Потокобезопасно — маршаллится на UI-диспетчер (id выдаётся до маршалла,
+    /// поэтому Append можно звать сразу, не дожидаясь выполнения Begin).
     /// Фильтрация Show*/видимость — как у PushLine: отфильтрованная роль глушит дельты.</summary>
-    public void BeginStreamLine(string role)
+    public int BeginStreamLine(string role)
     {
+        var id = System.Threading.Interlocked.Increment(ref _nextStreamId);
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(new Action(() => BeginStreamLine(role)));
-            return;
+            Dispatcher.BeginInvoke(new Action(() => BeginStreamLineCore(id, role)));
+            return id;
         }
-
-        _streamEntry = null;
-        if (!CanShowRole(role))
-        {
-            _streamSuppressed = true; // Begin был — Append не должен создавать "answer"
-            return;
-        }
-        _streamSuppressed = false;
-        _streamEntry = AddLineCore(role, "");
+        BeginStreamLineCore(id, role);
+        return id;
     }
 
-    /// <summary>Стриминг (SSE): дописать дельту в последнюю стрим-строку (INPC на
-    /// KaraokeLineVm.Text — строка не пересоздаётся). Если Begin не вызывался —
-    /// создаёт строку роли "answer" (через CanShowRole — те же фильтры, что у PushLine).</summary>
-    public void AppendToStreamLine(string delta)
+    private void BeginStreamLineCore(int id, string role)
+    {
+        if (_streamEntries.ContainsKey(id)) return; // дельта обогнала Begin — поток уже зарегистрирован
+        if (!CanShowRole(role))
+        {
+            _streamEntries[id] = (null, true); // Begin был — Append не создаёт строку
+            return;
+        }
+        _streamEntries[id] = (AddLineCore(role, ""), false);
+    }
+
+    /// <summary>Стриминг (SSE): дописать дельту в стрим-строку streamId (INPC на
+    /// KaraokeLineVm.Text — строка не пересоздаётся). Незнакомый id (гонка с Begin
+    /// на диспетчере) создаёт строку роли "answer" — те же фильтры, что у PushLine.</summary>
+    public void AppendToStreamLine(int streamId, string delta)
     {
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(new Action(() => AppendToStreamLine(delta)));
+            Dispatcher.BeginInvoke(new Action(() => AppendToStreamLine(streamId, delta)));
             return;
         }
 
-        if (string.IsNullOrEmpty(delta) || _streamSuppressed) return;
+        if (string.IsNullOrEmpty(delta)) return;
 
+        if (!_streamEntries.TryGetValue(streamId, out var st))
+        {
+            // Дельта обогнала отложенный Begin (BeginInvoke): регистрируем поток под
+            // этим id — когда BeginStreamLineCore добежит, увидит запись и не создаст вторую.
+            if (!CanShowRole("answer")) { _streamEntries[streamId] = (null, true); return; }
+            _streamEntries[streamId] = (AddLineCore("answer", ""), false);
+            st = _streamEntries[streamId];
+        }
+        if (st.suppressed) return;
+
+        var entry = st.entry;
         // Clear()/TrimExcess() могли выкинуть стрим-строку из ленты — не пишем в невидимое.
-        if (_streamEntry != null && (_streamEntry.Removing || !_lines.Contains(_streamEntry)))
-            _streamEntry = null;
-
-        if (_streamEntry == null)
+        if (entry != null && (entry.Removing || !_lines.Contains(entry)))
+            entry = null;
+        if (entry == null)
         {
             if (!CanShowRole("answer")) return;
-            _streamEntry = AddLineCore("answer", "");
+            entry = AddLineCore("answer", "");
+            _streamEntries[streamId] = (entry, false);
         }
-
-        _streamEntry.Vm.Text += delta;
+        entry.Vm.Text += delta;
     }
 
     /// <summary>Стриминг (SSE): финализировать стрим-строку — остаётся обычной строкой
     /// ленты. Пустая строка (дельт не было) убирается, как пустой PushLine.</summary>
-    public void EndStreamLine()
+    public void EndStreamLine(int streamId)
     {
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(new Action(EndStreamLine));
+            Dispatcher.BeginInvoke(new Action(() => EndStreamLine(streamId)));
             return;
         }
 
-        var entry = _streamEntry;
-        _streamEntry = null;
-        _streamSuppressed = false;
+        if (!_streamEntries.Remove(streamId, out var st)) return;
+        var entry = st.entry;
 
         if (entry != null && !entry.Removing
             && string.IsNullOrWhiteSpace(entry.Vm.Text)
@@ -381,17 +399,16 @@ public partial class KaraokeWindow : Window
     /// строку даже с текстом — для случая «модель стримом написала маркер
     /// молчания» («(empty)», «(空)», «…»), который на уровне Core считается
     /// осознанной тишиной и не должен оставаться в ленте (2.16.1).</summary>
-    public void DropStreamLine()
+    public void DropStreamLine(int streamId)
     {
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(new Action(DropStreamLine));
+            Dispatcher.BeginInvoke(new Action(() => DropStreamLine(streamId)));
             return;
         }
 
-        var entry = _streamEntry;
-        _streamEntry = null;
-        _streamSuppressed = false;
+        if (!_streamEntries.Remove(streamId, out var st)) return;
+        var entry = st.entry;
 
         if (entry != null && !entry.Removing && _lines.Remove(entry))
         {
@@ -399,6 +416,8 @@ public partial class KaraokeWindow : Window
             RefreshAges();
         }
     }
+
+
 
     /// <summary>Полностью очистить ленту (строки + панель). Юзается при включении
     /// караоке хоткеем — иначе накопленные за время Hide() PushLine покажутся разом.</summary>
@@ -411,8 +430,7 @@ public partial class KaraokeWindow : Window
         }
         _lines.Clear();
         LinesPanel.Children.Clear();
-        _streamEntry = null;
-        _streamSuppressed = false;
+        _streamEntries.Clear();
         SetPanelY(0);
         _panelTargetY = 0;
         UpdateElasticHeight(); // пустая лента → полоса схлопывается до нулевой высоты

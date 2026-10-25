@@ -27,6 +27,9 @@ public sealed class LlmProviderProfile
     public string PrivacyNote { get; set; } = "";
     public string ReasoningEffort { get; set; } = "low"; // "" = не слать поле reasoning
     public bool IsBuiltIn { get; set; }
+    // Бэкенд принимает ТОЛЬКО потоковые ответы: stream=false → 400
+    // «Stream must be set to true» (так устроен бэкенд подписки ChatGPT/Codex).
+    public bool RequiresStreaming { get; set; }
 
     public LlmProviderProfile Clone() => new()
     {
@@ -35,7 +38,8 @@ public sealed class LlmProviderProfile
         ModelsPath = ModelsPath, ChatPath = ChatPath, ContentPath = ContentPath,
         DeltaPath = DeltaPath,
         UsagePath = UsagePath, ModelPresets = new List<string>(ModelPresets),
-        PrivacyNote = PrivacyNote, ReasoningEffort = ReasoningEffort, IsBuiltIn = IsBuiltIn
+        PrivacyNote = PrivacyNote, ReasoningEffort = ReasoningEffort, IsBuiltIn = IsBuiltIn,
+        RequiresStreaming = RequiresStreaming
     };
 
     // DisplayMemberPath в комбо не всегда прокидывается в UIA-имя item'а (FlaUI видит тип).
@@ -52,7 +56,7 @@ public static class LlmProviderRegistry
             Id = "opencode-go", Name = "OpenCode Go", Protocol = "openai-chat",
             BaseUrl = "https://opencode.ai/zen/go/v1", AuthKind = "bearer",
             ExtraHeaders = { new KeyValuePair<string, string>("x-opencode-session", "{session}") },
-            ModelPresets = { "space-bunny-free", "MiMo-V2.6-Flash", "deepseek-v4.1-flash" },
+            ModelPresets = { "deepseek-v4.1-flash", "MiMo-V2.6-Flash" },
             PrivacyNote = "Запросы идут через шлюз opencode.ai — промпты и ответы видны оператору шлюза.",
             IsBuiltIn = true
         },
@@ -60,7 +64,7 @@ public static class LlmProviderRegistry
         {
             Id = "ollama", Name = "Ollama (local)", Protocol = "openai-chat",
             BaseUrl = "http://127.0.0.1:11434/v1", AuthKind = "none",
-            ModelPresets = { "qwen2.5vl:7b", "qwen2.5vl:3b" },
+            ModelPresets = { "deepseek-v4.1-flash" },
             PrivacyNote = "Локальная модель — данные не покидают машину.",
             IsBuiltIn = true
         },
@@ -168,6 +172,14 @@ public static class LlmProviderRegistry
                 p = p.Clone();
                 p.BaseUrl = api.BaseUrl;
             }
+            // Бэкенд подписки ChatGPT/Codex отвечает только потоком. Флаг ставим и
+            // здесь — профиль, сохранённый в config.json до появления флага, иначе
+            // запрос ушёл бы без stream и получил бы 400 «Stream must be set to true».
+            if (!p.RequiresStreaming && ResponsesProtocol.RequiresStreaming(p.BaseUrl))
+            {
+                p = p.Clone();
+                p.RequiresStreaming = true;
+            }
             return p;
         }
         return FromBaseUrl(api.BaseUrl);
@@ -200,7 +212,9 @@ public static class LlmProviderRegistry
 /// <summary>
 /// Единственное место, где ставятся Authorization/extra-заголовки LLM-запросов
 /// (OpenAiClient и AgentOrchestrator делят эту логику). "{session}" в значениях
-/// ExtraHeaders заменяется на sessionId — клиент генерит его один раз (per-client кэш).
+/// ExtraHeaders заменяется на sessionId — клиент генерит его один раз (per-client кэш);
+/// "{model}" — на текущую модель из конфига (нужно бэкенду подписки ChatGPT в
+/// заголовке x-codex-routing-hint).
 /// </summary>
 public static class LlmRequestHeaders
 {
@@ -229,7 +243,10 @@ public static class LlmRequestHeaders
         {
             if (string.IsNullOrWhiteSpace(name)) continue;
             headers.Remove(name);
-            headers.TryAddWithoutValidation(name, value.Replace("{session}", sessionId));
+            var v = value.Replace("{session}", sessionId);
+            if (v.Contains("{model}", StringComparison.Ordinal))
+                v = v.Replace("{model}", api.ChatModel ?? "");
+            headers.TryAddWithoutValidation(name, v);
         }
 
         // Свой User-Agent — шлюзы вроде opencode.ai просят идентифицируемый клиент.

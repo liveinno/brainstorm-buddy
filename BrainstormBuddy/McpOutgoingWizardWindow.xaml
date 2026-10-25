@@ -1,0 +1,99 @@
+<Window x:Class="BrainstormBuddy.McpOutgoingWizardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="MCP"
+        Width="640" MinWidth="520" SizeToContent="Height" MaxHeight="700"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{DynamicResource BgBrush}"
+        Foreground="{DynamicResource TextBrush}"
+        AutomationProperties.AutomationId="McpOutgoingWizardWindow">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" x:Name="TitleText" Style="{DynamicResource DialogTitleText}"
+                   Foreground="{DynamicResource TextBrightBrush}" Margin="0,0,0,20"/>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" MaxHeight="460">
+            <StackPanel>
+                <TextBlock Text="{DynamicResource L_McpO_Name}" Style="{DynamicResource LabelText}"
+                           Foreground="{DynamicResource TextBrush}" Margin="0,0,0,6"/>
+                <TextBox x:Name="NameBox" Height="36" Margin="0,0,0,12"
+                         AutomationProperties.AutomationId="McpOutgoingNameBox"/>
+
+                <TextBlock Text="{DynamicResource L_McpO_Transport}" Style="{DynamicResource LabelText}"
+                           Foreground="{DynamicResource TextBrush}" Margin="0,0,0,6"/>
+                <ComboBox x:Name="TransportCombo" Height="36" Margin="0,0,0,12" SelectionChanged="OnTransportChanged"
+                          AutomationProperties.AutomationId="McpOutgoingTransportCombo">
+                    <ComboBoxItem Content="{DynamicResource L_McpO_TransportStdio}" Tag="stdio" IsSelected="True"/>
+                    <ComboBoxItem Content="{DynamicResource L_McpO_TransportHttp}" Tag="http"/>
+                </ComboBox>
+
+                <StackPanel x:Name="StdioPanel">
+                    <TextBlock Text="{DynamicResource L_McpO_Command}" Style="{DynamicResource LabelText}"
+                               Foreground="{DynamicResource TextBrush}" Margin="0,0,0,6"/>
+                    <TextBox x:Name="CommandBox" Height="36" Margin="0,0,0,12"/>
+                    <TextBlock Text="{DynamicResource L_McpO_Args}" Style="{DynamicResource LabelText}"
+                               Foreground="{DynamicResource TextBrush}" Margin="0,0,0,6"/>
+                    <TextBox x:Name="ArgsBox" Height="36" Margin="0,0,0,12"/>
+                </StackPanel>
+
+                <StackPanel x:Name="HttpPanel" Visibility="Collapsed">
+                    <TextBlock Text="{DynamicResource L_McpO_Url}" Style="{DynamicResource LabelText}"
+                               Foreground="{DynamicResource TextBrush}" Margin="0,0,0,6"/>
+                    <TextBox x:Name="UrlBox" Height="36" Margin="0,0,0,12"
+                             AutomationProperties.AutomationId="McpOutgoingUrlBox"/>
+                    <!-- Токен вводится скрыто и уходит в защищённое хранилище (DPAPI);
+                         в config.json попадает только ссылка SecretRef. -->
+                    <TextBlock Text="{DynamicResource L_McpO_TokenLabel}" Style="{DynamicResource LabelText}"
+                               Foreground="{DynamicResource TextBrush}" Margin="0,0,0,6"/>
+                    <PasswordBox x:Name="TokenBox" Height="36" Margin="0,0,0,6"
+                                 AutomationProperties.AutomationId="McpOutgoingTokenBox"/>
+                    <TextBlock Text="{DynamicResource L_McpO_TokenHint}" Style="{DynamicResource HelperText}"
+                               Foreground="{DynamicResource TextMutedBrush}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                    <TextBlock x:Name="TokenSavedText" Text="{DynamicResource L_McpO_TokenSaved}"
+                               Style="{DynamicResource HelperText}" Foreground="{DynamicResource TextMutedBrush}"
+                               TextWrapping="Wrap" Margin="0,0,0,12" Visibility="Collapsed"
+                               AutomationProperties.AutomationId="McpOutgoingTokenSavedText"/>
+                </StackPanel>
+
+                <TextBlock Text="{DynamicResource L_McpO_Trust}" Style="{DynamicResource LabelText}"
+                           Foreground="{DynamicResource TextBrush}" Margin="0,0,0,6"/>
+                <ComboBox x:Name="TrustCombo" Height="36" Margin="0,0,0,12"
+                          AutomationProperties.AutomationId="McpOutgoingTrustCombo">
+                    <ComboBoxItem Content="{DynamicResource L_McpO_TrustOwn}" Tag="own"/>
+                    <ComboBoxItem Content="{DynamicResource L_McpO_TrustTrusted}" Tag="trusted"/>
+                    <ComboBoxItem Content="{DynamicResource L_McpO_TrustUntrusted}" Tag="untrusted" IsSelected="True"/>
+                </ComboBox>
+
+                <CheckBox x:Name="EnabledCheck" Content="{DynamicResource L_McpO_Enabled}" IsChecked="True" Margin="0,4,0,0"
+                          AutomationProperties.AutomationId="McpOutgoingEnabledCheck"/>
+                <TextBlock x:Name="StatusText" Style="{DynamicResource MetaText}"
+                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,12,0,0" TextWrapping="Wrap"
+                           AutomationProperties.AutomationId="McpOutgoingStatusText"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Grid Grid.Row="2" Margin="0,20,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Button x:Name="CancelBtn" Content="{DynamicResource L_Wiz_Cancel}" Padding="12,0" Height="36"
+                    Margin="0,0,8,0" Click="OnCancel"
+                    AutomationProperties.AutomationId="McpOutgoingCancelBtn"/>
+            <Button Grid.Column="2" x:Name="TestBtn" Content="{DynamicResource L_McpO_Test}" Padding="12,0" Height="36"
+                    Margin="0,0,8,0" Click="OnTest"
+                    AutomationProperties.AutomationId="McpOutgoingTestBtn"/>
+            <Button Grid.Column="3" x:Name="SaveBtn" Content="{DynamicResource L_McpO_Add}" Padding="12,0" Height="36" MinWidth="120"
+                    Style="{StaticResource PrimaryButton}" Click="OnSave"
+                    AutomationProperties.AutomationId="McpOutgoingSaveBtn"/>
+        </Grid>
+    </Grid>
+</Window>

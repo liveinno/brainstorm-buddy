@@ -26,8 +26,8 @@ public sealed record ExtractionParseResult(
 /// Строгий парсер ответа memory-модели: сначала чистый JSON по схеме
 /// { "summary": "...", "memories": [...] }, при неудаче — один локальный repair-проход
 /// (снять ```-обёртку, вырезать первый JSON-объект, убрать висячие запятые/комментарии).
-/// Если и это не помогло — <see cref="ExtractionParseResult.Error"/>: тогда extractor
-/// делает retry с <see cref="MemoryPrompts.Repair"/>.
+/// Если и это не помогло - <see cref="ExtractionParseResult.Error"/>: тогда extractor
+/// делает один repair-запрос (для каждой части транскрипта отдельно, R3).
 /// </summary>
 public static class ExtractionJson
 {

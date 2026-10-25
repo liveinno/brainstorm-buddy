@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.IO;
 using System.Text;
 using System.Windows;
@@ -12,6 +13,10 @@ using BrainstormBuddy.Core.Speaker;
 using BrainstormBuddy.Native;
 using BrainstormBuddy.Services;
 using BrainstormBuddy.Transcription;
+using BrainstormBuddy.Core.Attachments;
+using BrainstormBuddy.Core.Backup;
+using BrainstormBuddy.Context;
+using BrainstormBuddy.Pdf;
 
 using BrainstormBuddy.Memory;
 using BrainstormBuddy.Memory.Embeddings;
@@ -25,6 +30,17 @@ namespace BrainstormBuddy;
 
 public partial class App : Application
 {
+    static App()
+    {
+        // WPF по умолчанию рисует выделение TextBox полупрозрачным адорнером
+        // поверх текста: SelectionTextBrush игнорируется, а SelectionOpacity=1
+        // даёт непрозрачный прямоугольник без букв. В истории встреч нужен
+        // читаемый тёмный текст на золотой подсветке — переключаем отрисовку
+        // выделения на текстовую (поддерживается TextBox/PasswordBox).
+        AppContext.SetSwitch(
+            "Switch.System.Windows.Controls.Text.UseAdornerForTextboxSelectionRendering", false);
+    }
+
     public static new App Current => (App)Application.Current;
 
     public LoggingService Logger { get; private set; } = null!;
@@ -71,9 +87,38 @@ public partial class App : Application
     public NotifyIcon TrayIcon { get; private set; } = null!;
     public LogWindow? LogWindow { get; private set; }
     public QaHistoryLogger? QaLogger { get; private set; }
-    // Краш-безопасный журнал живого транскрипта (meetings/*.jsonl) — дописывает
-    // каждую завершённую реплику на диск сразу; читает его MeetingHistoryWindow.
+    // Краш-безопасный журнал живого транскрипта (meetings/*.jsonl). Читает его
+    // MeetingHistoryWindow + поисковый MeetingSearchService (§7).
     public MeetingTranscriptStore? MeetingJournal { get; private set; }
+    /// <summary>Поиск по журналам прошлых встреч (§7): ScanAsync поверх
+    /// MeetingJournal — для окна истории и для подмешивания фрагментов в промпт.</summary>
+    public MeetingSearchService? MeetingSearch { get; private set; }
+
+    // ===== Вложения чата (feature-chat-attachments): локальный стор документов,
+    // фоновая очередь импорта и воркер извлечения фактов. PdfOcr создаётся лениво
+    // (держит нативный Tesseract) — грузится при первом прикреплённом PDF.
+    private AttachmentStore? _attachmentStore;
+    /// <summary>Стор вложений чата; null — инициализация упала на старте (логи: Attach).</summary>
+    public AttachmentStore? Attachments => _attachmentStore;
+    /// <summary>Юзер включил «Извлечь сразу факты в память» в последнем Commit пикера —
+    /// армирует постановку fact-джобов для ещё линкующихся документов.</summary>
+    internal bool AttachmentFactsRequested { get; set; }
+    private AttachmentImportRunner? _importRunner;
+    private AttachmentFactWorker? _factWorker;
+    /// <summary>fact-job → id прогресс-тоста оверлея (jobId→toastId), чтобы обновлять
+    /// «запрос N/M» и снимать тост в терминальном статусе. Живёт только в UI-потоке.</summary>
+    private readonly Dictionary<long, int> _factToastIds = new();
+
+    // ===== Изображения в чате (feature-chat-images, ТЗ .work/feature-chat-images):
+    // фасад черновик/отправка/история картинок; null — стор не поднялся.
+    /// <summary>Фасад «картинки в чате» для OverlayWindow/истории/настроек.</summary>
+    public ChatImageFlow? ChatImages { get; private set; }
+    /// <summary>Сервис определения поддержки изображений текущей моделью (ТЗ §8).</summary>
+    internal BrainstormBuddy.Core.Images.IImageCapabilityService? ImageCapabilities { get; private set; }
+    private PdfOcrService? _pdfOcr;
+    /// <summary>Единственный экземпляр немодального пикера вложений (UI-поток);
+    /// null — окно закрыто. Живая очередь при этом остаётся в runner'е.</summary>
+    private AttachmentPickerWindow? _attachmentPicker;
 
     // ===== Память (спека memory.txt): SQLite-стор, recall, worker джоб =====
     // Всё создаётся только при Config.Memory.Enabled; сбой инициализации логируется
@@ -83,6 +128,13 @@ public partial class App : Application
     // читатели (MemoryStore != null → память активна) не должны видеть стор без
     // recall/embedder/воркера — volatile для видимости между потоками.
     private volatile SqliteMemoryStore? _memoryStore;
+    /// <summary>
+    /// «Стар памяти опубликован» (или «памяти в этой сессии не будет»). Стар
+    /// памяти идёт ПОСЛЕ старта MCP-хоста (SQLite + эмбеддеры, секунды), поэтому
+    /// MCP-клиент, пришедший сразу после запуска приложения, не должен получать
+    /// «memory not included» - он ждёт публикации стора (см. MemoryStoreForMcp).
+    /// </summary>
+    private readonly ManualResetEventSlim _memoryPublished = new(false);
     public IMemoryRecallService? MemoryRecall { get; private set; }
     public IMemoryExtractionService? MemoryExtractor { get; private set; }
     public IMemoryConsolidator? MemoryConsolidator { get; private set; }
@@ -97,6 +149,37 @@ public partial class App : Application
     /// <summary>Уже писали JournalPath в текущую встречу (файл jsonl создаётся лениво в Append).</summary>
     private bool _memoryJournalPathWritten;
     /// <summary>Pre-call brief показываем один раз на встречу (при DefaultUse).</summary>
+
+    // ===== MCP =====
+    /// <summary>Входящий хост (named pipe); null — MCP выключен или старт упал.</summary>
+    public Core.Mcp.McpIncomingHost? McpHost { get; private set; }
+    /// <summary>Менеджер исходящих MCP-серверов; создаётся всегда (дешёвый до первого вызова).</summary>
+    public Core.Mcp.Outgoing.McpClientManager? McpOutgoing { get; private set; }
+    public Core.Mcp.Outgoing.McpChatOrchestrator? McpChat { get; private set; }
+    /// <summary>Встроенный поиск Buddy (факты+встречи) как инструменты модели;
+    /// null — память выключена/не инициализирована.</summary>
+    public Core.Mcp.Outgoing.BuiltinMemoryTools? BuiltinTools { get; private set; }
+    /// <summary>Встроенные инструменты доступны модели: память и/или прошлые
+    /// встречи включены отдельными настройками.</summary>
+    public bool BuiltinToolsAvailable =>
+        Config.Memory.BuiltinSearchTools &&
+        ((Config.Memory.Enabled && MemoryRecall != null && MemoryStore != null) ||
+         (Config.Memory.MeetingSearchEnabled && MeetingSearch != null));
+    public Core.Mcp.McpPermissionStore? McpPermissions { get; private set; }
+    /// <summary>Журнал входящего MCP-канала ({appData}/logs/mcp.log).</summary>
+    public Core.Mcp.McpIncomingJournal? McpJournal { get; private set; }
+    /// <summary>Входящий HTTP-ingress (Streamable HTTP + OAuth AS); null — HttpEnabled=false.</summary>
+    public Core.Mcp.Http.McpHttpIngress? McpHttp { get; private set; }
+    /// <summary>Фасад для HTTP-пути, когда pipe-хост не поднят (его Dispose — наш).</summary>
+    private Core.Mcp.LocalMcpFacade? _httpFacade;
+    /// <summary>
+    /// Реальный запрос MCP-клиента (id подключения, UTC) — сигнал карточкам
+    /// в настройках: статус «Подключено» появляется без переоткрытия окна.
+    /// </summary>
+    public event Action<string, DateTime>? McpRequestObserved;
+    /// <summary>Фасады, к которым уже подписан App (дедуп по ссылке).</summary>
+    private readonly List<Core.Mcp.IMcpFacade> _mcpActivityFacades = new();
+    private int _funnelPort;
     private bool _preCallBriefShown;
     /// <summary>Открытое немодальное окно брифа: новая встреча закрывает старое.</summary>
     private PreCallBriefWindow? _preCallBrief;
@@ -127,11 +210,39 @@ public partial class App : Application
     /// <summary>Идёт ли сейчас распознавание чанка (влёт в OverlayStatusInput.Transcribing).</summary>
     public bool IsTranscribing => _sttInFlight > 0;
 
-    private int _totalPromptTokens;
-    private int _totalCompletionTokens;
-    public int TotalPromptTokens => _totalPromptTokens;
-    public int TotalCompletionTokens => _totalCompletionTokens;
-    public int TotalTokens => _totalPromptTokens + _totalCompletionTokens;
+    // ===== Контекст встречи (спека «следующая встреча»): движок + пауза-буфер =====
+    /// <summary>Сводка + дословный хвост + пайплайн сворачивания; null до инициализации
+    /// журнала (OnStartup) — до неё контекстные пути просто пропускаются.</summary>
+    private MeetingContextManager? _meetingContext;
+    /// <summary>Реплики, признанные при LLM-паузе: скапливаются здесь и одним запросом
+    /// уходят в LLM при снятии паузы (спека п.15). Не путать с аудио-pause: буферит
+    /// ТЕКСТ после STT, не сэмплы.</summary>
+    private readonly LlmPauseBuffer _pauseBuf = new();
+    /// <summary>Хвост последнего прогона журнала/пары — для RetryAnswer по пузырю.</summary>
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, AskRetryArgs> _askRetryArgs = new();
+
+    /// <summary>Параметры повторного LLM-запроса по пузырю (кнопка «↻ повторить»):
+    /// текст вопроса + назначение (определяет промпт-оверрайд и лейбл).
+    /// MessageId/ImageTiles — снапшот отправленных картинок: повтор идёт с ТЕМ ЖЕ
+    /// messageId и теми же файлами (ТЗ image-chat: ретрай не дублирует линковку).</summary>
+    private sealed record AskRetryArgs(string Text, bool IsManual, bool IsScreen,
+        string? MessageId = null, IReadOnlyList<ChatImageTileVm>? ImageTiles = null);
+
+    // Публичные свойства-совместимость: за led-счётчиками (единый источник правды).
+    public int TotalPromptTokens => _tokenLedger.MeetingPromptTokens;
+    public int TotalCompletionTokens => _tokenLedger.MeetingCompletionTokens;
+    public int TotalTokens => _tokenLedger.MeetingTokens;
+    /// <summary>Фоновый расход «Документы и память» (факты/память/сжатие).</summary>
+    public int BgTokens => _tokenLedger.BackgroundTokens;
+
+    // §8.1 аудита 15.10: раздельный учёт расхода. «Встреча» — траты на ответы
+    // пользователю; фон («Документы и память»: извлечение фактов, память, сжатие
+    // контекста) идёт отдельным счётчиком — путать их нельзя. Логика вынесена в
+    // Core (TokenLedger), чтобы её можно было покрыть unit-тестами.
+    private readonly TokenLedger _tokenLedger = new();
+    /// <summary>Факт уже показанного тоста «локальная обработка — 0 LLM-токенов»
+    /// (одноразовое уведомление на сессию, не спамим на каждый файл).</summary>
+    private bool _localZeroNoticeShown;
 
     private OverlayWindow? _overlay;
     private KaraokeWindow? _karaoke;
@@ -148,8 +259,6 @@ public partial class App : Application
     // Windows OCR может не подняться на этой машине (нет языковых пакетов/WinRT) —
     // флаг откатывает движок на Tesseract до смены ScreenOcr.Engine или рестарта.
     private bool _winOcrUnavailable;
-    // Защита хоткея «распознать сейчас»: повторное срабатывание во время прохода игнорируем.
-    private int _screenRecognizeOnceActive;
     // Шар состояния экранного OCR (правый нижний угол, exclude-from-capture).
     // Создаётся лениво при первом показе; живёт между Show/Hide, закрывается в OnExit.
     private OcrStatusIndicatorWindow? _ocrIndicator;
@@ -248,14 +357,23 @@ public partial class App : Application
         // VAD: pure C# (RMS + ZCR) — no native dependencies
         try
         {
-            AppDataDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "BrainstormBuddy");
+            // BUDDY_DATA_DIR — изолированный профиль данных (UI-проверки, второй
+            // экземпляр). Без env — штатный %APPDATA%\BrainstormBuddy.
+            var dataDirOverride = Environment.GetEnvironmentVariable("BUDDY_DATA_DIR");
+            AppDataDir = !string.IsNullOrWhiteSpace(dataDirOverride)
+                ? Path.GetFullPath(dataDirOverride)
+                : Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "BrainstormBuddy");
             Directory.CreateDirectory(AppDataDir);
             ConfigPath = Path.Combine(AppDataDir, "config.json");
 
             Logger = new LoggingService(AppDataDir);
             ErrorHandler = new ErrorHandlingService(Logger);
+
+            // Трассировка вложений (Core.AttachLog): Debug.WriteLine в release не
+            // доходит до журнала — заводим строки в app.log для диагностики §4/§14.
+            AttachLog.Sink = line => Logger.Info(line, "Attach");
 
             // Наблюдаемость тихой смерти: до этого падения без managed-исключения
             // (native crash, kill, FailFast сторожа) не оставляли в логе НИЧЕГО —
@@ -295,6 +413,11 @@ public partial class App : Application
             // Папка экспорта по умолчанию (Документы\BrainstormBuddy) — создаём и проверяем на старте.
             try { var ed = DefaultExportDir; Logger.Info($"Export dir: {ed} (exists={Directory.Exists(ed)})", "App"); }
             catch (Exception ex) { Logger.Warn($"Export dir init failed: {ex.Message}", "App"); }
+
+            // Отложенное восстановление профиля: swap целевого каталога возможен
+            // только сейчас — AppDataDir/Logger уже есть, а ConfigLoader и все
+            // stores ещё не открыты. Дальше по коду профиль уже «в работе».
+            ApplyPendingProfileRestore();
 
             Logger.Debug("Loading config...", "Config");
             var loader = new ConfigLoader(ConfigPath, Logger);
@@ -398,7 +521,7 @@ public partial class App : Application
             ApplyLanguage(Config.Ui.Language);
 
             // Уважаем LLM-настройки из конфига — без принудительного перетирания на локальный адрес.
-            // Дефолт чистой установки: локальный Ollama (AppConfig: BaseUrl 127.0.0.1:11434, ChatModel qwen2.5vl:7b).
+            // Дефолт чистой установки: OpenCode Go (AppConfig: BaseUrl opencode.ai/zen/go, ChatModel deepseek-v4.1-flash).
             Orchestrator = new AgentOrchestrator(Config.MultiAgent, Config.Api)
             {
                 Log = s => Logger.Info(s, "Agent")
@@ -438,7 +561,164 @@ public partial class App : Application
             QaLogger = new QaHistoryLogger(AppDataDir);
             Logger.Info($"QaHistoryLogger initialized at {QaLogger.FilePath}", "UI");
             MeetingJournal = new MeetingTranscriptStore(AppDataDir);
+            MeetingSearch = new MeetingSearchService(MeetingJournal);
+            // §8: смысловая ветка поиска встреч на существующем E5-провайдере.
+            // Провайдер публикуется позже (EnsureMemoryServices), поэтому функция
+            // читает поле лениво; повторный attach после публикации запускает
+            // фоновый до-эмбеддинг индекса.
+            MeetingSearch.AttachEmbeddingProvider(() => MemoryEmbedder);
             Logger.Info($"MeetingJournal initialized at {MeetingJournal.Directory}", "UI");
+            // Контекст встречи: сводка+хвост. Восстановление после аварийного
+            // рестарта — из sidecar'а последней встречи (последний шанс, если
+            // процесс убили между Append'ами).
+            _meetingContext = new MeetingContextManager();
+            TryRestoreContextFromLatestMeeting();
+            try
+            {
+                _attachmentStore = new AttachmentStore(AppDataDir, Logger);
+                // RecoverOnStartup() вызывается из конструктора стора; здесь только
+                // перевод зависших fact-джобов в Interrupted (после аварийного выхода).
+                _attachmentStore.MarkInterruptedJobs();
+                Logger.Info($"AttachmentStore initialized at {_attachmentStore.RootDirectory}", "Attach");
+                // Пережившие перезапуск задания фактов (Queued/Interrupted→Queued):
+                // воркер доезжает очередь фоново, статусы летят в чипы по JobUpdated.
+                try { EnsureFactWorker()?.Kick(); }
+                catch (Exception ex2) { Logger.Warn($"FactWorker startup kick failed: {ex2.Message}", "Attach"); }
+                // ===== Картинки в чате (ТЗ image-chat): тот же AttachmentStore
+                // (миграция user_version 1→2 внутри), фасад черновика/отправки.
+                // Кэпабилити-провайдер живёт отдельно — без стора фича выключается.
+                try
+                {
+                    ChatImages = new ChatImageFlow(this, _attachmentStore);
+                    var caps = TryCreateImageCapabilityService();
+                    ChatImages.SetCapabilityService(caps);
+                    ImageCapabilities = caps;
+                    if (ApiClient is BrainstormBuddy.Ai.OpenAiClient oc && caps != null)
+                        oc.SetImageCapabilityService(caps);
+                        // ТЗ §8: каталог поддержки изображений подтягиваем в фоне
+                        // при старте (rate-limit 24ч внутри сервиса не даст дёргать
+                        // чаще раза в сутки). Иначе гейт «Unsupported не отправляем»
+                        // никогда не увидит каталог: GetCached без refresh = Unknown.
+                        if (caps != null)
+                        {
+                            var capKey = Core.Images.ImageCapabilityService.KeyFor(Config.Api);
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    var info = await caps.RefreshCatalogAsync(capKey, force: false, CancellationToken.None);
+                                    Logger.Info($"image-capability catalog: {capKey.ModelId} -> {info.State} ({info.Source})", "ChatImg");
+                                }
+                                catch (Exception exc) { Logger.Warn($"image-capability catalog: {exc.Message}", "ChatImg"); }
+                            });
+                        }
+                        ChatImages.RestoreDraftForCurrentMeeting();
+                    Logger.Info("ChatImageFlow initialized", "ChatImg");
+                }
+                catch (Exception ex3) { Logger.Warn($"ChatImageFlow init skipped: {ex3.Message}", "ChatImg"); }
+            }
+            catch (Exception ex)
+            {
+                // Вложения - фича поверх чата: сбой стора не должен ломать приложение.
+                Logger.Error("AttachmentStore init failed", ex, "Attach");
+                _attachmentStore = null;
+            }
+            // ===== MCP: входящий stdio-хост (named pipe для McpHost.exe) и
+            // исходящий менеджер (инструменты чужих серверов в чат). Оба не бросают —
+            // при выключенном Config.Mcp.Enabled TryStart вернёт null.
+            try
+            {
+                McpPermissions = new Core.Mcp.McpPermissionStore(AppDataDir);
+                McpJournal = new Core.Mcp.McpIncomingJournal(
+                    Path.Combine(AppDataDir, "logs"), mirror: Logger);
+                McpHost = Core.Mcp.McpIncomingHost.TryStart(
+                    Config.Mcp, AppDataDir, MeetingJournal!, MemoryStore, _attachmentStore, Logger,
+                    McpJournal, memoryProvider: () => MemoryStoreForMcp());
+                // Один журнал исходящего MCP на приложение: менеджер клиентов и
+                // чатовый оркестратор пишут в него оба — записи связывает requestId.
+                var mcpOutgoingJournal = new Core.Mcp.Outgoing.McpJournal(AppDataDir);
+                McpOutgoing = new Core.Mcp.Outgoing.McpClientManager(
+                    srv => string.IsNullOrEmpty(srv.SecretRef) ? null
+                        : McpPermissions?.TryRevealSecret(srv.SecretRef),
+                    Logger, journal: mcpOutgoingJournal);
+                // Встроенный поиск Buddy: поиск MemoryRecall/MeetingSearch идёт по
+                // closure — сервисы памяти поднимаются позже в OnStartup.
+                BuiltinTools = new Core.Mcp.Outgoing.BuiltinMemoryTools(
+                    searchMemory: (q, maxItems, budget, ct) =>
+                    {
+                        var recall = MemoryRecall;
+                        return recall == null
+                            ? Task.FromResult(new List<MemoryRecallHit>())
+                            : recall.RecallAsync(new MemoryRecallQuery(
+                                q,
+                                Scope: Config.Memory.ActiveProjectId.HasValue ? MemoryScopeType.Project : null,
+                                ScopeId: Config.Memory.ActiveProjectId,
+                                MeetingId: _currentMemoryMeetingId,
+                                MaxItems: maxItems,
+                                MaxTokens: budget,
+                                ExplicitSearch: true), ct);
+                    },
+                    searchMeetings: (q, options, ct) =>
+                    {
+                        var search = MeetingSearch;
+                        return search == null
+                            ? Task.FromResult(new MeetingSearchResult
+                            {
+                                Hits = Array.Empty<MeetingSearchHit>(),
+                                Status = new MeetingSearchStatus { IndexEnabled = true, Syncing = true },
+                            })
+                            : search.SearchDetailedAsync(q, ct, options);
+                    },
+                    currentMeetingId: () => MeetingJournal?.CurrentId,
+                    extraBudgetTokens: () => MemoryBudgets.Plan(
+                        Config.Memory, Config.Api.ChatModel, Config.Api.BaseUrl,
+                        reservedTokens: 4000).ExtraSearchTokens,
+                    scopeLabel: () => Config.Memory.ActiveProjectId is { } pid
+                        ? $"project #{pid}"
+                        : _currentMemoryMeetingId is { } mid ? $"meeting #{mid}" : "all",
+                    fallback: McpOutgoing, log: Logger,
+                    memoryEnabled: () => Config.Memory.Enabled &&
+                        MemoryRecall != null && MemoryStore != null,
+                    meetingsEnabled: () => Config.Memory.MeetingSearchEnabled &&
+                        MeetingSearch != null);
+                // Чатовый оркестратор исходящих инструментов: живёт только когда
+                // ApiClient умеет tools (OpenAiClient : IMcpToolLlm). Делит
+                // McpClientManager с остальным кодом (единый кеш соединений).
+                if (ApiClient is Core.Mcp.Outgoing.IMcpToolLlm toolLlm)
+                {
+                    McpChat = new Core.Mcp.Outgoing.McpChatOrchestrator(
+                        // Выключенный общий MCP-тумблер убирает внешние серверы,
+                        // но встроенный поиск Buddy остаётся доступен.
+                        () => Config.Mcp.Enabled ? Config.Mcp.OutgoingServers
+                                                 : Array.Empty<McpOutgoingServer>(),
+                        toolLlm,
+                        journal: mcpOutgoingJournal,
+                        clients: McpOutgoing, transport: BuiltinTools, logger: Logger)
+                    {
+                        IsLlmPausedFunc = () => IsLlmPaused || Config.Ui.LlmDisabled,
+                        IsMcpDisabledFunc = () => !Config.Mcp.Enabled && !BuiltinToolsAvailable,
+                        BuiltinToolsEnabled = () => BuiltinToolsAvailable,
+                        BuiltinExtraBudgetTokens = () => MemoryBudgets.Plan(
+                            Config.Memory, Config.Api.ChatModel, Config.Api.BaseUrl,
+                            reservedTokens: 4000).ExtraSearchTokens,
+                        ContextWindowFunc = () => ContextBudgetResolver.InputBudget(
+                            Config.Api.ChatModel, Config.Api.BaseUrl),
+                        ApprovalFunc = ConfirmMcpToolCallAsync,
+                        Progress = OnMcpToolProgress,
+                    };
+                }
+                if (McpHost != null)
+                    Logger.Info($"MCP incoming on pipe {McpHost.PipeName}", "Mcp");
+                AttachMcpFacadeActivity(McpHost?.Facade);
+                // Контекст для карточек подключений в настройках (права/канал/токен/пути).
+                SettingsVm.McpPermissions = McpPermissions;
+                SettingsVm.McpDataRoot = AppDataDir;
+                SettingsVm.McpIncomingPipe = McpHost?.PipeName;
+                // HTTP-ingress + туннель: fire-and-forget (bind/detect не блокируют старт).
+                _ = TryStartMcpHttpAsync();
+            }
+            catch (Exception ex) { Logger.Error("MCP init failed", ex, "Mcp"); }
+
             Logger.Debug("UI helpers created", "UI");
             // Память: первичная инициализация (если выключена — внутри пропустит).
             // Повторные вызовы из ApplyLiveConfigChanges включают её без рестарта.
@@ -475,8 +755,16 @@ public partial class App : Application
             EnsureMemoryServices();
             if (ApiKeyMissing)
             {
-                Logger.Warn("API key missing → opening settings", "App");
-                OpenSettings();
+                // Не открываем настройки сами: старт приложения должен оставлять
+                // только чат. Баннер объясняет проблему, кнопка ведёт в LLM-раздел.
+                Logger.Warn("API key missing — showing overlay notice", "App");
+                // Состояние, а не одноразовый вызов: UpdateConnectionNotice
+                // пересобирает баннер на каждом health-событии и иначе скрыл бы его.
+                _llmOk = false;
+                _llmErrMsg = UiText.Tr(
+                    "API-ключ не задан. Укажите ключ и модель в настройках — кнопка «Открыть настройки» ниже.",
+                    "No API key configured. Set the key and model in settings — use the “Open settings” button below.");
+                UpdateConnectionNotice();
             }
 
             _mainLoopCts = new CancellationTokenSource();
@@ -499,6 +787,107 @@ public partial class App : Application
                 StealthModeService.DisplayName + UiText.Tr(" — критическая ошибка", " — critical error"),
                 MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
+        }
+    }
+
+    /// <summary>
+    /// Живой стор памяти для MCP-фасада. Стар памяти идёт ПОСЛЕ старта
+    /// MCP-хоста (инициализация SQLite + эмбеддеров занимает секунды), поэтому
+    /// клиент, пришедший в первые секунды после запуска приложения, не должен
+    /// получать «memory not included» - ждём публикации стора (до 15 c).
+    /// Память, выключенная в конфиге, не ждём: сигнал уже установлен, ответ
+    /// сразу. Ожидание синхронное, но ограничено одним клиентом (у каждого
+    /// подключения своя задача обработки) и только на время старта.
+    /// </summary>
+    private IMemoryStore? MemoryStoreForMcp()
+    {
+        var m = MemoryStore;
+        if (m != null) return m;
+        if (!Config.Memory.Enabled) return null;
+        _memoryPublished.Wait(TimeSpan.FromSeconds(15));
+        return MemoryStore;
+    }
+
+    /// <summary>
+    /// Применение маркера отложенного восстановления профиля (Настройки →
+    /// «Восстановить из архива» в текущий профиль). Вызывается из OnStartup
+    /// ДО ConfigLoader и любых stores — только здесь каталог профиля можно
+    /// безопасно заменить swap'ом. Пароль архива живёт в DPAPI-маркере и
+    /// в лог/сообщения не попадает. Метод не бросает: сбой оставляет
+    /// исходный профиль нетронутым (RestoreAsync делает staging+swap), маркер
+    /// остаётся на месте, а пользователь решает — повторить или отменить.
+    /// </summary>
+    private void ApplyPendingProfileRestore()
+    {
+        try
+        {
+            if (!DeferredProfileRestore.IsPending) return;
+            var pending = DeferredProfileRestore.TryTake();
+            if (pending == null) return;
+            var (archivePath, destination, password) = pending.Value;
+            Logger.Info(
+                $"Pending profile restore: {archivePath} -> {destination}", "App");
+            // Блокирующий запуск намеренный: UI ещё не поднят, а конфиг/stores
+            // обязаны открыть уже восстановленный профиль.
+            var result = Task.Run(() => PortableArchive.RestoreAsync(
+                    archivePath, password, destination,
+                    new ArchiveRestoreOptions { StoresClosed = true }))
+                .GetAwaiter().GetResult();
+            if (result.Restored)
+            {
+                DeferredProfileRestore.Clear();
+                // logs/ в архив не входит — восстанавливаем каталог журнала,
+                // иначе AppendAllText до конца сессии молча мимо файла.
+                try { Directory.CreateDirectory(Logger.LogDirectory); } catch { }
+                Logger.Info(
+                    $"Profile restored from archive ({result.Manifest?.Entries.Count ?? 0} entries)" +
+                    (result.BackupDirectory != null
+                        ? $"; previous profile kept at {result.BackupDirectory}"
+                        : ""),
+                    "App");
+                // Предупреждения восстановления (например, «модели пропущены»)
+                // не теряем: пользователь увидит их в окне журнала.
+                foreach (var w in result.Warnings)
+                    Logger.Warn($"Profile restore: {w}", "App");
+            }
+            else
+            {
+                Logger.Warn(
+                    $"Pending profile restore failed: {result.Failure} — {result.Error}", "App");
+                ShowDeferredRestoreRetryChoice(result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Никогда не роняем запуск: исходный профиль цел, маркер не тронут.
+            try { Logger.Warn($"Pending profile restore error: {ex.Message}", "App"); }
+            catch { }
+            try { ShowDeferredRestoreRetryChoice(ex.Message); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// При неудаче отложенного восстановления спрашивает, оставить ли маркер
+    /// на повтор при следующем запуске. Нативный MessageBox — до загрузки тем.
+    /// </summary>
+    private void ShowDeferredRestoreRetryChoice(string? error)
+    {
+        var retry = System.Windows.MessageBox.Show(
+            UiText.Tr(
+                "Не удалось восстановить профиль из архива." +
+                (string.IsNullOrWhiteSpace(error) ? "" : $"\n\n{error}") +
+                "\n\nПовторить попытку при следующем запуске?\n" +
+                "«Нет» — отменить восстановление и продолжить с текущим профилем.",
+                "Failed to restore the profile from the archive." +
+                (string.IsNullOrWhiteSpace(error) ? "" : $"\n\n{error}") +
+                "\n\nRetry on next launch?\n" +
+                "«No» — cancel the restore and continue with the current profile."),
+            StealthModeService.DisplayName,
+            MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (retry != MessageBoxResult.Yes)
+        {
+            DeferredProfileRestore.Clear();
+            Logger.Info("Pending profile restore cancelled by user", "App");
         }
     }
 
@@ -730,6 +1119,9 @@ public partial class App : Application
     public void HideOverlay()
     {
         Logger.Debug("HideOverlay() called", "UI");
+        // Открытый MCP-аппрувал при скрытии окна отклоняем — иначе tool-loop
+        // завис бы на невидимой карточке до конца запроса.
+        _overlay?.CancelMcpApproval();
         _overlay?.Hide();
     }
 
@@ -1045,16 +1437,14 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Разовое распознавание экрана для настроек («Распознать сейчас») и одноимённого хоткея:
-    /// снимок активного монитора → даунскейл до MaxOcrWidth → OCR → чистка.
-    /// Выполняется в фоне, чтобы не морозить окно настроек. Пишет в журнал встреч
-    /// как question с меткой [screen] — текст с экрана должен сохраняться (бэклог 2.8.x п.4).
+    /// Разовое распознавание экрана для настроек («Распознать сейчас» в окне настроек —
+    /// превью без постановки в очередь): снимок активного монитора → даунскейл → OCR → чистка.
+    /// Выполняется в фоне. Хоткей Ctrl+Shift+N идёт другим путём — EnqueueScreenSnapshot.
     /// </summary>
     public Task<string> RecognizeScreenOnceAsync() => Task.Run(async () =>
     {
         EnsureScreenOcrEngines();
         var recognizer = await EnsureScreenRecognizerReadyAsync();
-
         if (recognizer is null || recognizer.Availability != RecognizerAvailability.Available)
             throw new InvalidOperationException(recognizer?.UnavailabilityReason ?? UiText.Tr("OCR недоступен", "OCR unavailable"));
 
@@ -1080,76 +1470,42 @@ public partial class App : Application
     });
 
     /// <summary>
-    /// Хоткей «распознать сейчас» (по умолчанию Ctrl+Shift+N): принудительный одиночный
-    /// проход с видимым фидбеком. Повторное нажатие во время прохода игнорируется —
-    /// OCR ещё не завершён, второй проход только грузит CPU.
+    /// Снимок экрана для очереди хоткея: захват региона + даунскейл до MaxOcrWidth.
+    /// Возвращает готовые для OCR пиксели и длительность захвата (мс). Без OCR —
+    /// распознавание делает OcrPixelsAsync в насосе очереди.
     /// </summary>
-    public void RecognizeScreenNow()
+    private Task<(PixelBuffer Pixels, double CaptureMs)> CaptureScreenPixelsAsync() => Task.Run(() =>
     {
-        // Флаг LLM читаем один раз: ветки ниже должны опираться на одно значение,
-        // а не на живой конфиг (юзер мог его переключить, пока шёл OCR-проход).
-        var llmDisabled = Config.Ui.LlmDisabled;
-        if (Interlocked.Exchange(ref _screenRecognizeOnceActive, 1) != 0)
-        {
-            _overlay?.SetStatus(TT("L_Ocr_Busy", "OCR: распознавание уже идёт…"));
-            return;
-        }
+        EnsureScreenOcrEngines();
+        var sw = Stopwatch.StartNew();
+        var region = MonitorEnumerator.CaptureBoundsFor(Config.ScreenOcr.MonitorIndex);
+        var frame = _screenCapturer!.CaptureRegion(region);
+        var captureMs = sw.Elapsed.TotalMilliseconds;
+        var pixels = ImagePreprocessor.LimitWidth(frame.Pixels, Config.ScreenOcr.MaxOcrWidth);
+        return (pixels, captureMs);
+    });
 
-        _overlay?.SetStatus(TT("L_Ocr_Recognizing", "OCR: распознаю экран…"));
-        SetOcrState(OcrIndicatorState.Scanning);
-        _ = Task.Run(async () =>
-        {
-            var sw = Stopwatch.StartNew();
-            try
-            {
-                var text = await RecognizeScreenOnceAsync();
-                var ocrMs = sw.Elapsed.TotalMilliseconds;
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    if (string.IsNullOrWhiteSpace(text))
-                    {
-                        _overlay?.SetStatus(TT("L_Ocr_NoText", "OCR: текст на экране не найден"));
-                        _ocrIndicator?.SetState(OcrIndicatorState.Idle);
-                        return;
-                    }
+    /// <summary>
+    /// OCR готовых пикселей (уже снятых и уменьшенных) + чистка текста.
+    /// Возвращает текст и длительность движка (мс). Бросает, если движок недоступен.
+    /// </summary>
+    private async Task<(string Text, double OcrMs)> OcrPixelsAsync(PixelBuffer pixels)
+    {
+        var recognizer = await EnsureScreenRecognizerReadyAsync();
+        if (recognizer is null || recognizer.Availability != RecognizerAvailability.Available)
+            throw new InvalidOperationException(recognizer?.UnavailabilityReason ?? UiText.Tr("OCR недоступен", "OCR unavailable"));
 
-                    if (llmDisabled)
-                    {
-                        // Показываем распознанное как item транскрибата (LLM выкл) и журналируем
-                        // с меткой [screen]. STT-времена null — STT тут не участвовал; длительность
-                        // OCR выводим отдельной меткой «OCR Xs» под пузырём (бэклог 2.9.x).
-                        _overlay?.AddSendingItem($"[screen] {text}", 0, DateTime.Now, null, null, 0,
-                            transcriptOnly: true, ocrLatencyMs: ocrMs);
-                        AppendJournalWithMemory("question", $"[screen] {text}");
-                        _overlay?.SetStatus(string.Format(TT("L_Ocr_DoneLlmOffFmt", "OCR: распознано {0} симв. за {1:F1}s — LLM выключен"), text.Length, ocrMs / 1000));
-                        _ocrIndicator?.SetState(OcrIndicatorState.Idle);
-                    }
-                    else
-                    {
-                        // LLM включён → тот же путь, что у авто-режима: пузырь вопроса,
-                        // строка в караоке и запись в журнал — внутри SendScreenQuestion.
-                        _overlay?.SetStatus(TT("L_Ocr_SendingQ", "OCR: вижу вопрос, отправляю…"));
-                    }
-                });
-
-                if (!string.IsNullOrWhiteSpace(text) && !llmDisabled)
-                    await SendScreenQuestion(text, ocrMs);
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn($"ScreenOcr recognize-now failed: {ex.Message}", "ScreenOcr");
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    _overlay?.SetStatus(string.Format(TT("L_Ocr_ErrorFmt", "OCR: ошибка — {0}"), ex.Message));
-                    ShowOcrError();
-                });
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _screenRecognizeOnceActive, 0);
-            }
-        });
+        var result = await recognizer.RecognizeAsync(pixels, RecognitionOptions.Default);
+        var text = ScreenTextWatcher.CleanupText(result.RawText);
+        return (text, result.Elapsed.TotalMilliseconds);
     }
+
+    /// <summary>
+    /// Хоткей «распознать сейчас» (по умолчанию Ctrl+Shift+N): каждое нажатие ставит
+    /// снимок в очередь — запрос не теряется даже при повторном нажатии во время
+    /// предыдущего прохода (аудит 2026-10-14 §2). См. App.ScreenOcrQueue.cs.
+    /// </summary>
+    public void RecognizeScreenNow() => EnqueueScreenSnapshot();
 
     /// <summary>
     /// Наблюдатель нашёл устойчивый кандидат при выключенном автоответе: показываем
@@ -1200,14 +1556,6 @@ public partial class App : Application
     private async Task SendScreenQuestion(string text, double ocrMs)
     {
         var label = $"[screen] {text}";
-        var systemPrompt = Config.Advanced.SystemPrompt +
-            "\n[screen] = вопрос, распознанный с экрана пользователя (OCR). " +
-            "Отвечай на него так же, как на вопрос собеседника. " +
-            "Ответь структурой: первая строка — прямой короткий ответ " +
-            "(например вариант «б» или одно предложение), затем одна строка «Зачем: …» " +
-            "с кратким обоснованием в 1-2 предложения. Не пересказывай вопрос. " +
-            "Отвечай СТРОГО на русском языке. " +
-            "Если решил молчать — верни ПУСТОЙ ответ (без единого символа). НЕ пиши слова вроде (empty), «пустой ответ», «silent», скобок или иероглифов.";
 
         // Ответ пришиваем к СВОЕМУ пузырю (pair), а не к _sendingItem — последний
         // в это время может быть чужим пузырём голосового потока (перегрузки с QaPair
@@ -1223,80 +1571,303 @@ public partial class App : Application
             // Журнал пишет метку [screen]: источник с экрана отличим от реплик динамика (п.4).
             AppendJournalWithMemory("question", label);
         });
+        if (pair == null) return;
+        // Пузырь + статус + журнал/караоке сделаны выше; сам ask — общий движок
+        // (BeginRequest/стрим/ctx-пара). OCR-статусы индикатора крутит он сам.
+        await RunManualAskAsync(pair, label, isScreen: true, isManual: true);
+        if (Config.ScreenOcr.AutoWatchEnabled) _overlay?.SetStatus(TT("L_Ocr_Watching", "OCR: слежу за экраном"));
+        else RefreshOverlayStatus();
+        _ocrIndicator?.SetState(OcrIndicatorState.Idle);
+        _overlay?.FlashStatus(TT("L_Ocr_Done", "OCR: готово"));
+    }
 
+    /// <summary>
+    /// Общий движок запроса к LLM для ручных путей (секретное сообщение, экранный
+    /// вопрос, слитый пауза-буфер) и ретрая из пузыря. Регистрирует запрос через
+    /// OverlayWindow.BeginRequest (✕-отмена по requestId), обновляет ctx-пару и журнал.
+    /// </summary>
+    /// <param name="pair">Пузырь, к которому пришиваем ответ. Для retry — тот же.</param>
+    /// <param name="label">Вопрос с меткой канала: «[secret] …», «[screen] …» или слитый пауза-запрос.</param>
+    /// <param name="isScreen">true → экранный промпт-оверрайд и OCR-UI статусы.</param>
+    /// <param name="isManual">true → пузырь получает кнопку «Повторить» после Failed/Cancelled.</param>
+    /// <param name="fromRetry">true → звучим из OnRetry (логировать для трассировки).</param>
+    private async Task RunManualAskAsync(QaPair pair, string label, bool isScreen,
+        bool isManual = true, bool fromRetry = false,
+        string? messageId = null, IReadOnlyList<ChatImageTileVm>? imageTiles = null)
+    {
+        var req = _overlay?.BeginRequest(pair, isManual);
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            CancellationToken.None, req?.Cts.Token ?? CancellationToken.None);
+        var ct = linkedCts.Token;
         try
         {
-            List<ChatMessage> historySnapshot;
-            lock (_historyLock) { historySnapshot = new List<ChatMessage>(_conversationHistory); }
+            if (!fromRetry)
+                _askRetryArgs.AddOrUpdate(pair, new AskRetryArgs(label, isManual, isScreen, messageId, imageTiles));
+            _overlay?.MarkLlmSent(pair, DateTime.Now);
+            // R4: ключ встречи снимаем ДО первого await (маршрут вложений с
+            // map-reduce может жечь токены минутами — «новый чат» за это время
+            // не должен утащить spend в свою встречу).
+            var meetingKey = MeetingSpendKey;
             var stream = Config.Advanced.StreamLlmAnswers;
             var gotDelta = false;
-            if (stream) _karaoke?.BeginStreamLine("answer");
+            var streamId = stream ? (_karaoke?.BeginStreamLine("answer") ?? 0) : 0;
+            var basePrompt = isScreen
+                ? Config.Advanced.SystemPrompt +
+                    "\n[screen] = вопрос, распознанный с экрана пользователя (OCR). " +
+                    "Отвечай на него так же, как на вопрос собеседника. " +
+                    "Ответь структурой: первая строка — прямой короткий ответ " +
+                    "(например вариант «б» или одно предложение), затем одна строка «Зачем: …» " +
+                    "с кратким обоснованием в 1-2 предложения. Не пересказывай вопрос. " +
+                    "Отвечай СТРОГО на русском языке. " +
+                    "Если решил молчать — верни ПУСТОЙ ответ (без единого символа). НЕ пиши слова вроде (empty), «пустой ответ», «silent», скобок или иероглифов."
+                : Config.Advanced.SystemPrompt;
+            // Контекст встречи: план (сводка+хвост) + память + purpose-оверрайд.
+            var ctx = _meetingContext;
+            var plan = ctx?.BuildPlan(label, basePrompt,
+                Config.Advanced.MaxResponseTokens, null, null,
+                Config.Api.ChatModel, Config.Api.BaseUrl);
+            var (sysPrompt, meetingHits) = await BuildSystemPromptWithMemoryAsync(basePrompt, label, ct,
+                requestId: req != null ? "req-" + req.RequestId : null,
+                progress: stage => _overlay?.SetWaitingText(pair, stage + "…"));
+            _overlay?.SetWaitingText(pair, TT("L_Answer_Waiting", "Отправляю вопрос…"));
+            sysPrompt = ApplyContextToPrompt(sysPrompt, plan?.SummaryBlock,
+                ctx?.State.EarlyContextDropped ?? false,
+                isManual ? AskPurpose.ManualChat : AskPurpose.BackgroundSpeech);
+            // Пузырь-индикатор контекста (спека §UI): «Контекст: ≈N» или «Обновляю…».
+            var ctxState = ctx?.State;
+            _overlay?.SetContextInfo(ctxState?.SummaryInFlight == true
+                ? TT("L_ContextSummarizing", "Обновляю контекст…")
+                : plan != null ? string.Format(TT("L_ContextInfoFmt", "Контекст: ≈{0}"), plan.EstimatedInputTokens.ToString("N0")) : null,
+                ctxState?.SummaryInFlight ?? false);
             var sw = Stopwatch.StartNew();
-            // Memory recall + правила директив памяти — общий билдер для всех LLM-путей.
-            systemPrompt = await BuildSystemPromptWithMemoryAsync(systemPrompt, text, CancellationToken.None);
-            var result = await ApiClient.AskAsync(label, systemPrompt,
-                Config.Advanced.MaxResponseTokens, historySnapshot, CancellationToken.None,
-                stream ? (Action<string>)(d =>
-                {
-                    gotDelta = true;
-                    if (pair != null) _overlay?.AppendAnswerDelta(pair, d);
-                    _karaoke?.AppendToStreamLine(d);
-                }) : null);
-            sw.Stop();
-            // Memory-директивы в ответе: применить (зелёный тост) и вырезать из видимого
-            // текста ДО финала стрим-строки — в стрим уже ушёл сырой текст с тегами.
-            var ocrMem = await ProcessMemoryDirectivesAsync(result.Content);
-            var screenAnswer = ocrMem.Clean;
-            var ocrMemStripped = !string.Equals(screenAnswer, result.Content, StringComparison.Ordinal);
-            // Маркер молчания («(empty)», «(空)»…) уже отстримился в ленту —
-            // выкидываем стрим-строку целиком, иначе маркер висит на экране.
-            // То же при стрипленых директивах: сырые [[MEMORY_*]] в ленте не оставляем.
-            FinalizeKaraokeStreamLine(stream, gotDelta, result.IsSilent, ocrMemStripped, screenAnswer);
-            Logger.Info($"ScreenOcr ask done in {sw.ElapsedMilliseconds}ms, {screenAnswer.Length} симв.", "Answer");
+            // MCP и обычный ask получают уже маршрутизированный контекст вложений:
+            // страница/весь документ не смешиваются, неоднозначное имя даёт короткое
+            // уточнение без лишнего LLM-вызова.
+            var attachmentRoute = await BuildAttachmentRouteSafeAsync(label, plan, ct);
+            var attachments = attachmentRoute?.Payload;
+            var immediateAttachmentAnswer = attachmentRoute?.ImmediateAnswer;
 
-            if (!string.IsNullOrWhiteSpace(screenAnswer))
+            // Картинки текущего сообщения: байты читаются с диска (SendPath),
+            // refs — для ChatMessage.Images в хвосте встречи. Не на UI-потоке.
+            var imgs = await Task.Run(() => BuildImagePayloads(imageTiles), ct);
+            IReadOnlyList<Core.Images.ChatImageRef>? imgRefs = imageTiles?.Select(t =>
+                new Core.Images.ChatImageRef(t.ImageId, t.FileName, t.Mime, t.Width, t.Height, t.ByteSize)).ToList();
+            var imageResolver = BuildImagePayloadResolver();
+
+            var mcpAnswer = (immediateAttachmentAnswer == null && isManual && !isScreen)
+                ? await TryMcpChatAnswerAsync(label, sysPrompt, plan?.Tail, attachments, ct, images: imgs,
+                    requestId: req != null ? "req-" + req.RequestId : null, bubble: pair)
+                : null;
+            AskResult result;
+            if (immediateAttachmentAnswer != null)
             {
-                await Dispatcher.InvokeAsync(() =>
+                result = new AskResult(immediateAttachmentAnswer, 0, 0, 0);
+            }
+            else if (mcpAnswer != null)
+            {
+                Logger.Info($"MCP tool answer: stop={mcpAnswer.StopReason} " +
+                    $"tools={mcpAnswer.ToolCalls.Count} sources={mcpAnswer.Sources.Count} " +
+                    $"requestId={mcpAnswer.RequestId}",
+                    "Answer");
+                var mcpText = mcpAnswer.Text;
+                if (!string.IsNullOrWhiteSpace(mcpText) && mcpAnswer.Sources.Count > 0)
+                    mcpText += "\n\n🔧 " + string.Join(", ", mcpAnswer.Sources);
+                // Встроенный поиск: источники фактов/встреч под ответом — по чему
+                // именно модель нашла данные (снимок из этого ответа, не общий
+                // изменяемый список — одновременные вопросы не смешиваются).
+                var builtinCites = mcpAnswer.Citations;
+                if (!string.IsNullOrWhiteSpace(mcpText) && builtinCites is { Count: > 0 })
+                    mcpText += "\n\n📚 " + string.Join(" · ",
+                        builtinCites.Distinct(StringComparer.Ordinal));
+                result = new AskResult(mcpText, mcpAnswer.PromptTokens,
+                    mcpAnswer.CompletionTokens, mcpAnswer.PromptTokens + mcpAnswer.CompletionTokens)
                 {
-                    if (pair != null) _overlay?.MarkAnswered(pair, screenAnswer, DateTime.Now, 0);
-                    if (Config.ScreenOcr.AutoWatchEnabled) _overlay?.SetStatus(TT("L_Ocr_Watching", "OCR: слежу за экраном"));
-                    else RefreshOverlayStatus();
-                    _ocrIndicator?.SetState(OcrIndicatorState.Idle);
-                    _overlay?.FlashStatus(TT("L_Ocr_Done", "OCR: готово"));
-                    // Экранные ответы обходят AnswerWorkerLoop — пушим ответ в караоке здесь.
-                    if (!gotDelta) _karaoke?.PushLine("answer", screenAnswer);
-                });
-                AppendJournalWithMemory("answer", screenAnswer);
-                lock (_historyLock)
-                {
-                    _conversationHistory.Add(ChatMessage.User(label));
-                    _conversationHistory.Add(ChatMessage.Assistant(screenAnswer));
-                    TrimHistory(_conversationHistory, Config.Advanced.HistorySize);
-                }
+                    Canceled = mcpAnswer.StopReason == Core.Mcp.Outgoing.McpLoopStopReason.Cancelled,
+                    Error = mcpAnswer.Error != null
+                        ? $"{mcpAnswer.Error.Code}: {mcpAnswer.Error.Message}" : null,
+                    // Оценочные токены (usage не прислали) — честно помечаем,
+                    // чтобы счётчик не выдавал оценку за точный расход.
+                    UsageReported = !mcpAnswer.Estimated
+                };
             }
             else
             {
+                result = await ApiClient.AskAsync(label, sysPrompt,
+                    Config.Advanced.MaxResponseTokens, plan != null ? new List<ChatMessage>(plan.Tail) : SnapshotLegacyHistory(), ct,
+                    stream ? (Action<string>)(d =>
+                    {
+                        gotDelta = true;
+                        _overlay?.AppendAnswerDelta(pair, d);
+                        _karaoke?.AppendToStreamLine(streamId, d);
+                    }) : null,
+                    attachmentsContext: attachments,
+                    images: imgs,
+                    imageResolver: imageResolver);
+            }
+
+            // Счётчик токенов: ручной вопрос и MCP-ответ раньше мимо проходили —
+            // usage появлялся только в речевом пути. Считаем обе ветви result.
+            // R4: ключ встречи снят на старте ask'а — если чат сменится, пока ответ
+            // в полёте, этот spend уйдёт в фон, а не в «Потрачено за встречу» новой.
+            AccountUsage(result, meetingKey: meetingKey);
+            sw.Stop();
+            var mem = await ProcessMemoryDirectivesAsync(result.Content, ct);
+            var answer = mem.Clean;
+            if (string.IsNullOrWhiteSpace(answer) && mem.Applied.Count > 0)
+                answer = TT("L_Answer_MemorySaved", "✔ записано в память");
+            var memStripped = !string.Equals(answer, result.Content, StringComparison.Ordinal);
+            FinalizeKaraokeStreamLine(stream, gotDelta, result.IsSilent, memStripped, answer, streamId);
+            Logger.Info($"Manual ask done in {sw.ElapsedMilliseconds}ms ({answer.Length} chars, screen={isScreen}, retry={fromRetry})", "Answer");
+
+            if (!string.IsNullOrWhiteSpace(answer))
+            {
+                answer = answer.TrimStart();
+                // вычищаем лидирующие метки-скобки (модель иногда повторяет метку канала)
+                int _c;
+                while (answer.StartsWith("[") && (_c = answer.IndexOf(']')) > 0)
+                    answer = answer.Substring(_c + 1).TrimStart();
                 await Dispatcher.InvokeAsync(() =>
                 {
-                    var why = result.Error
-                        ?? ((result.IsSilent || ocrMemStripped)
-                            ? TT("L_Err_ModelSilent", "Модель промолчала (пустой ответ). Попробуйте переформулировать или увеличить лимит токенов.")
-                            : TT("L_Err_LlmEmpty", "пустой ответ от LLM"));
-                    if (pair != null) _overlay?.MarkFailed(pair, why, DateTime.Now, 0);
-                    ShowOcrError();
+                    pair.PastMeetingHits = meetingHits; // §7: ссылки-источники под ответом
+                    _overlay?.MarkAnswered(pair, answer, DateTime.Now, sw.Elapsed.TotalMilliseconds);
+                    RefreshOverlayStatus();
+                    if (!gotDelta) _karaoke?.PushLine("answer", answer);
+                });
+                AppendJournalWithMemory("answer", answer);
+                // Журнал user-реплики: mid+imgs идут ТОЛЬКО при ответе — прерванная
+                // отправка не оставляет сирот (восстановление черновика по
+                // FindLastUnansweredImageIds).
+                if (!fromRetry && (messageId != null || imgRefs?.Count > 0))
+                    AppendJournalWithMemory("user", label, messageId: messageId, imgs: imgRefs);
+                lock (_historyLock)
+                {
+                    _conversationHistory.Add(imgRefs?.Count > 0
+                        ? ChatMessage.UserWithImages(label, imgRefs)
+                        : ChatMessage.User(label));
+                    _conversationHistory.Add(ChatMessage.Assistant(answer));
+                    TrimHistory(_conversationHistory, Config.Advanced.HistorySize);
+                }
+                // Контекст встречи параллельно легаси-истории (обрезка по токенам, не по счёту).
+                if (imgRefs?.Count > 0)
+                    ctx?.AddPair(ChatMessage.UserWithImages(label, imgRefs), answer);
+                else
+                    ctx?.AddPair(label, answer);
+                SaveMeetingContextState();
+                if (plan?.ScheduleSummary == true) RunContextSummaryAsync();
+            }
+            else if (result.Canceled || (req != null && req.Cts.IsCancellationRequested))
+            {
+                // Отмена по кнопке/токену — НЕ ошибка: нейтральная метка пузыря.
+                Logger.Info($"Manual ask cancelled in {sw.ElapsedMilliseconds}ms", "Answer");
+                _overlay?.MarkCancelled(pair);
+            }
+            else
+            {
+                var why = result.Error ?? EmptyAnswerHint(result, memStripped);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    _overlay?.MarkFailed(pair, why, DateTime.Now, sw.Elapsed.TotalMilliseconds);
                     RefreshOverlayStatus();
                 });
             }
         }
+        catch (OperationCanceledException) when (req?.Cts.IsCancellationRequested == true)
+        {
+            Logger.Info("Manual ask cancelled (request token)", "Answer");
+            _overlay?.MarkCancelled(pair);
+        }
         catch (Exception ex)
         {
-            Logger.Error("SendScreenQuestion failed", ex, "UI");
-            await Dispatcher.InvokeAsync(() =>
-            {
-                if (pair != null) _overlay?.MarkFailed(pair, ex.Message, DateTime.Now, 0);
-                ShowOcrError();
-            });
+            Logger.Error("RunManualAskAsync failed", ex, "UI");
+            await Dispatcher.InvokeAsync(() => _overlay?.MarkFailed(pair, ex.Message, DateTime.Now, 0));
         }
+        finally
+        {
+            if (req != null) _overlay?.EndRequest(req);
+            linkedCts.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Исходящий MCP tool-loop для ручного вопроса. Возвращает null, если MCP
+    /// выключен, оркестратор недоступен или ни один включённый сервер не отдал
+    /// инструментов — caller тогда идёт обычным AskAsync.
+    /// </summary>
+    private async Task<Core.Mcp.Outgoing.McpChatAnswer?> TryMcpChatAnswerAsync(
+        string label, string sysPrompt, IReadOnlyList<ChatMessage>? tail,
+        string? attachmentsContext, CancellationToken ct,
+        IReadOnlyList<Core.Images.ChatImagePayload>? images = null, string? requestId = null,
+        QaPair? bubble = null)
+    {
+        var mcp = McpChat;
+        if (mcp == null) return null;
+        // Встроенные инструменты памяти доступны и без внешних MCP-серверов;
+        // внешние — только при включённом общем тумблере.
+        var external = Config.Mcp.Enabled && Config.Mcp.OutgoingServers.Any(s => s.Enabled);
+        if (!external && !BuiltinToolsAvailable) return null;
+        // Пауза/выключенный LLM: один ручной шаг обслуживается обычным путём
+        // (ниже AskAsync), без tool-loop — иначе пауза убивала бы ответ целиком.
+        if (IsLlmPaused || Config.Ui.LlmDisabled) return null;
+        var prompt = sysPrompt;
+        if (!string.IsNullOrWhiteSpace(attachmentsContext))
+            prompt += "\n\n" + attachmentsContext;
+        try
+        {
+            var answer = await mcp.AskWithToolsAsync(label, tail, prompt,
+                maxTokens: Config.Advanced.MaxResponseTokens, images: images,
+                requestId: requestId, ct: ct,
+                progress: (stage, done, total) => OnMcpToolProgress(bubble, stage, done, total));
+            if (answer != null && answer.StopReason != Core.Mcp.Outgoing.McpLoopStopReason.Cancelled)
+                _overlay?.SetContextInfo(null, false);
+            return answer;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            Logger.Warn($"MCP chat path failed, falling back to plain ask: {ex.Message}", "Mcp");
+            return null; // ошибка MCP не блокирует обычный чат (спека §439)
+        }
+    }
+
+    /// <summary>
+    /// Подтверждение опасного MCP-вызова: карточка внутри оверлея (спека §491 —
+    /// не модалка; оверлей исключён из захвата экрана, значит и аппрувал скрыт).
+    /// Вызывается из tool-loop на фоновом потоке; overlay сам маршаллит в UI.
+    /// </summary>
+    private Task<bool> ConfirmMcpToolCallAsync(
+        McpOutgoingServer server, Core.Mcp.Outgoing.McpToolSpec tool,
+        string argsJson, Core.Mcp.McpActionRisk risk)
+    {
+        var riskText = risk == Core.Mcp.McpActionRisk.Destructive
+            ? TT("L_McpRiskDestructive", "необратимое действие")
+            : TT("L_McpRiskMutating", "изменяющее действие");
+        var args = argsJson.Length > 500 ? argsJson[..500] + "…" : argsJson;
+        var summary = string.Format(
+            TT("L_McpApproveFmt", "Сервер «{0}» просит выполнить «{1}» ({2})"),
+            server.Name, tool.OriginalName, riskText);
+
+        // Спека §491: подтверждение — карточка ВНУТРИ оверлея (не модалка,
+        // не видна на захвате экрана). Overlay вызывается с фонового потока
+        // tool-loop → сам маршаллит через Dispatcher.
+        if (_overlay == null || !Dispatcher.CheckAccess() && _overlay.Dispatcher.HasShutdownStarted)
+            return Task.FromResult(false);
+        return _overlay.RequestMcpApproval(summary, args);
+    }
+
+    /// <summary>Прогресс tool-loop → строка статуса пузыря (reuse канала «Контекст: ≈N»).</summary>
+    private void OnMcpToolProgress(string? stage, int? done, int? total)
+        => OnMcpToolProgress(null, stage, done, total);
+
+    /// <summary>Этап реального поиска показывается и в самой карточке вместо
+    /// «(ожидание ответа LLM…)» — только когда инструмент действительно вызван.</summary>
+    private void OnMcpToolProgress(QaPair? bubble, string? stage, int? done, int? total)
+    {
+        var text = done != null && total != null
+            ? $"{stage} {done}/{total}"
+            : stage;
+        if (string.IsNullOrWhiteSpace(text)) return;
+        if (bubble != null) _overlay?.SetWaitingText(bubble, text + "…");
+        _overlay?.SetContextInfo(text, true, showProvidedText: true);
     }
 
     /// <summary>
@@ -1507,21 +2078,27 @@ public partial class App : Application
 
     // Окно истории встреч (краш-безопасные live-журналы meetings/*.jsonl) —
     // single-instance, как ShowFileTranscription. Вызывается из трея и сайдбара настроек.
-    public void ShowMeetingHistory()
+    // §7: hit != null — открыть конкретную встречу и подсветить найденную строку
+    // (ссылка «Источник» в оверлее после ответа на вопрос о прошлой встрече).
+    public void ShowMeetingHistory(MeetingSearchHit? hit = null)
     {
         try
         {
+            var needsNavigate = hit != null;
             if (_meetingHistoryWindow != null)
             {
                 if (_meetingHistoryWindow.WindowState == WindowState.Minimized)
                     _meetingHistoryWindow.WindowState = WindowState.Normal;
                 _meetingHistoryWindow.Show();
                 _meetingHistoryWindow.Activate();
-                return;
             }
-            _meetingHistoryWindow = new MeetingHistoryWindow();
-            _meetingHistoryWindow.Closed += (s, e) => _meetingHistoryWindow = null;
-            _meetingHistoryWindow.Show();
+            else
+            {
+                _meetingHistoryWindow = new MeetingHistoryWindow();
+                _meetingHistoryWindow.Closed += (s, e) => _meetingHistoryWindow = null;
+                _meetingHistoryWindow.Show();
+            }
+            if (needsNavigate) _ = _meetingHistoryWindow!.NavigateToHitAsync(hit!);
         }
         catch (Exception ex) { Logger?.Error("ShowMeetingHistory failed", ex, "UI"); }
     }
@@ -2041,13 +2618,31 @@ public partial class App : Application
     /// </summary>
     public void RefreshOverlayStatus()
     {
+        // «Думаю над …»: метка первого (единственного активного) запроса.
+        // Краткая: secret/screen — каноничные лейблы; голос — начало вопроса.
+        var thinking = FirstThinkingLabel();
         var input = new BrainstormBuddy.Services.OverlayStatusInput(
-            IsPaused, IsLlmPaused, _sttOk, _sttErrMsg, _sttWarmedUp, IsTranscribing, _sttHttpStatus, _sttErrKind);
+            IsPaused, IsLlmPaused, _sttOk, _sttErrMsg, _sttWarmedUp, IsTranscribing, _sttHttpStatus, _sttErrKind,
+            thinking);
         // T(key) возвращает сам ключ, если ресурса нет — тогда берём RU-фолбэк из резолвера.
         var status = BrainstormBuddy.Services.OverlayStatusResolver.Resolve(input,
             (k, fb) => T(k) is { } s && s != k && !s.StartsWith("[") ? s : fb);
         try { Dispatcher.InvokeAsync(() => _overlay?.ApplyStatus(status)); }
         catch { /* приложение уже уходит — статус некому показывать */ }
+    }
+
+    /// <summary>Короткая метка активного LLM-запроса для статуса «Думаю над …».
+    /// null — активных нет (Thinking не показывается).</summary>
+    private string? FirstThinkingLabel()
+    {
+        var req = _overlay?.PendingRequests?.FirstOrDefault();
+        if (req == null) return null;
+        var q = req.Question ?? "";
+        if (req.IsManual || q.StartsWith("[secret]", StringComparison.Ordinal)) return "[secret]";
+        if (q.StartsWith("[screen]", StringComparison.Ordinal)) return "[screen]";
+        const int max = 48;
+        var shortText = q.Length <= max ? q : q[..max] + "…";
+        return $"«{shortText}»";
     }
 
     // Прогрев LLM на старте: лёгкий запрос (ключ/URL + чат-пинг моделью) — греет коннект,
@@ -2569,9 +3164,13 @@ public partial class App : Application
                 "Если транскрибация обрывочная — отметь это и выдели то, что удалось понять.\n\n" + allText;
 
             var sw = Stopwatch.StartNew();
+            // R4: расход экспорта протокола — прямой (пользователь нажал кнопку),
+            // привязываем к активной встрече на старте запроса.
+            var meetingKey = MeetingSpendKey;
             var result = await ApiClient.AskAsync("Составь протокол встречи по транскрибации выше.",
                 summaryPrompt, 800, new List<ChatMessage>(), CancellationToken.None);
             sw.Stop();
+            AccountUsage(result, meetingKey: meetingKey);
             // Возможные memory-директивы и из «мёртвого» промпта вырезаем — в файл протокола
             // сырые [[MEMORY_*]] не должны попадать; применяются, если память активна.
             var summaryText = (await ProcessMemoryDirectivesAsync(result.Content)).Clean;
@@ -2594,7 +3193,7 @@ public partial class App : Application
             {
                 // Причина (429/5xx/401) уже humanized в result.Error — показываем её,
                 // а не общее «LLM не ответил», чтобы юзер видел лимит/сбой провайдера.
-                var why = result.Error ?? TT("L_Err_LlmEmpty", "пустой ответ от LLM");
+                var why = result.Error ?? EmptyAnswerHint(result, false);
                 _overlay?.SetStatus(string.Format(TT("L_Status_ErrorFmt", "Ошибка: {0}"), why));
                 Notifier.ShowWarning(TT("L_Toast_SummaryTitle", "Протокол встречи"), why);
             }
@@ -2630,44 +3229,16 @@ public partial class App : Application
                     var label = TT("L_Label_Speaker", "[Динамик]") + " " + shown;
                     // «LLM выкл»: молния тоже работает транскрибатором — пузырь без ответа, в LLM ничего.
                     bool llmOff = Config.Ui.LlmDisabled;
+                    QaPair? pair = null;
                     await Dispatcher.InvokeAsync(() =>
                     {
-                        _overlay?.AddSendingItem(label, (chunk.Length - 44) / 32000.0,
+                        pair = _overlay?.AddSendingItem(label, (chunk.Length - 44) / 32000.0,
                             DateTime.Now, DateTime.Now, DateTime.Now, 0, transcriptOnly: llmOff);
                     });
                     AppendJournalWithMemory("question", shown); // журнал пишет реплику и в режиме «LLM выкл»
-                    if (llmOff) return;
-                    List<ChatMessage> historySnapshot;
-                    lock (_historyLock) { historySnapshot = new List<ChatMessage>(_conversationHistory); }
-                    // Memory recall + правила директив памяти — общий билдер для всех LLM-путей.
-                    var sysPrompt = await BuildSystemPromptWithMemoryAsync(Config.Advanced.SystemPrompt, text, CancellationToken.None);
-                    var result = await ApiClient.AskAsync(label, sysPrompt,
-                        Config.Advanced.MaxResponseTokens, historySnapshot, CancellationToken.None);
-                    var flushMem = await ProcessMemoryDirectivesAsync(result.Content);
-                    var flushAnswer = flushMem.Clean;
-                    if (!string.IsNullOrWhiteSpace(flushAnswer))
-                    {
-                        await Dispatcher.InvokeAsync(() =>
-                        {
-                            _overlay?.MarkAnswered(flushAnswer, DateTime.Now, 0);
-                            RefreshOverlayStatus();
-                        });
-                        AppendJournalWithMemory("answer", flushAnswer);
-                    }
-                    else
-                    {
-                        // Тот же контракт, что в WorkerLoop/SendSecretMessage: ошибка
-                        // транспорта (429/5xx) выводится пользователю, а не глотается.
-                        var why = result.Error
-                            ?? ((result.IsSilent || !string.Equals(flushAnswer, result.Content, StringComparison.Ordinal))
-                                ? TT("L_Err_ModelSilent", "Модель промолчала (пустой ответ). Попробуйте переформулировать или увеличить лимит токенов.")
-                                : TT("L_Err_LlmEmpty", "пустой ответ от LLM"));
-                        await Dispatcher.InvokeAsync(() =>
-                        {
-                            _overlay?.MarkFailed(why, DateTime.Now, 0);
-                            RefreshOverlayStatus();
-                        });
-                    }
+                    if (llmOff || pair == null) return;
+                    // Молния = ручной форс-вопрос из аудио-буфера — тот же общий движок.
+                    await RunManualAskAsync(pair, label, isScreen: false, isManual: false);
                 }
             }
             catch (Exception ex) { Logger.Error("FlushAndSend failed", ex, "Loop"); }
@@ -2676,6 +3247,14 @@ public partial class App : Application
 
     public async Task SendSecretMessage(string text)
     {
+        // Черновик картинок есть — идём расширенным путём (ТЗ image-chat §9):
+        // flow снимает готовые тайлы, делает гейт поддержки и отдаёт снапшот.
+        if (ChatImages?.HasDraft == true)
+        {
+            await ChatImages.SendChatAsync(text);
+            return;
+        }
+
         // «LLM выкл» (чистый транскрибатор): в LLM не уходит и явное сообщение —
         // подсказываем, почему поле «не работает», вместо тихого пузыря без ответа.
         if (Config.Ui.LlmDisabled)
@@ -2684,85 +3263,553 @@ public partial class App : Application
             return;
         }
         var label = $"[secret] {text}";
+        QaPair? pair = null;
         await Dispatcher.InvokeAsync(() =>
         {
-            _overlay?.AddSendingItem(label, 0, DateTime.Now, null, null, 0);
+            pair = _overlay?.AddSendingItem(label, 0, DateTime.Now, null, null, 0);
             _overlay?.SetStatus(TT("L_Status_ThinkingSecret", "Думаю над [secret]…"));
             // Караоке: секретное сообщение — реплика юзера без метки [secret].
             _karaoke?.PushLine("user", text);
             AppendJournalWithMemory("user", text); // журнал — всегда, без фильтров Show*
         });
+        if (pair == null) return; // оверлей закрыт — не шлём без пузыря
+        await RunManualAskAsync(pair, label, isScreen: false, isManual: true);
+    }
+
+    /// <summary>
+    /// Отправка сообщения с картинками (ТЗ image-chat §9). Черновик инвалидируется
+    /// ТОЛЬКО на принятии отправки; при паузе LLM снапшот (текст+imageIds) едет в
+    /// pause-буфер и при снятии паузы сольётся одним запросом вместе с картинками.
+    /// </summary>
+    internal async Task SendChatWithImagesAsync(string text, ChatImageFlow.SentImageSet set)
+    {
+        var flow = ChatImages;
+        if (flow == null) { await SendSecretMessage(text); return; }
+        var imageIds = set.Tiles.Select(t => t.ImageId).ToArray();
+
+        // Пауза LLM: буферизуем снапшот целиком (спека §9 — «пауза LLM буферизует
+        // снапшот с imageIds»). Тайлы уже сняты flow — принято в отправку, поле чистим.
+        if (IsLlmPaused)
+        {
+            var pausedLabel = string.IsNullOrEmpty(text) ? "[Изображение]" : text;
+            _pauseBuf.Add("[secret]", pausedLabel, imageIds);
+            _overlay?.ClearChatInput();
+            Logger.Info($"chat-image: отправка ушла в pause-буфер ({imageIds.Length} img)", "ChatImg");
+            return;
+        }
+
+        var labelText = $"[secret] {text}".TrimEnd();
+        var mid = set.MessageId;
+        var meetingId = string.IsNullOrEmpty(set.MeetingId) ? SafeEnsureMeeting() : set.MeetingId;
+        QaPair? pair = null;
+        await Dispatcher.InvokeAsync(() =>
+        {
+            pair = _overlay?.AddSendingItem(labelText, 0, DateTime.Now, null, null, 0, imageTiles: set.Tiles);
+            _overlay?.SetStatus(TT("L_Status_ThinkingSecret", "Думаю над [secret]…"));
+            _karaoke?.PushLine("user", text);
+        });
+        if (pair == null)
+        {
+            // Оверлей закрыт — тайлы возвращаем в черновик (set — read-only копия).
+            flow.RestoreTiles(set.Tiles);
+            flow.SetDraftNotice(TT("L_ImgOverlayClosed", "Оверлей закрыт — черновик сохранён"));
+            return;
+        }
+
+        // Принято в отправку: линкуем картинки к messageId (идемпотентно по mid+id).
         try
         {
-            List<ChatMessage> historySnapshot;
-            lock (_historyLock) { historySnapshot = new List<ChatMessage>(_conversationHistory); }
-            var stream = Config.Advanced.StreamLlmAnswers;
-            var gotDelta = false;
-            if (stream) _karaoke?.BeginStreamLine("answer");
-            // Memory recall + правила директив памяти — общий билдер для всех LLM-путей.
-            var sysPrompt = await BuildSystemPromptWithMemoryAsync(Config.Advanced.SystemPrompt, text, CancellationToken.None);
-            var sw = Stopwatch.StartNew();
-            var result = await ApiClient.AskAsync(label, sysPrompt,
-                Config.Advanced.MaxResponseTokens, historySnapshot, CancellationToken.None,
-                stream ? (Action<string>)(d =>
-                {
-                    gotDelta = true;
-                    _overlay?.AppendAnswerDelta(d);
-                    _karaoke?.AppendToStreamLine(d);
-                }) : null);
-            sw.Stop();
-            // Memory-директивы: применить (тост) и вырезать до финала стрим-строки —
-            // сырой текст с [[MEMORY_*]] уже мог отстримиться в ленту.
-            var secMem = await ProcessMemoryDirectivesAsync(result.Content);
-            var secretAnswer = secMem.Clean;
-            // Фикс бага «записать в память → ошибка "промолчала"»: модель вернула
-            // ТОЛЬКО [[MEMORY_*]]-директиву → Clean пуст, но факт записан (Applied>0).
-            // Это УСПЕХ, не молчание: подставляем подтверждение вместо красной ошибки.
-            if (string.IsNullOrWhiteSpace(secretAnswer) && secMem.Applied.Count > 0)
-                secretAnswer = TT("L_Answer_MemorySaved", "✔ записано в память");
-            var secMemStripped = !string.Equals(secretAnswer, result.Content, StringComparison.Ordinal);
-            FinalizeKaraokeStreamLine(stream, gotDelta, result.IsSilent, secMemStripped, secretAnswer);
-            Logger.Info($"Secret ask done in {sw.ElapsedMilliseconds}ms: '{(secretAnswer ?? "<null>").Substring(0, Math.Min(80, (secretAnswer ?? "<null>").Length))}'", "Answer");
-            if (!string.IsNullOrWhiteSpace(secretAnswer))
+            if (meetingId != null)
+                for (var i = 0; i < imageIds.Length; i++)
+                    flow.Store.Link(imageIds[i], meetingId, mid, i);
+        }
+        catch (Exception ex) { Logger.Warn($"chat-image: link {mid}: {ex.Message}", "ChatImg"); }
+        _overlay?.ClearChatInput();
+
+        await RunManualAskAsync(pair, string.IsNullOrEmpty(text) ? labelText : $"[secret] {text}",
+            isScreen: false, isManual: true, messageId: mid, imageTiles: set.Tiles);
+    }
+
+    /// <summary>Payload'ы картинок текущего сообщения (байты с диска, SendPath).</summary>
+    private List<Core.Images.ChatImagePayload>? BuildImagePayloads(IReadOnlyList<ChatImageTileVm>? tiles)
+    {
+        if (tiles == null || tiles.Count == 0) return null;
+        var list = new List<Core.Images.ChatImagePayload>(tiles.Count);
+        foreach (var t in tiles)
+        {
+            var path = t.SendPath ?? t.OriginalPath;
+            if (path == null || !File.Exists(path))
             {
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    _overlay?.MarkAnswered(secretAnswer, DateTime.Now, 0);
-                    RefreshOverlayStatus();
-                    // Секретные ответы обходят AnswerWorkerLoop — пушим ответ в караоке здесь.
-                    if (!gotDelta) _karaoke?.PushLine("answer", secretAnswer);
-                });
-                AppendJournalWithMemory("answer", secretAnswer); // и стрим-, и не-стрим-ответы
-                lock (_historyLock)
-                {
-                    _conversationHistory.Add(ChatMessage.User(label));
-                    _conversationHistory.Add(ChatMessage.Assistant(secretAnswer));
-                    TrimHistory(_conversationHistory, Config.Advanced.HistorySize);
-                }
+                Logger.Warn($"chat-image: payload skip {t.ImageId} state={t.State} " +
+                    $"send={t.SendPath ?? "null"} orig={t.OriginalPath ?? "null"} " +
+                    $"exists={(path == null ? "-" : File.Exists(path).ToString())}", "ChatImg");
+                continue;
             }
-            else
+            list.Add(new Core.Images.ChatImagePayload(
+                t.ImageId, t.Mime, File.ReadAllBytes(path), t.Width, t.Height));
+        }
+        return list.Count > 0 ? list : null;
+    }
+
+    /// <summary>
+    /// Резолвер imageId → payload для истории (последнее сообщение с картинками).
+    /// Нужен транспорту при сборке messages: ChatMessage.Images хранит ссылки,
+    /// байты достаются из стора по id.
+    /// </summary>
+    private Func<Core.Images.ChatImageRef, Core.Images.ChatImagePayload?>? BuildImagePayloadResolver()
+    {
+        var store = ChatImages?.Store;
+        if (store == null) return null;
+        return r =>
+        {
+            var s = store.Get(r.ImageId);
+            if (s == null) return null;
+            var path = s.SendPath ?? s.OriginalPath;
+            if (path == null || !File.Exists(path))
             {
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    // Приоритет — человеческая ошибка транспорта/API (429 rate limit,
-                    // 5xx, 401): AskResult.Error уже приведён в читаемый вид через
-                    // HumanizeApiError. Без неё юзер видел «пустой ответ от LLM»,
-                    // хотя причина — лимит провайдера (живой кейс 2026-10-05: Groq
-                    // TPM 429 + 500 подряд после ~6 минут созвона).
-                    var why = result.Error
-                        ?? ((result.IsSilent || secMemStripped)
-                            ? TT("L_Err_ModelSilent", "Модель промолчала (пустой ответ). Попробуйте переформулировать или увеличить лимит токенов.")
-                            : TT("L_Err_LlmEmpty", "пустой ответ от LLM"));
-                    _overlay?.MarkFailed(why, DateTime.Now, 0);
-                    RefreshOverlayStatus();
-                });
+                store.MarkState(r.ImageId, Core.Images.ChatImageState.Missing);
+                return null;
+            }
+            return new Core.Images.ChatImagePayload(
+                r.ImageId, s.Ref.MimeType, File.ReadAllBytes(path), s.Ref.Width, s.Ref.Height);
+        };
+    }
+
+    /// <summary>
+    /// Показать тост в стеке оверлея из любого потока: при вызове не из UI-потока
+    /// вызов маршалится на Dispatcher оверлея. Оверлей ещё не создан — тост пропускаем.
+    /// </summary>
+    public void PushOverlayToast(ToastKind kind, string title, string body)
+    {
+        var overlay = _overlay;
+        if (overlay == null) return;
+        if (overlay.Dispatcher.CheckAccess())
+            overlay.PushToast(title, body, kind);
+        else
+            overlay.Dispatcher.BeginInvoke(() => overlay.PushToast(title, body, kind));
+    }
+
+
+    // ===== Вложения чата: стор, очередь импорта, контекст и пикер =====
+
+    /// <summary>OCR страниц PDF (WinRT+Tesseract): ленивый синглтон приложения.</summary>
+    internal IPdfPageOcr EnsurePdfOcr()
+        => _pdfOcr ??= new PdfOcrService(Logger);
+
+    /// <summary>Фоновый импортёр; null — AttachmentStore не инициализирован.</summary>
+    private AttachmentImportRunner? EnsureImportRunner()
+    {
+        if (_attachmentStore == null) return null;
+        if (_importRunner == null)
+        {
+            _importRunner = new AttachmentImportRunner(_attachmentStore, EnsurePdfOcr(), Logger);
+            _importRunner.ItemUpdated += i => Dispatcher.BeginInvoke(() =>
+            {
+                OnImportItemToast(i);
+                RefreshAttachmentChips();
+            });
+            // Commit вооружает позднюю линковку: импорты, доехавшие после Apply,
+            // уходят в текущую встречу (вложение не пропадает).
+            // Коммит отдаёт CommittedItem{DocumentId, MeetingId, FactsRequested}:
+            // линкуем к встрече на момент enqueue (null → фолбэк на текущую).
+            _importRunner.CommitSessionHandler += ci => CommitLinkedAttachment(ci);
+            // Пропуск повторной линковки/извлечения уже привязанного документа.
+            _importRunner.IsAlreadyLinked = (docId, mid) =>
+                !string.IsNullOrEmpty(mid) && _attachmentStore.IsLinkedToMeeting(docId, mid);
+        }
+        return _importRunner;
+    }
+
+    /// <summary>Воркер извлечения фактов из документов (очередь fact_jobs).</summary>
+    private AttachmentFactWorker? EnsureFactWorker()
+    {
+        if (_attachmentStore == null || MemoryStore == null) return null;
+        if (_factWorker == null)
+        {
+            var extractor = new AttachmentFactExtractor(
+                ApiClient, MemoryStore, Logger,
+                () => Config.Memory.TranscriptExtractRules,
+                consolidator: MemoryConsolidator as MemoryConsolidator,
+                maxTokensSource: () => Config.Memory.ExtractMaxTokens,
+                maxTotalCharsSource: () => Config.Attachments.FactExtractMaxChars,
+                intensitySource: () => Config.Memory.ExtractionIntensity,
+                // §8.1: фоновый LLM-расход извлечения фактов — в отдельный счётчик
+                // «Документы и память», не в «Потрачено за встречу».
+                onUsage: res => AccountUsage(res, background: true));
+            _factWorker = new AttachmentFactWorker(
+                _attachmentStore, extractor,
+                () => CurrentMeetingId,
+                () => Config.Memory.ReviewMode, Logger);
+            _factWorker.JobUpdated += _ => Dispatcher.BeginInvoke(RefreshAttachmentChips);
+            // Окна (история встречи) освежают список файлов по этому событию.
+            _factWorker.JobUpdated += j => Dispatcher.BeginInvoke(() => FactJobChanged?.Invoke(j));
+            // Тосты прогресса извлечения фактов (стек оверлея): Running → Progress-тост
+            // с «запрос N/M», терминал — снять прогресс и показать итог.
+            _factWorker.JobUpdated += j => Dispatcher.BeginInvoke(() => OnFactJobToast(j));
+        }
+        return _factWorker;
+    }
+
+    /// <summary>
+    /// Отменить задание извлечения фактов: Running — по токену (экстрактор фиксирует
+    /// Canceled между частями), Queued/Interrupted — помечается Canceled и пропускается.
+    /// Вызывается из Memory Center (стоп на карточке) и может зваться до старта воркера.
+    /// </summary>
+    public async Task CancelFactJobAsync(long jobId)
+    {
+        var w = EnsureFactWorker();
+        if (w != null)
+            await w.CancelAsync(jobId).ConfigureAwait(false);
+    }
+
+    /// <summary>Пнуть fact-воркер после re-queue («Продолжить»/«Повторить» на карточке).</summary>
+    public void KickFactWorker() => EnsureFactWorker()?.Kick();
+
+    /// <summary>
+    /// Тосты по статусу fact-джобы (вызывается в UI-потоке из JobUpdated):
+    /// Running → Progress-тост с телом «запрос N/M» (обновляется по toastId),
+    /// терминальные — снимают прогресс и показывают итоговый тост.
+    /// </summary>
+    private void OnFactJobToast(FactJob job)
+    {
+        var docName = AttachDocName(job.DocumentId);
+        if (job.Status == FactJobStatus.Running)
+        {
+            var body = string.Format(
+                TT("L_Toast_FactsProgressFmt", "Запрос {0}/{1}"),
+                job.RequestsDone, job.RequestsPlanned);
+            if (!_factToastIds.TryGetValue(job.Id, out var toastId) && _overlay != null)
+            {
+                // actionText/onAction — кнопка «Центр памяти» в тосте прогресса: единственный
+                // постижимый путь к FactJobCard (прогресс % + «Остановить») помимо трея.
+                toastId = _overlay.PushToast(
+                    string.Format(TT("L_Toast_FactsRunning", "Извлечение фактов: {0}"), docName),
+                    body, ToastKind.Progress,
+                    actionText: TT("L_Att_OpenMemoryCenter", "Центр памяти"),
+                    onAction: () => Dispatcher.BeginInvoke(new Action(OpenMemoryCenter)));
+                _factToastIds[job.Id] = toastId;
+            }
+            else if (_overlay != null)
+            {
+                _overlay.UpdateToast(toastId, body);
+            }
+            return;
+        }
+
+        // Любой не-Running статус закрывает прогресс-тост этой джобы.
+        if (_factToastIds.Remove(job.Id, out var doneToastId))
+            _overlay?.DismissToast(doneToastId);
+
+        switch (job.Status)
+        {
+            case FactJobStatus.Done:
+                PushOverlayToast(ToastKind.Success,
+                    string.Format(TT("L_Toast_FactsDoneFmt", "Факты сохранены: {0}"), job.FactsSaved),
+                    docName);
+                break;
+            case FactJobStatus.PendingReview:
+                PushOverlayToast(ToastKind.Info,
+                    string.Format(TT("L_Att_FactsPendingReviewFmt", "Факты: на проверке ({0})"), job.FactsPending),
+                    docName);
+                break;
+            case FactJobStatus.NoFacts:
+                PushOverlayToast(ToastKind.Info,
+                    TT("L_Toast_FactsNone", "Факты не найдены"), docName);
+                break;
+            case FactJobStatus.Error:
+                PushOverlayToast(ToastKind.Error,
+                    TT("L_Toast_FactsError", "Ошибка извлечения фактов"),
+                    $"{docName}: {TruncateToast(job.Error ?? "—", 120)}");
+                break;
+            case FactJobStatus.Canceled:
+                PushOverlayToast(ToastKind.Info,
+                    TT("L_Toast_FactsCanceled", "Остановлено"),
+                    string.Format(TT("L_MC_FactJob_StoppedFmt",
+                        "Остановлено: обработано {0} из {1} частей, сохранено {2} фактов"),
+                        job.RequestsDone, job.RequestsPlanned, job.FactsSaved));
+                break;
+            // Queued/Interrupted — без тоста (переходное состояние).
+        }
+    }
+
+    /// <summary>
+    /// Тост по итогу импорта пункта picker'а (вызывается в UI-потоке из ItemUpdated):
+    /// показывает только ошибки — успех прилетает из LinkAttachmentToCurrentMeeting
+    /// (там реальная привязка к встрече). Псевдо-ошибка ENCODING: не тостится —
+    /// это запрос выбора кодировки, а не провал.
+    /// </summary>
+    private void OnImportItemToast(AttachmentImportRunner.ImportItem item)
+    {
+        if (item.Error == null || item.Error.StartsWith("ENCODING:", StringComparison.Ordinal))
+            return;
+        PushOverlayToast(ToastKind.Error,
+            TT("L_Toast_AttachFail", "Не удалось прикрепить документ"),
+            $"{item.DisplayName}: {TruncateToast(item.Error, 120)}");
+    }
+
+    /// <summary>Имя документа по id (фолбэк — сам id, если стор недоступен/упал).</summary>
+    private string AttachDocName(string documentId)
+    {
+        try { return _attachmentStore?.Get(documentId)?.DisplayName ?? documentId; }
+        catch { return documentId; }
+    }
+
+    /// <summary>Тело тоста не длиннее maxLen (обрезка с многоточием).</summary>
+    private static string TruncateToast(string text, int maxLen)
+        => text.Length <= maxLen ? text : text.Substring(0, maxLen) + "…";
+
+    /// <summary>Смена статуса fact-джобы вложения — всегда на UI-потоке
+    /// (используется окном истории встречи для перечитывания списка файлов).</summary>
+    public event Action<BrainstormBuddy.Core.Attachments.FactJob>? FactJobChanged;
+
+    /// <summary>
+    /// Id живого файла встречи для вложений. Пустой журнал создаётся без фиктивной
+    /// реплики (EnsureCurrentMeeting идемпотентен).
+    /// </summary>
+    internal string? EnsureMeetingForAttachments()
+    {
+        try { return MeetingJournal?.EnsureCurrentMeeting(); }
+        catch (Exception ex) { Logger.Warn($"EnsureMeetingForAttachments failed: {ex.Message}", "Attach"); return null; }
+    }
+
+    /// <summary>
+    /// Немодальный пикер вложений (single instance): чат остаётся доступен, окно
+    /// живёт поверх оверлея-владельца. Повторный вызов при открытом окне поднимает
+    /// его (Normal + Activate); закрытое окно пересоздаётся — живая сессия импорта
+    /// восстанавливается из runner'а (BeginSession). «Прикрепить» даёт CommitSession
+    /// + LinkAttachmentToCurrentMeeting по готовым; «Закрыть» оставляет очередь
+    /// работать в фоне (поздние завершения долинковывает App).
+    /// </summary>
+    public Task OpenAttachmentPicker()
+    {
+        if (_attachmentPicker is { } open)
+        {
+            try
+            {
+                if (open.WindowState == WindowState.Minimized)
+                    open.WindowState = WindowState.Normal;
+                open.Show();
+                open.Activate();
+                return Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                // Окно уже закрывается/умерло (гонка с Closed) — забываем ссылку
+                // и создаём новое ниже; Closed старого окна новую ссылку не тронет.
+                Logger.Warn($"Attach: picker activate failed ({ex.Message}) — recreating", "Attach");
+                _attachmentPicker = null;
+            }
+        }
+        var runner = EnsureImportRunner();
+        if (runner == null)
+        {
+            AppMessageBox.Show(_overlay,
+                TT("L_Att_ErrStore", "Хранилище вложений недоступно — перезапустите приложение."),
+                TT("L_Att_Title", "Документы"), MessageBoxButton.OK, MessageBoxImage.Warning);
+            return Task.CompletedTask;
+        }
+        var dlg = new AttachmentPickerWindow(runner, _overlay);
+        _attachmentPicker = dlg;
+        dlg.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_attachmentPicker, dlg))
+                _attachmentPicker = null;
+            RefreshAttachmentChips();
+        };
+        dlg.Show();
+        dlg.Activate();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Линковка документа, доехавшего в Commit-сессии после закрытия пикера.</summary>
+    private void CommitLinkedAttachment(AttachmentImportRunner.CommittedItem item)
+        => Dispatcher.BeginInvoke(() => _ = LinkAttachmentToCurrentMeeting(
+            item.DocumentId, item.FactsRequested, item.MeetingId));
+
+    /// <summary>
+    /// Привязать документ к живой встрече. При extractFacts - постановка fact-джобы
+    /// (снимок провайдера/модели/scope/режима проверки) и пробуждение воркера.
+    /// </summary>
+    internal async Task LinkAttachmentToCurrentMeeting(string documentId, bool extractFacts, string? journalMeetingId = null)
+    {
+        var store = _attachmentStore;
+        var meetingId = journalMeetingId ?? EnsureMeetingForAttachments();
+        if (store == null || meetingId == null || string.IsNullOrEmpty(documentId)) return;
+        try
+        {
+            await store.LinkToMeetingAsync(documentId, meetingId, CancellationToken.None);
+            Logger.Info($"Attachment {documentId} linked to meeting {meetingId}", "Attach");
+            // Тост успеха — после реальной линковки, не при enqueue импорта.
+            PushOverlayToast(ToastKind.Success,
+                TT("L_Toast_AttachDone", "Документ прикреплён"), AttachDocName(documentId));
+            if (extractFacts)
+                await EnqueueAttachmentFactJob(documentId, meetingId);
+            else if (!_localZeroNoticeShown)
+            {
+                // §8.1: чип «Готов» после ЛОКАЛЬНОЙ обработки (PDF/OCR) не должен
+                // читаться как расход LLM — честно сообщаем, что токенов не потрачено.
+                _localZeroNoticeShown = true;
+                PushOverlayToast(ToastKind.Info,
+                    TT("L_Toast_LocalZeroTitle", "Локальная обработка"),
+                    TT("L_Toast_LocalZeroBody", "Документ распознан локально — 0 LLM-токенов (извлечение фактов не запускалось)"));
+                Logger.Info("Local attach: 0 LLM tokens (no fact extraction) — notice shown", "Tokens");
             }
         }
         catch (Exception ex)
         {
-            Logger.Error("SendSecretMessage failed", ex, "UI");
-            await Dispatcher.InvokeAsync(() => _overlay?.MarkFailed(ex.Message, DateTime.Now, 0));
+            Logger.Warn($"LinkAttachment failed for {documentId}: {ex.Message}", "Attach");
         }
+        RefreshAttachmentChips();
+    }
+
+    /// <summary>Постановка fact-джобы для документа; снимок настроек памяти на момент Commit.</summary>
+    internal async Task EnqueueAttachmentFactJob(string documentId, string? journalMeetingId = null)
+    {
+        var store = _attachmentStore;
+        if (store == null || string.IsNullOrEmpty(documentId)) return;
+        var meetingId = journalMeetingId ?? EnsureMeetingForAttachments();
+        if (meetingId == null) return;
+        if (MemoryStore == null)
+        {
+            AppMessageBox.Show(_overlay,
+                TT("L_Att_ErrNoMemory", "Память выключена - извлечение фактов недоступно."),
+                TT("L_Att_Title", "Документы"), MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        try
+        {
+            var job = new FactJob(
+                Id: 0, DocumentId: documentId, MeetingId: meetingId,
+                Status: FactJobStatus.Queued, CharsSent: 0, RequestsPlanned: 0, RequestsDone: 0,
+                FactsSaved: 0, FactsPending: 0, Error: null,
+                ProviderId: Config.Api.ProviderId,
+                Model: Config.Api.ChatModel,
+                Scope: Config.Memory.ActiveProjectId.HasValue ? "project" : "global",
+                VerifyMode: Config.Memory.ReviewMode,
+                CreatedUtc: DateTime.UtcNow);
+            await store.EnqueueFactJobAsync(job);
+            EnsureFactWorker()?.Kick();
+            Logger.Info($"Fact job enqueued for {documentId}", "Attach");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"EnqueueFactJob failed for {documentId}: {ex.Message}", "Attach");
+        }
+        RefreshAttachmentChips();
+    }
+
+    /// <summary>Отвязать документ от живой встречи (крестик на чипе). Копия файла остаётся.</summary>
+    public async Task RemoveMeetingAttachmentAsync(string documentId)
+    {
+        var store = _attachmentStore;
+        var meetingId = MeetingJournal?.CurrentId;
+        if (store == null || meetingId == null || string.IsNullOrEmpty(documentId)) return;
+        try
+        {
+            await store.UnlinkFromMeetingAsync(documentId, meetingId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"UnlinkAttachment failed for {documentId}: {ex.Message}", "Attach");
+        }
+        RefreshAttachmentChips();
+    }
+
+    /// <summary>
+    /// Перерисовать строку чипов оверлея по живой встрече: имя + статус извлечения
+    /// (Warnings — не ошибки: «OCR: N стр.» значит «страницы распознаны», а не сбой)
+    /// + статус fact-джобы.
+    /// </summary>
+    public void RefreshAttachmentChips()
+    {
+        var store = _attachmentStore;
+        var overlay = _overlay;
+        var meetingId = MeetingJournal?.CurrentId;
+        if (overlay == null) return;
+        if (store == null || meetingId == null)
+        {
+            overlay.SetAttachmentChips(Array.Empty<AttachmentChipVm>());
+            return;
+        }
+        IReadOnlyList<MeetingAttachment> docs;
+        try { docs = store.ListMeetingDocuments(meetingId); }
+        catch (Exception ex)
+        {
+            Logger.Warn($"ListMeetingDocuments failed: {ex.Message}", "Attach");
+            docs = Array.Empty<MeetingAttachment>();
+        }
+        var chips = new List<AttachmentChipVm>(docs.Count);
+        foreach (var ma in docs)
+        {
+            var doc = ma.Doc;
+            var status = doc.Deleted ? TT("L_Att_StDeleted", "Удалён")
+                : doc.Warnings.Count > 0 ? TT("L_Att_StWarnFmt", "Готов · {0}").Replace("{0}", string.Join("; ", doc.Warnings))
+                : TT("L_Att_StReady", "Готов");
+            FactJob? job = null;
+            try { job = store.LatestJobFor(doc.DocumentId, meetingId); }
+            catch { /* статус фактов - бест-эфорт */ }
+            var tip = status;
+            if (job != null)
+            {
+                var facts = job.Status switch
+                {
+                    FactJobStatus.Queued => TT("L_Att_FactsQueued", "Факты: в очереди"),
+                    FactJobStatus.Running => TT("L_Att_FactsRunning", "Факты: извлекаются…"),
+                    FactJobStatus.PendingReview => TT("L_Att_FactsPendingReviewFmt", "Факты: на проверке ({0})").Replace("{0}", job.FactsPending.ToString()),
+                    FactJobStatus.Done => TT("L_Att_FactsDoneFmt", "Факты: сохранено {0}").Replace("{0}", job.FactsSaved.ToString()),
+                    FactJobStatus.NoFacts => TT("L_Att_FactsNoFacts", "Факты: не найдено"),
+                    FactJobStatus.Canceled => TT("L_Att_FactsCanceled", "Факты: отменено"),
+                    _ => TT("L_Att_FactsErrorFmt", "Факты: ошибка — {0}").Replace("{0}", job.Error ?? ""),
+                };
+                status = $"{status} · {facts}";
+                tip = status;
+            }
+            chips.Add(new AttachmentChipVm
+            {
+                DocumentId = doc.DocumentId,
+                DisplayName = doc.DisplayName,
+                StatusText = status,
+                ToolTip = tip,
+            });
+        }
+
+        // Ещё не слинкованные импорты (очередь runner'а): чип «В обработке», без крестика
+        // (удалять нечего — связи с встречей пока нет). Уже привязанные пропускаем.
+        var runner = _importRunner;
+        if (runner != null)
+        {
+            var linkedIds = new HashSet<string>(
+                docs.Select(d => d.Doc.DocumentId), StringComparer.Ordinal);
+            foreach (var item in runner.SnapshotItems())
+            {
+                if (item.DocumentId != null && linkedIds.Contains(item.DocumentId)) continue;
+                if (item.ExtractFinished) continue;   // финал есть, но связи ещё нет — мигнёт при следующем refresh
+                // §5.2: живой прогресс «В обработке: 48/51 стр. · 94%» — ProgressDone/Total
+                // считаются по завершённым страницам (не по номеру последней).
+                string st;
+                if (item.Error != null)
+                    st = item.Error.StartsWith("ENCODING:", StringComparison.Ordinal)
+                        ? TT("L_Att_StEncoding", "Нужен выбор кодировки")
+                        : TT("L_Att_StFailedFmt", "Не удалось прочитать: {0}").Replace("{0}", item.Error);
+                else if (item.StoppedByUser)
+                    st = TT("L_Att_StStopped", "Остановлено");
+                else if (item.ProgressTotal > 0)
+                    st = string.Format(TT("L_Att_ImportProgFmt", "В обработке: {0}/{1} стр. · {2}%"),
+                        item.ProgressDone, item.ProgressTotal,
+                        (int)Math.Round(100.0 * item.ProgressDone / item.ProgressTotal));
+                else
+                    st = TT("L_Att_StProcessing", "В обработке");
+                chips.Add(new AttachmentChipVm
+                {
+                    DocumentId = item.DocumentId ?? "",
+                    DisplayName = item.DisplayName,
+                    StatusText = st,
+                    ToolTip = item.SourcePath,
+                    Pending = true,
+                });
+            }
+        }
+        overlay.SetAttachmentChips(chips);
     }
 
     public async Task ExpandAnswer(QaPair pair)
@@ -2782,10 +3829,14 @@ public partial class App : Application
         try
         {
             // Memory recall + правила директив памяти — общий билдер для всех LLM-путей.
-            fullSystemPrompt = await BuildSystemPromptWithMemoryAsync(
+            (fullSystemPrompt, _) = await BuildSystemPromptWithMemoryAsync(
                 fullSystemPrompt, pair.Question ?? "", CancellationToken.None);
+            // R4: расширение ответа — прямой пользовательский запрос; ключ встречи
+            // фиксируем на старте (чат мог смениться, пока ответ в полёте).
+            var meetingKey = MeetingSpendKey;
             var result = await ApiClient.AskAsync("[EXPAND] Разверни последний ответ",
                 fullSystemPrompt, 400, new List<ChatMessage>(), CancellationToken.None);
+            AccountUsage(result, meetingKey: meetingKey);
             var expandText = (await ProcessMemoryDirectivesAsync(result.Content)).Clean;
             if (!string.IsNullOrWhiteSpace(expandText))
             {
@@ -2796,7 +3847,7 @@ public partial class App : Application
             {
                 // 429/5xx/401 — показываем причину, а не молчим: AskResult.Error уже
                 // приведён в читаемый вид через HumanizeApiError (как в SendSecretMessage).
-                var why = result.Error ?? TT("L_Err_LlmEmpty", "пустой ответ от LLM");
+                var why = result.Error ?? EmptyAnswerHint(result, false);
                 _overlay?.SetStatus(string.Format(TT("L_Status_ExpandFailedFmt", "Расширение не удалось: {0}"), why));
                 Notifier.ShowWarning(TT("L_Toast_ExpandTitle", "Расширение ответа"), why);
             }
@@ -2902,8 +3953,7 @@ public partial class App : Application
         {
             _conversationHistory = new List<ChatMessage>();
         }
-        _totalPromptTokens = 0;
-        _totalCompletionTokens = 0;
+        _tokenLedger.Reset();
         try
         {
             Dispatcher.Invoke(() =>
@@ -2921,6 +3971,10 @@ public partial class App : Application
         FinalizeMemoryMeeting();
         // Следующая реплика начнёт новый файл-журнал встречи (старая остаётся в истории).
         MeetingJournal?.BeginNewMeeting();
+        // Контекст встречи тоже чистый: сводка/хвост не протекают через ResetConversation.
+        _meetingContext?.Reset();
+        _pauseBuf.Clear();
+        SaveMeetingContextState();
         // И новая запись mem_meetings — флаги из Config.Memory.Default*.
         BeginMemoryMeeting();
         // Speaker-идентификаторы (S1..S<n>) валидны только внутри звонка — новый чат = новый набор.
@@ -2948,6 +4002,7 @@ public partial class App : Application
         if (!Config.Memory.Enabled)
         {
             Logger.Info("Memory disabled in config — skipping init", "Memory");
+            _memoryPublished.Set();   // памяти не будет - MCP-клиент не ждёт
             return;
         }
         // Параллельная инициализация запрещена: второй стор залочил бы SQLite-файл
@@ -2968,8 +4023,13 @@ public partial class App : Application
             var embedder = EmbeddingFactory.Create(Config.Memory, Config.Api, AppDataDir, Logger);
             var recall = new MemoryRecallService(store, embedder, Config.Memory, Logger);
             var memApi = ResolveMemoryApiClient.Resolve(Config, ApiClient, Logger);
-            var extractor = memApi != null ? new MemoryExtractor(memApi, Logger) : null;
-            var consolidator = new MemoryConsolidator(memApi, embedder, Config.Memory, Logger);
+            var extractor = memApi != null ? new MemoryExtractor(memApi, Logger,
+                () => Config.Memory.ExtractMaxTokens,
+                intensitySource: () => Config.Memory.ExtractionIntensity,
+                // §8.1: фоновая память — отдельный счётчик, не «Потрачено за встречу».
+                onUsage: res => AccountUsage(res, background: true)) : null;
+            var consolidator = new MemoryConsolidator(memApi, embedder, Config.Memory, Logger,
+                onUsage: res => AccountUsage(res, background: true));
 
             cts = new CancellationTokenSource();
             var handlers = new MemoryJobHandlers(store, Config.Memory,
@@ -3005,22 +4065,33 @@ public partial class App : Application
             MemoryEmbedder = embedder;
             _memoryApi = memApi;
             _memoryStore = store;
+            // Стор опубликован - MCP-клиенты, ждущие память, получают его сразу.
+            _memoryPublished.Set();
+            // §8: E5 опубликован — включаем смысловую ветку поиска встреч и
+            // фоновый до-эмбеддинг уже проиндексированных реплик (без ожидания
+            // следующего поискового запроса).
+            try { MeetingSearch?.AttachEmbeddingProvider(() => MemoryEmbedder); }
+            catch (Exception ex) { Logger.Warn($"Meeting index embedder attach failed: {ex.Message}", "Memory"); }
             Logger.Info("Memory worker started; retention+embed jobs enqueued", "Memory");
 
             // Встреча живёт от старта сессии — иначе сегменты до первого
             // «нового чата» писались бы в никуда (meeting row создавался только в Reset).
-            // BeginMemoryMeeting открывает окна (PreCallBrief) и дёргает оверлей → только
-            // UI-поток; при фоновой инициализации из настроек маршаллим на Dispatcher.
+            // BeginMemoryMeeting может открывать PreCallBrief и дёргает оверлей →
+            // только UI-поток; при фоновой инициализации из настроек маршаллим на Dispatcher.
+            // Старт приложения не должен показывать окна поверх чата: встреча
+            // создаётся сразу (сегменты до первого «нового чата» пишутся в неё),
+            // но pre-call brief остаётся только для явного «нового чата».
             if (Dispatcher.CheckAccess())
-                BeginMemoryMeeting();
+                BeginMemoryMeeting(showPreCallBrief: false);
             else
-                Dispatcher.InvokeAsync(() => { if (!_shuttingDown) BeginMemoryMeeting(); });
+                Dispatcher.InvokeAsync(() => { if (!_shuttingDown) BeginMemoryMeeting(showPreCallBrief: false); });
         }
         catch (Exception ex)
         {
             // Память — опция: сбой БД/моделей не должен ронять основной функционал.
             // Поля здесь НЕ трогаем — они ещё не публиковались (null); dispose локальных.
             Logger.Error("Memory init failed — memory disabled for this session", ex, "Memory");
+            _memoryPublished.Set();   // памяти не будет - MCP-клиент не ждёт
             try { cts?.Cancel(); } catch { }
             try { cts?.Dispose(); } catch { }
             try { store?.Dispose(); } catch { }
@@ -3089,9 +4160,10 @@ public partial class App : Application
     /// Журнальная реплика + зеркало в mem_segments, когда активна встреча с WriteMemory.
     /// Тут же лениво прописываем JournalPath (jsonl-файл появляется в первом Append).
     /// </summary>
-    private void AppendJournalWithMemory(string role, string text, string? speaker = null)
+    private void AppendJournalWithMemory(string role, string text, string? speaker = null,
+        string? messageId = null, IReadOnlyList<Core.Images.ChatImageRef>? imgs = null)
     {
-        MeetingJournal?.Append(role, text, speaker);
+        MeetingJournal?.Append(role, text, speaker, messageId, imgs?.Select(i => i.ImageId).ToArray());
 
         var store = MemoryStore;
         var mid = _currentMemoryMeetingId;
@@ -3132,7 +4204,7 @@ public partial class App : Application
     /// ResetConversation ПОСЛЕ MeetingJournal.BeginNewMeeting. Флаги берутся из дефолтов
     /// конфига (спека DEFAULT UX: «запоминать встречи по умолчанию» + Use/Write).
     /// </summary>
-    private void BeginMemoryMeeting()
+    private void BeginMemoryMeeting(bool showPreCallBrief = true)
     {
         // Ручные алиасы спикеров живут только внутри встречи.
         lock (_speakerAliases) _speakerAliases.Clear();
@@ -3173,8 +4245,12 @@ public partial class App : Application
                 JournalPath = MeetingJournal?.CurrentPath ?? "",
             };
             _currentMemoryMeetingId = store.UpsertMeeting(m);
+            // R4: usage-счётчик узнаёт активную встречу — spend ask'ов, стартовавших
+            // в ЭТОЙ встрече, копится в «Потрачено за встречу»; поздний spend
+            // предыдущей (ответ в полёте на момент смены чата) уйдёт в фон.
+            _tokenLedger.BeginMeeting(_currentMemoryMeetingId.Value.ToString());
             Logger.Info($"Memory: meeting created id={_currentMemoryMeetingId} mode={m.MemoryMode} use={m.UseMemory} write={m.WriteMemory}", "Memory");
-            MaybeShowPreCallBrief(m);
+            if (showPreCallBrief) MaybeShowPreCallBrief(m);
         }
         catch (Exception ex)
         {
@@ -3349,12 +4425,83 @@ public partial class App : Application
     /// Все LLM-пути ответов проходят через этот метод — правила директив
     /// [[MEMORY_*]] должны быть в промпте везде, где ответ парсится на директивы.
     /// </summary>
-    private async Task<string> BuildSystemPromptWithMemoryAsync(string baseSystemPrompt, string queryText, CancellationToken ct)
+    private async Task<(string Prompt, IReadOnlyList<MeetingSearchHit> MeetingHits)> BuildSystemPromptWithMemoryAsync(string baseSystemPrompt, string queryText, CancellationToken ct, string? requestId = null, Action<string?>? progress = null)
     {
+        // §7: журналы прошлых встреч — те же правила бюджета, что у memory recall:
+        // неблокирующий ScanAsync, bounded-timeout, ошибки → без блока. Ищем при
+        // непустом вопросе и включённой настройке Memory.MeetingSearchEnabled (не
+        // только при включённой памяти): журналы есть и у встреч без фактов —
+        // «что мы решили вчера» должно работать. Выключено → блока нет вовсе.
         var recall = MemoryRecall;
         var store = MemoryStore;
+        // Спека «поиск по памяти и встречам», п.2: автоподбор (8000) делится
+        // 5/8 фактам и 3/8 фрагментам встреч, дополнительный поиск модели
+        // (32000) — отдельно, в tool-loop. Малому окну бюджеты урезаются по
+        // фактическому входному контексту; 4000 токенов — грубый резерв под
+        // историю/вложения/ответ.
+        var budgets = MemoryBudgets.Plan(
+            Config.Memory, Config.Api.ChatModel, Config.Api.BaseUrl,
+            reservedTokens: (baseSystemPrompt.Length + 4000) / 4);
+        var autoRid = requestId ?? "auto-" + Guid.NewGuid().ToString("N")[..8];
+        var meetingChars = Math.Max(400, budgets.MeetingTokens * 4);
+        // Этап в карточке — только при реальном поиске, не вместо любого ожидания.
+        if (MeetingSearch != null && Config.Memory.MeetingSearchEnabled &&
+            !string.IsNullOrWhiteSpace(queryText))
+            progress?.Invoke(TT("L_Search_Meetings", "Проверяю прошлые встречи"));
+        var (meetingHits, meetingSearched, meetingIncomplete, meetingSemanticPending,
+            meetingResult) = await SearchPastMeetingsAsync(queryText, ct, autoRid);
+        // §8: таймаут/строящийся смысловой индекс — честный блок «поиск не
+        // завершён / перефразы позже», а не ложное «обсуждений не было».
+        var meetingBlock = MeetingSearchService.BuildMeetingsContextBlock(meetingHits, meetingChars,
+            meetingSearched, searchIncomplete: meetingIncomplete,
+            semanticPending: meetingSemanticPending,
+            dateFrom: meetingResult?.DateFrom, dateTo: meetingResult?.DateTo,
+            dateFallback: meetingResult?.DateFallback ?? false);
+        var scopeLabel = Config.Memory.ActiveProjectId is { } planPid
+            ? $"project#{planPid}" : _currentMemoryMeetingId is { } planMid ? $"meeting#{planMid}" : "all";
+        Logger.Info($"MEMDIAG rid={autoRid} plan q=\"{(queryText.Length > 200 ? queryText[..200] + "…" : queryText)}\" " +
+                    $"scope={scopeLabel} window={budgets.Window} reserved={budgets.Reserved} " +
+                    $"auto={budgets.AutoTokens} memory={budgets.MemoryTokens} meeting={budgets.MeetingTokens} " +
+                    $"extra={budgets.ExtraSearchTokens} clamped={budgets.Clamped} " +
+                    $"builtinTools={BuiltinToolsAvailable}", "Memory");
+        var prompt = meetingBlock.Length > 0 ? meetingBlock + "\n\n" + baseSystemPrompt : baseSystemPrompt;
+        // §6 аудита 16.10: действующий уровень интенсивности всегда в контексте —
+        // чат отвечает на вопрос о настройке фактом, а не догадкой.
+        var statusLine = MemoryPrompts.IntensityStatusLine(
+            Config.Memory.ExtractionIntensity, Config.Memory.Enabled && store != null);
+        var memoryState = RecallStepState.Disabled;
+        var memoryHitsCount = 0;
+        var memoryShown = 0;
+        var memoryTruncated = false;
+        var meetingState = !Config.Memory.MeetingSearchEnabled
+            ? RecallStepState.Disabled
+            : meetingIncomplete ? RecallStepState.Incomplete
+            : meetingSearched ? (meetingHits.Count > 0 ? RecallStepState.Completed : RecallStepState.Empty)
+            : RecallStepState.NotRun;
+        string StatusBlock(RecallStepState memState) => MemoryContextStatus.Build(
+            new MemoryContextStatusData
+            {
+                Now = DateTime.Now,
+                MemoryEnabled = Config.Memory.Enabled && store != null,
+                AutoRecallEnabled = Config.Memory.AutoRecall,
+                RecallMaxItems = Config.Memory.RecallMaxItems,
+                AutoRecallBudgetTokens = budgets.AutoTokens,
+                ExtraSearchBudgetTokens = budgets.ExtraSearchTokens,
+                BuiltinToolsAvailable = BuiltinToolsAvailable,
+                MeetingSearchEnabled = Config.Memory.MeetingSearchEnabled,
+                MemoryState = memState,
+                MemoryHits = memoryHitsCount,
+                MemoryShown = memoryShown,
+                MemoryTruncated = memoryTruncated,
+                MeetingState = meetingState,
+                MeetingHits = meetingHits.Count,
+                MeetingDateFrom = meetingResult?.DateFrom,
+                MeetingDateTo = meetingResult?.DateTo,
+                MeetingDateFallback = meetingResult?.DateFallback ?? false,
+                MeetingStatus = meetingResult?.Status,
+            });
         if (store == null || !Config.Memory.Enabled)
-            return baseSystemPrompt;
+            return (StatusBlock(RecallStepState.Disabled) + "\n" + prompt + statusLine, meetingHits);
 
         long? mid = null;
         MemoryMeeting? meeting = null;
@@ -3374,25 +4521,72 @@ public partial class App : Application
         var writeMemory = (meeting?.WriteMemory ?? (mid == null && Config.Memory.DefaultWriteMemory)) &&
             !string.Equals(Config.Memory.SaveMode, "off", StringComparison.OrdinalIgnoreCase);
 
-        var prompt = baseSystemPrompt;
-
         if (useMemory && recall != null && Config.Memory.AutoRecall && !string.IsNullOrWhiteSpace(queryText))
         {
+            progress?.Invoke(TT("L_Search_Memory", "Ищу в памяти"));
             var sw = Stopwatch.StartNew();
+            memoryState = RecallStepState.Incomplete;
             try
             {
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 linked.CancelAfter(MemoryRecallTimeoutMs);
                 var projId = Config.Memory.ActiveProjectId;
+                // Бюджеты (настройки памяти): обычный ответ получает
+                // AutoRecallBudgetTokens (8000), а явная просьба «все/полный
+                // список» — плюс ExtraSearchBudgetTokens и без лимита по числу
+                // фактов: иначе модель физически не может выполнить просьбу.
+                var wantsAll = MemoryRecallService.QueryWantsFullList(queryText);
+                // Полносписочный запрос без встроенных инструментов не может
+                // дочитать данные вторым шагом — отдаём ему дополнительный
+                // бюджет сразу. С инструментами остаток остаётся tool-loop.
+                var budget = budgets.MemoryTokens +
+                    (wantsAll && !BuiltinToolsAvailable ? budgets.ExtraSearchTokens : 0);
                 var hits = await recall.RecallAsync(new MemoryRecallQuery(
                     queryText,
                     Scope: projId.HasValue ? MemoryScopeType.Project : null,
                     ScopeId: projId,
                     MeetingId: mid,
+                    // Лимит фактов снимает сам recall при полносписочном
+                    // запросе (QueryWantsFullList); здесь — обычная настройка.
                     MaxItems: Config.Memory.RecallMaxItems,
-                    MaxTokens: Config.Memory.RecallMaxTokens), linked.Token);
-                var block = recall.BuildContextBlock(hits, Config.Memory.RecallMaxTokens);
-                Logger.Info($"Memory recall: {hits.Count} hits in {sw.ElapsedMilliseconds}ms", "Memory");
+                    MaxTokens: budget), linked.Token,
+                    trace: t => Logger.Info($"MEMDIAG rid={autoRid} recall " +
+                        $"q=\"{(queryText.Length > 120 ? queryText[..120] + "…" : queryText)}\" " +
+                        $"ftsCandidates={t.FtsCandidates} vectorCandidates={t.VectorCandidates} " +
+                        $"results={t.Results} embeddings={t.EmbeddingsAvailable} " +
+                        $"embeddingsFailed={t.EmbeddingsFailed}", "Memory"));
+                var detailed = ContextBlockBuilder.BuildDetailed(hits, budget);
+                memoryHitsCount = hits.Count;
+                memoryShown = detailed.Shown;
+                memoryTruncated = detailed.Truncated;
+                memoryState = hits.Count == 0 ? RecallStepState.Empty : RecallStepState.Completed;
+                var block = detailed.Text;
+                // Честный статус: «найдено / найдено частично / ничего не
+                // найдено» прямо в блоке — модель обязана отличать «данных
+                // нет» от «нашлось соседнее» и не выдавать усечение за полный
+                // список (маркер усечения ставит ContextBlockBuilder).
+                var blockTruncated = detailed.Truncated;
+                var statusText = MemoryPrompts.RecallStatusLine(hits, blockTruncated);
+                if (string.IsNullOrWhiteSpace(block))
+                    block = $"<memory_context>\n{statusText}\n</memory_context>";
+                else
+                    block = block.Replace("<memory_context>\n",
+                        $"<memory_context>\n{statusText}\n", StringComparison.Ordinal);
+                Logger.Info($"Memory recall: {hits.Count} hits, budget {budget} tokens{(wantsAll ? " (full list)" : "")}" +
+                            $" in {sw.ElapsedMilliseconds}ms", "Memory");
+                Logger.Info($"MEMDIAG rid={autoRid} block shown={detailed.Shown}/{detailed.Total} " +
+                            $"collapsed={detailed.Collapsed} truncated={detailed.Truncated} " +
+                            $"budget={budget}p chars={block.Length} meetingChars={meetingChars} " +
+                            $"meetingHits={meetingHits.Count} meetingIncomplete={meetingIncomplete}", "Memory");
+                // Диагностика выдачи: какие именно факты вошли в контекст (id + score +
+                // причина), чтобы «поиск не нашёл» можно было разобрать по журналу.
+                var byId = hits.ToDictionary(h => h.Item.Id);
+                Logger.Info($"MEMDIAG rid={autoRid} selected=" + string.Join(" | ",
+                    (detailed.SelectedIds ?? Array.Empty<long>())
+                        .Select(id => byId.TryGetValue(id, out var h)
+                            ? $"{id}:{h.Score:F3}{(h.Why.Length > 0 ? "[" + h.Why + "]" : "")}"
+                            : id.ToString())),
+                    "Memory");
                 // Повестка из Pre-call Brief — первой строкой блока, до hits.
                 if (agenda.Length > 0)
                     block = string.IsNullOrWhiteSpace(block)
@@ -3404,33 +4598,410 @@ public partial class App : Application
             }
             catch (OperationCanceledException)
             {
+                memoryState = RecallStepState.Incomplete;
                 Logger.Warn($"Memory recall: timeout {MemoryRecallTimeoutMs}ms — asking without memory", "Memory");
+                Logger.Info($"MEMDIAG rid={autoRid} recall timeout={MemoryRecallTimeoutMs}ms reason=timeout", "Memory");
             }
             catch (Exception ex)
             {
+                memoryState = RecallStepState.Error;
                 Logger.Warn($"Memory recall failed: {ex.Message} — asking without memory", "Memory");
+                Logger.Info($"MEMDIAG rid={autoRid} recall reason=error type={ex.GetType().Name}", "Memory");
             }
         }
 
+        prompt = StatusBlock(memoryState) + "\n" + prompt;
         if (writeMemory)
             prompt += MemoryRulesPromptSuffix;
+        // Встроенные инструменты доступны модели всегда (без внешнего MCP):
+        // без инструкции модель не знает, что можно дочитать память сама.
+        if (BuiltinToolsAvailable)
+            prompt += BuiltinSearchPromptSuffix;
+        prompt += statusLine;
+        return (prompt, meetingHits);
+    }
+
+    /// <summary>Поиск фрагментов прошлых встреч для контекста ответа (§7, §8).
+    /// Возвращает (хиты, searched, incomplete, semanticPending):
+    /// searched=false — поиск не состоялся (выключен/пустой запрос/нет стора/сбой);
+    /// incomplete=true — поиск оборвался по бюджету (sync/индекс не успели; либо
+    /// точные хиты есть, а смысловая ветка не уложилась), и ответ обязан сказать
+    /// «поиск не завершён», а не «обсуждений не было»;
+    /// semanticPending=true — векторная обвязка E5 ещё строится (перефразы позже).</summary>
+    private async Task<(IReadOnlyList<MeetingSearchHit> Hits, bool Searched, bool Incomplete,
+        bool SemanticPending, MeetingSearchResult? Result)> SearchPastMeetingsAsync(
+        string queryText, CancellationToken ct, string? requestId = null)
+    {
+        var search = MeetingSearch;
+        if (search == null || string.IsNullOrWhiteSpace(queryText))
+            return (Array.Empty<MeetingSearchHit>(), false, false, false, null);
+        // Явный opt-out: журналы не читаем и НЕ добавляем в промпт блок
+        // «совпадений нет» — обычный ответ не должен выглядеть как неудачный поиск.
+        if (!Config.Memory.MeetingSearchEnabled)
+            return (Array.Empty<MeetingSearchHit>(), false, false, false, null);
+
+        // Бюджет из настроек; диапазон 500-10000 мс — тот же, что клампит
+        // SettingsViewModel, но App читает конфиг напрямую: ручная правка
+        // config.json не должна ни подвесить ответ, ни отменить поиск сразу.
+        var timeoutMs = Math.Clamp(Config.Memory.MeetingSearchTimeoutMs, 500, 10_000);
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            linked.CancelAfter(timeoutMs);
+            var res = await search.SearchDetailedAsync(queryText, linked.Token,
+                new MeetingSearchOptions
+                {
+                    ExcludeMeetingId = MeetingJournal?.CurrentId,
+                    MaxResults = 8,
+                    // Дата из вопроса — фильтр встречи, а не слово внутри
+                    // транскрипта; если встреч в периоде нет, блок честно
+                    // скажет об этом вместо «совпадений нет».
+                    IncludeMeetingsInRange = true,
+                    // Точные/FTS-хиты, уже найденные до истечения бюджета, важнее
+                    // необязательной смысловой ветки: отдаём их с incomplete-статусом.
+                    KeepLexicalOnSemanticTimeout = true,
+                });
+            // Внешняя отмена (новый вопрос/закрытие) — не результат поиска:
+            // ни блока, ни ложной отметки «поиск не завершён».
+            if (ct.IsCancellationRequested)
+                return (Array.Empty<MeetingSearchHit>(), false, false, false, null);
+            Logger.Info($"Meeting search: {res.Hits.Count} hits in {sw.ElapsedMilliseconds}ms"
+                + (res.Status.SemanticTimedOut ? " (semantic timed out — lexical hits kept)"
+                    : res.Status.Incomplete ? " (incomplete: index still syncing)" : ""), "Memory");
+            Logger.Info($"MEMDIAG rid={requestId} meetings q=\"{(queryText.Length > 120 ? queryText[..120] + "…" : queryText)}\" " +
+                        $"hits={res.Hits.Count} incomplete={res.Status.Incomplete} " +
+                        $"semanticAvailable={res.Status.SemanticAvailable} " +
+                        $"semanticPending={res.Status.SemanticPending} " +
+                        $"semanticTimedOut={res.Status.SemanticTimedOut} elapsed={sw.ElapsedMilliseconds}ms", "Memory");
+            return (res.Hits, true, res.Status.Incomplete, res.Status.SemanticPending, res);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            Logger.Warn($"Meeting search: timeout {timeoutMs}ms — answer marked incomplete", "Memory");
+            Logger.Info($"MEMDIAG rid={requestId} meetings timeout={timeoutMs}ms reason=timeout", "Memory");
+            return (Array.Empty<MeetingSearchHit>(), false, true, SemanticPendingSafe(search), null);
+        }
+        catch (OperationCanceledException) { /* внешняя отмена — просто без блока */ }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Meeting search failed: {ex.Message} — asking without journals", "Memory");
+            Logger.Info($"MEMDIAG rid={requestId} meetings reason=error type={ex.GetType().Name}", "Memory");
+        }
+        return (Array.Empty<MeetingSearchHit>(), false, false, false, null);
+    }
+
+    /// <summary>SemanticPending без риска уронить путь ответа (статус читает SQLite).</summary>
+    private static bool SemanticPendingSafe(MeetingSearchService search)
+    {
+        try { return search.GetStatus().SemanticPending; }
+        catch { return false; }
+    }
+
+    /// <summary>Оверрайд системного промпта для прямых вопросов оператора: поле ввода
+    /// и «прокрутить буфер» — ВСЕГДА явный диалог; правило суфлёра «можешь молчать»
+    /// на них не действует (иначе «Отправлено в память»/секретные вопросы падают в
+    /// осознанное молчание).</summary>
+    private const string ManualPurposeClause =
+        "\n\n[secret] = ПРЯМОЙ вопрос оператора (не реплика собеседника). " +
+        "Отвечай ВСЕГДА — правило «можешь промолчать» на такие вопросы не действует. " +
+        "Если вопрос неоднозначен — уточни, а не молчи.";
+
+    /// <summary>Итоговый системный промпт для ask: memory-контекст + правила памяти +
+    /// сводка встречи (plan.SummaryBlock) + пометка «ранний контекст утерян» +
+    /// purpose-оверрайд (ManualChat отключает правило молчания).</summary>
+    private static string ApplyContextToPrompt(string memoryPrompt, string? summaryBlock,
+        bool earlyContextDropped, AskPurpose purpose)
+    {
+        var prompt = memoryPrompt;
+        // Сводка старшего контекста — после memory-контекста, до остального:
+        // модель опирается на неё как на предысторию, а не на лимиты.
+        if (!string.IsNullOrEmpty(summaryBlock))
+            prompt += $"\n\nКонтекст этой встречи (сводка ранних реплик):\n{summaryBlock}\n(свежие реплики — в истории ниже)";
+        if (earlyContextDropped)
+            prompt += "\n(часть раннего контекста этой встречи пока недоступна — идёт свёртка)";
+        if (purpose == AskPurpose.ManualChat)
+            prompt += ManualPurposeClause;
         return prompt;
+    }
+
+    private List<ChatMessage> SnapshotLegacyHistory()
+    {
+        lock (_historyLock) return new List<ChatMessage>(_conversationHistory);
+    }
+
+    /// <summary>Состояние контекста встречи → sidecar meta.json (переживает рестарт).
+    /// Best-effort: журнал и без этого пишет реплики, контекст — вторичный.</summary>
+    private void SaveMeetingContextState()
+    {
+        try
+        {
+            var ctx = _meetingContext;
+            if (ctx == null || MeetingJournal == null) return;
+            // Sidecar привязан к файлу встречи: гарантируем, что встреча существует,
+            // иначе мета запишется не туда (вызов при ResetConversation до первой реплики).
+            if (MeetingJournal.CurrentId == null) return; // пустой state не создаёт встречу
+            MeetingJournal.SaveContextState(JsonSerializer.Serialize(ctx.State));
+        }
+        catch (Exception ex) { Logger.Warn($"Context save failed: {ex.Message}", "Context"); }
+    }
+
+    /// <summary>Восстановить сводку/прогресс последней встречи после аварийного выхода:
+    /// читаем sidecar самого свежего meta.json + дословный хвост реплик из её jsonl.</summary>
+    private void TryRestoreContextFromLatestMeeting()
+    {
+        try
+        {
+            var ctx = _meetingContext;
+            if (ctx == null || MeetingJournal == null) return;
+            var latest = MeetingJournal.LoadAll().FirstOrDefault(); // LoadAll уже сортирован: свежие сверху
+            if (latest == null) return;
+            var stateJson = MeetingJournal.LoadContextState(latest.Id);
+            MeetingContextState? restored = null;
+            if (!string.IsNullOrEmpty(stateJson))
+            {
+                try { restored = JsonSerializer.Deserialize<MeetingContextState>(stateJson); }
+                catch (Exception dx) { Logger.Warn($"ContextState parse failed: {dx.Message}", "Context"); }
+            }
+            var journalPath = latest.JournalPath;
+            var tailJsonl = !string.IsNullOrEmpty(journalPath) && File.Exists(journalPath)
+                ? journalPath : null;
+            ctx.Restore(restored, ReadMeetingTailPairs(tailJsonl));
+            Logger.Info($"Meeting context restored: meeting={latest.Id}, summary={restored?.RollingSummary != null}", "Context");
+        }
+        catch (Exception ex) { Logger.Warn($"Context restore failed: {ex.Message}", "Context"); }
+    }
+
+    /// <summary>Хвост реплик встречи из jsonl-журнала → пары (question→answer).
+    /// Маппинг как у истории: question/user — реплика оператора, answer — ответ.</summary>
+    private static List<(string Question, string Answer)> ReadMeetingTailPairs(string? jsonlPath)
+    {
+        var pairs = new List<(string Question, string Answer)>();
+        if (jsonlPath == null) return pairs;
+        try
+        {
+            // Читаем только хвост (сводка покрывает остальное) — пара-тройка экранов текста.
+            var lines = File.ReadLines(jsonlPath).TakeLast(MeetingContextManager.VerbatimTailPairs * 2 + 8).ToList();
+            string? pendingQ = null;
+            foreach (var line in lines)
+            {
+                MeetingJournalLine? e;
+                try { e = JsonSerializer.Deserialize<MeetingJournalLine>(line); }
+                catch { continue; }
+                if (e == null || string.IsNullOrWhiteSpace(e.Text)) continue;
+                if (e.Role == "answer")
+                {
+                    if (pendingQ != null) { pairs.Add((pendingQ, e.Text)); pendingQ = null; }
+                }
+                else if (e.Role is "question" or "user")
+                {
+                    // Несколько вопросов без ответа подряд → мостим одним вопросом
+                    // (иначе пара теряет более ранние реплики — поведение истории LLM).
+                    pendingQ = pendingQ == null ? e.Text : pendingQ + "\n" + e.Text;
+                }
+            }
+        }
+        catch { /* хвост — лучшая попытка, журнал может быть частично повреждён */ }
+        return pairs;
+    }
+
+    /// <summary>Индикатор «контекст Nk / Сводка…» в статус-строке оверлея.</summary>
+    private void UpdateContextInfo(int estimatedTokens, int budgetTokens)
+    {
+        try
+        {
+            var ctx = _meetingContext;
+            if (ctx == null) { _overlay?.SetContextInfo(null, false); return; }
+            var text = string.Format(TT("L_Ctx_Info", "Контекст: ~{0:0.#}k / {1:0.#}k"),
+                estimatedTokens / 1000.0, budgetTokens / 1000.0);
+            _overlay?.SetContextInfo(text, ctx.State.SummaryInFlight);
+        }
+        catch { /* индикатор — вспомогательный, не должен ронять ask */ }
+    }
+
+    /// <summary>Фоновая сводка: генерируется ОДИН раз на встречу (план выставил флаг).
+    /// Идёт тем же ApiClient; промпт-правила памяти тут неуместны — raw-база.</summary>
+    private void RunContextSummaryAsync()
+    {
+        var ctx = _meetingContext;
+        if (ctx == null) return;
+        // §8.2: выключенный/приостановленный LLM не должен запускать скрытую
+        // платную сводку по старой речи — задача просто не ставится.
+        if (Config.Ui.LlmDisabled || IsLlmPaused)
+        {
+            Logger.Info("Context summary skipped: LLM disabled/paused", "Context");
+            return;
+        }
+        // Единственное задание на встречу: метим до запуска, иначе каждый
+        // ScheduleSummary-запрос спавнил бы параллельную сводку (индикатор
+        // «Обновляю контекст…» при этом никогда не загорался).
+        if (!ctx.TryMarkSummaryInFlight()) return;
+        var msgs = ctx.TakeSummarizableSnapshot();
+        if (msgs.Count == 0) { ctx.MarkSummaryDone(); return; }
+        var coveredPairs = msgs.Count / 2;
+        var priorSummary = ctx.State.RollingSummary;
+        // R4: сводка принадлежит встрече, для которой поставлена — ключ фиксируем на
+        // старте задачи. Доехавшая после смены чата, она уйдёт в фон (не надувает
+        // «Потрачено за встречу» новой встречи).
+        var summaryMeetingKey = MeetingSpendKey;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var prompt = ContextSummarizer.BuildPrompt(priorSummary, msgs);
+                // §5 аудита 16.10: отдельный бюджет фона + один повтор при исчерпании.
+                // Reasoning-модель иногда съедает все 2000 на скрытые размышления и
+                // отдаёт пустой content; повтор с удвоенным бюджетом спасает сводку,
+                // иначе контекст не сжимается до конца встречи.
+                var res = await ContextSummarizer.AskWithBudgetRetryAsync(
+                    budget => ApiClient.AskAsync(prompt,
+                        ContextSummarizer.SystemPrompt, budget,
+                        new List<ChatMessage>(), CancellationToken.None,
+                        background: true),
+                    Math.Min(ContextSummarizer.DefaultMaxTokens, Config.Advanced.MaxResponseTokens),
+                    // R4: usage учитываем на КАЖДОЙ попытке сводки, в т.ч. пустой/неудачной —
+                    // провайдер уже списал токены (раньше расход повтора терялся).
+                    r => AccountUsage(r, background: true, meetingKey: summaryMeetingKey));
+                if (!string.IsNullOrWhiteSpace(res?.Content))
+                {
+                    // §8.2: кумулятивная сводка — ранние решения начала встречи
+                    // переживают серию сжатий (новая сводка строится над старой).
+                    var merged = ContextSummarizer.MergeSummary(priorSummary, res.Content);
+                    // §8.2: публикуем РОВНО снимок; реплики, пришедшие во время
+                    // генерации, остаются в хвосте и уйдут в следующую сводку.
+                    ctx.PublishSummary(merged, coveredPairs);
+                    SaveMeetingContextState();
+                    Logger.Info($"Meeting summary updated ({merged.Length} chars, " +
+                        $"compressed {coveredPairs} pairs, usage {res.PromptTokens}+{res.CompletionTokens}t)", "Context");
+                    _ = Dispatcher.InvokeAsync(() =>
+                    {
+                        // Обновить индикатор «Сводка…»/«контекст Nk» после публикации:
+                        // точные числа пересчитает следующий BuildPlan, здесь — флаг.
+                        _overlay?.SetContextInfo(null, ctx.State.SummaryInFlight);
+                        RefreshOverlayStatus();
+                    });
+                }
+                else
+                {
+                    // Нет смысла крутить заново на следующем чанке: ждём новых пар —
+                    // триггер выставится сам по бюджету/переполнению хвоста.
+                    // §8.2: при пустом ответе хвост НЕ тронут — ранние реплики целы.
+                    ctx.MarkSummaryDone();
+                    // §5: причина должна быть видна в логе — сеть/HTTP, отмена и
+                    // исчерпанный бюджет лечатся по-разному.
+                    if (!string.IsNullOrWhiteSpace(res?.Error))
+                        Logger.Warn($"Meeting summary failed: {res.Error}", "Context");
+                    else
+                        Logger.Warn($"Meeting summary: empty response " +
+                            $"(kind={res?.EmptyKind}, finish={res?.FinishReason ?? "n/a"}, " +
+                            $"usage={res?.PromptTokens}+{res?.CompletionTokens}t), " +
+                            "prior summary kept, will retry on next trigger", "Context");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                ctx.MarkSummaryDone();
+                Logger.Info("Meeting summary canceled", "Context");
+            }
+            catch (Exception ex)
+            {
+                // §8.2: провал сводки НЕ удаляет реплики — просто снимаем in-flight,
+                // следующий триггер попробует снова. Ранние сообщения на месте,
+                // в логе — причина.
+                ctx.MarkSummaryDone();
+                Logger.Warn($"Meeting summary failed: {ex.Message}", "Context");
+            }
+        });
+    }
+
+    // ===== Отмена/повтор ответов (кнопки на пузыре, контракт OverlayOps) =====
+
+    /// <summary>Отмена конкретного ожидающего ответа (✕ на пузыре «отправляю…»).</summary>
+    public void CancelAnswer(int requestId)
+    {
+        _overlay?.CancelRequest(requestId);
+        // Открытый MCP-аппрувал при отмене отклоняем — иначе tool-loop
+        // останется висеть на карточке снятого запроса.
+        _overlay?.CancelMcpApproval();
+        RefreshOverlayStatus();
+        Logger.Info($"CancelAnswer: request #{requestId} cancelled", "Answer");
+    }
+
+    /// <summary>Повтор отправки того же вопроса в тот же пузырь (↻ после ошибки/отмены).</summary>
+    public void RetryAnswer(QaPair pair)
+    {
+        if (!_askRetryArgs.TryGetValue(pair, out var args))
+        {
+            Logger.Warn("RetryAnswer: no saved args for pair — bubble not re-askable", "Answer");
+            _overlay?.MarkFailed(pair, TT("L_Answer_NoRetry", "Повтор недоступен"), DateTime.Now, 0);
+            return;
+        }
+        _overlay?.ReopenForRetry(pair);
+        _overlay?.SetWaitingText(pair, TT("L_Answer_Waiting", "Отправляю вопрос…"));
+        _ = Task.Run(async () => await RunManualAskAsync(pair, args.Text, args.IsScreen,
+            fromRetry: true, messageId: args.MessageId, imageTiles: args.ImageTiles));
     }
 
     /// <summary>Правила inline-директив памяти в конце системного промпта (добавляется,
     /// когда у встречи активна запись). Формат разбирает MemoryDirectiveParser.</summary>
+    /// <summary>Инструкции самостоятельного поиска: модель проверяет сохранённое
+    /// до утверждений «данных нет» и уточняет запрос, если первой подборки мало
+    /// (спека «поиск по памяти и встречам», п.3).</summary>
+    private const string BuiltinSearchPromptSuffix =
+        "\n\nВСТРОЕННЫЙ ПОИСК BUDDY (инструменты доступны, пользователь их не выбирает):\n" +
+        "- Вопрос о сохранённой информации, прошлых договорённостях или встречах — СНАЧАЛА проверь " +
+        "данные инструментами памяти/встреч, не полагайся только на автоматическую подборку ниже.\n" +
+        "- Если <memory_context> или фрагменты встреч не покрывают вопрос — вызови поиск по памяти " +
+        "и/или по прошлым встречам со своими ключевыми словами (синонимы, короткие обозначения вроде QA, ML, " +
+        "номера задач). Найденный источник можно прочитать целиком.\n" +
+        "- Не повторяй тот же запрос: уточняй формулировку. Остановись, когда сведений достаточно " +
+        "или инструмент сообщил об исчерпании бюджета.\n" +
+        "- НЕ утверждай «в памяти/встречах этого нет», пока не выполнил поиск. Если поиск вернул " +
+        "ограничение, усечение или неполный статус — скажи об этом прямо.\n" +
+        "- Если ответа действительно нет — начни ответ словами «В проверенных источниках нет данных» " +
+        "и не подменяй ответ соседними фактами.\n" +
+        "- Различай происхождение: role=user/participant — слова участника; role=answer — ответ ИИ; " +
+        "role=summary — AI-резюме; provenance=extraction/llm-directive/attachment-directive — " +
+        "извлечённый факт, а не цитата. Цитируй только дословный text своей строки; не склеивай " +
+        "соседние реплики и не приписывай слова участника ответу ИИ.\n" +
+        "- В ответе укажи, на какие факты/фрагменты встреч опираешься (id источника из результата).";
+
     private const string MemoryRulesPromptSuffix =
         "\n\nПРАВИЛА ПАМЯТИ:\n" +
-        "- Если собеседник просит запомнить/внести в память/обновить факт — добавь в САМОЕ НАЧАЛО ответа директиву: " +
+        "- Если собеседник ЯВНО просит запомнить/внести в память/обновить факт — добавь в САМОЕ НАЧАЛО ответа директиву: " +
         "[[MEMORY_ADD]]краткий факт[[/MEMORY_ADD]], для правки: " +
         "[[MEMORY_UPDATE]]старый факт→новый факт[[/MEMORY_UPDATE]], для забывания: " +
         "[[MEMORY_FORGET]]факт[[/MEMORY_FORGET]].\n" +
-        "- Директивы скрыты от пользователя. НИКОГДА не пиши «записал/запомнил» без реальной директивы.\n" +
-        "- В блоке <memory_context> уже подгружены известные факты — опирайся на них, дубли не добавляй.";
+        "- Максимум 2 директивы за ответ, каждая — ОДИН факт. НИКОГДА не повторяй директиву в следующих ответах — " +
+        "один раз выдал, дальше хранилище само.\n" +
+        "- В блоке <memory_context> уже подгружены известные факты: если факт (или та же мысль другими словами) " +
+        "уже там — директиву НЕ выдавай вообще.\n" +
+        "- Директивы скрыты от пользователя: НИКОГДА не повторяй их текст, слово «MEMORY_» и «записал/запомнил» " +
+        "в видимой части ответа.";
 
     /// <summary>Локализованная строка по ключу с фолбэком (для строк, которых ещё может не быть в словарях).</summary>
-    private static string TT(string key, string fallback) =>
+    internal static string TT(string key, string fallback) =>
         Application.Current.TryFindResource(key) as string ?? fallback;
+
+    /// <summary>Понятная причина пустого ответа по <see cref="AskResult.EmptyKind"/>.
+    /// Совет «увеличьте лимит» показываем ТОЛЬКО при LengthExhausted (бюджет съеден
+    /// размышлениями); пустой ответ при stop/повреждённом теле/внутреннем лимите
+    /// провайдера лимитом токенов не объясняется (инцидент 2026-10-12: совет вводил
+    /// в заблуждение — completion был 100/1500 и 278/3500 при finish_reason=stop).</summary>
+    private static string EmptyAnswerHint(AskResult result, bool silentByStrip) =>
+        result.EmptyKind switch
+        {
+            EmptyAnswerKind.LengthExhausted =>
+                TT("L_Err_TokenBudget", "Лимит токенов исчерпан размышлениями модели. Увеличьте лимит токенов в настройках."),
+            EmptyAnswerKind.ProviderCap =>
+                TT("L_Err_ProviderCap", "Ответ обрезан внутренним лимитом провайдера. Попробуйте другую модель или провайдера."),
+            EmptyAnswerKind.TransportOrParse =>
+                TT("L_Err_TransportParse", "Ответ модели не распознан (повреждённый ответ сервера). Повторите запрос."),
+            // ExpectedSilence или стрипленая директива — допустимое молчание/фильтр.
+            var kind when kind == EmptyAnswerKind.ExpectedSilence || silentByStrip =>
+                TT("L_Err_ModelSilent", "Модель промолчала (пустой ответ). Попробуйте переформулировать."),
+            _ => TT("L_Err_LlmEmpty", "пустой ответ от LLM"),
+        };
 
     /// <summary>Зелёный тост «в память добавлено» (5 сек). Вызывается из любого потока — маршаллим на UI.</summary>
     public void ShowMemoryAddedToast(IReadOnlyList<string> facts)
@@ -3466,7 +5037,7 @@ public partial class App : Application
 
         try
         {
-            var applied = await new MemoryWriter(store, Logger)
+            var applied = await new MemoryWriter(store, Logger, MemoryConsolidator as MemoryConsolidator)
                 .ApplyAsync(dirs, CurrentMeetingId, ct);
             if (applied.Count > 0)
             {
@@ -3490,18 +5061,18 @@ public partial class App : Application
     /// Вызывать ДО окончания стрим-строки (аналогично isSilent → DropStreamLine).
     /// </summary>
     private void FinalizeKaraokeStreamLine(bool stream, bool gotDelta, bool isSilent,
-        bool directivesStripped, string cleanAnswer)
+        bool directivesStripped, string cleanAnswer, int streamId = 0)
     {
         if (!stream) return;
         if (isSilent || (gotDelta && directivesStripped))
         {
-            _karaoke?.DropStreamLine();
+            _karaoke?.DropStreamLine(streamId);
             if (!isSilent && !string.IsNullOrWhiteSpace(cleanAnswer))
                 _karaoke?.PushLine("answer", cleanAnswer);
         }
         else
         {
-            _karaoke?.EndStreamLine();
+            _karaoke?.EndStreamLine(streamId);
         }
     }
 
@@ -3577,6 +5148,7 @@ public partial class App : Application
     {
         if (!Config.Memory.Enabled || MemoryStore == null || MemoryRecall == null)
         {
+            Logger.Info($"AskMemory ignored: memory off (Enabled={Config.Memory.Enabled}, store={MemoryStore != null})", "Memory");
             Notifier.ShowInfo(TT("L_Toast_Memory", "Память"), TT("L_Toast_MemoryOffEnable", "Память выключена — включите её в настройках"));
             return;
         }
@@ -3773,6 +5345,46 @@ public partial class App : Application
             Logger.Info("Memory disabled in settings — tearing down services", "Memory");
             TeardownMemoryServices();
         }
+        // MCP: входящий pipe-хост включается/гасится на лету; у исходящих серверов
+        // конфиг перечитывается на каждый запрос (оркестратор держит Func), а
+        // закешированные stdio-подключения рвём — реконнект пойдёт по новым параметрам.
+        if (Config.Mcp.Enabled && Config.Mcp.StdioHostEnabled && McpHost == null && !_shuttingDown)
+        {
+            try
+            {
+                McpJournal ??= new Core.Mcp.McpIncomingJournal(
+                    Path.Combine(AppDataDir, "logs"), mirror: Logger);
+                McpHost = Core.Mcp.McpIncomingHost.TryStart(
+                    Config.Mcp, AppDataDir, MeetingJournal!, MemoryStore, _attachmentStore, Logger,
+                    McpJournal, memoryProvider: () => MemoryStoreForMcp());
+                if (McpHost != null) Logger.Info($"MCP incoming on pipe {McpHost.PipeName}", "Mcp");
+                AttachMcpFacadeActivity(McpHost?.Facade);
+            }
+            catch (Exception ex) { Logger.Warn($"MCP host start failed: {ex.Message}", "Mcp"); }
+            SettingsVm.McpIncomingPipe = McpHost?.PipeName;
+        }
+        else if ((!Config.Mcp.Enabled || !Config.Mcp.StdioHostEnabled) && McpHost != null)
+        {
+            DetachMcpFacadeActivity(McpHost.Facade);
+            try { McpHost.StopAsync().Wait(TimeSpan.FromSeconds(2)); } catch { }
+            McpHost = null;
+            SettingsVm.McpIncomingPipe = null;
+        }
+        // HTTP-ingress: живой тоггл без рестарта (симметрично pipe-блоку выше).
+        if (Config.Mcp.Enabled && Config.Mcp.HttpEnabled && McpHttp == null && !_shuttingDown)
+        {
+            _ = TryStartMcpHttpAsync();
+        }
+        else if ((!Config.Mcp.Enabled || !Config.Mcp.HttpEnabled) && McpHttp != null)
+        {
+            try { McpHttp.Facade.PendingClientAdded -= OnMcpPendingClient; } catch { }
+            // Отписываемся только от СВОЕГО фасада: при pipe-хосте HTTP-ingress
+            // использует тот же экземпляр — его подписку трогать нельзя.
+            if (_httpFacade != null) DetachMcpFacadeActivity(_httpFacade);
+            try { McpHttp.StopAsync().Wait(TimeSpan.FromSeconds(2)); } catch { }
+            McpHttp = null;
+        }
+        if (McpChat != null) _ = McpChat.RefreshServersAsync();
         Logger.Debug("Live config applied", "Config");
     }
 
@@ -3905,10 +5517,26 @@ public partial class App : Application
     public void ToggleLlmDisabled()
     {
         Config.Ui.LlmDisabled = !Config.Ui.LlmDisabled;
-        Logger.Info($"LLM {(Config.Ui.LlmDisabled ? "DISABLED (чистый транскрибатор)" : "enabled")}", "App");
+        Logger.Info($"LLM {(Config.Ui.LlmDisabled ? "DISABLED (чистый транскрибатор, речь в буфер)" : "enabled")}", "App");
         // Плашка «Ошибка ИИ (LLM)» в этом режиме неуместна — пересобираем баннер сразу.
         UpdateConnectionNotice();
         SaveConfigSafe();
+        // Гейт OCR-очереди изменился: при включении могут появиться «ждущие» снимки —
+        // обновляем тост отложенных (§2.7-2.8 аудита: сами не отправляем, ждём «Отправить»).
+        OnOcrLlmGateChanged();
+        if (!Config.Ui.LlmDisabled && !IsLlmPaused)
+        {
+            // Включили обратно: пропущенная за «LLM выкл» речь уходит ОДНИМ
+            // запросом — та же механика, что у снятия паузы LLM (спека п.15).
+            // Пауза всё ещё стоит → буфер ждёт ToggleLlmPause, ничего не теряем.
+            var pauseImageIds2 = _pauseBuf.SnapshotImageIds();
+            var paused = _pauseBuf.DrainAsSingleRequest(out var pausedCount);
+            if (!string.IsNullOrWhiteSpace(paused))
+            {
+                Logger.Info("LLM re-enabled — сливаю буфер пропущенного одним запросом", "App");
+                _ = Task.Run(() => DrainPauseBufferAsync(paused, pausedCount, pauseImageIds2));
+            }
+        }
     }
 
     /// <summary>
@@ -3968,6 +5596,60 @@ public partial class App : Application
         }
     }
 
+    /// <summary>
+    /// Тест-инъекция речи (env BUDDY_SPEECH_INJECT_FILE): тейлит файл и кладёт строки
+    /// "<src>\t<текст>" в chunk-очередь как сентинел "BTX:src:text". Воркер минует
+    /// только захват+STT — пузырь/журнал/pause-буфер/очередь ответов работают живьём.
+    /// В проде без env — полностью выключено (одна проверка на старт MainLoop).
+    /// </summary>
+    private void StartSpeechInjectionWatcher(
+        System.Threading.Channels.ChannelWriter<ChunkItem> writer, CancellationToken ct)
+    {
+        var path = Environment.GetEnvironmentVariable("BUDDY_SPEECH_INJECT_FILE");
+        if (string.IsNullOrWhiteSpace(path)) return;
+        Logger.Warn($"Speech injection ENABLED: tail '{path}' (test harness only)", "Loop");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                long pos = File.Exists(path) ? new FileInfo(path).Length : 0; // хвост
+                using var fs = new FileStream(path, FileMode.OpenOrCreate,
+                    FileAccess.Read, FileShare.ReadWrite);
+                var pending = "";
+                while (!ct.IsCancellationRequested)
+                {
+                    if (fs.Length > pos)
+                    {
+                        fs.Position = pos;
+                        using var sr = new StreamReader(fs, Encoding.UTF8,
+                            detectEncodingFromByteOrderMarks: true, bufferSize: 4096,
+                            leaveOpen: true);
+                        var chunk = await sr.ReadToEndAsync();
+                        pos = fs.Length;
+                        pending += chunk;
+                        int nl;
+                        while ((nl = pending.IndexOf('\n')) >= 0)
+                        {
+                            var line = pending[..nl].TrimEnd('\r');
+                            pending = pending[(nl + 1)..];
+                            if (line.Length == 0) continue;
+                            var tab = line.IndexOf('\t');
+                            var src = tab > 0 ? line[..tab] : "loopback";
+                            var txt = tab > 0 ? line[(tab + 1)..] : line;
+                            if (txt.Length == 0) continue;
+                            var sent = Encoding.UTF8.GetBytes($"BTX:{src}:{txt}");
+                            if (writer.TryWrite(new ChunkItem(sent, src)))
+                                Logger.Info($"SpeechInject [{src}]: '{txt.Substring(0, Math.Min(50, txt.Length))}'", "Loop");
+                        }
+                    }
+                    await Task.Delay(150, ct);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Logger.Warn($"SpeechInject watcher died: {ex.Message}", "Loop"); }
+        }, ct);
+    }
+
     public void ToggleLlmPause()
     {
         if (IsLlmPaused)
@@ -3977,6 +5659,20 @@ public partial class App : Application
             RefreshOverlayStatus();
             _overlay?.RefreshLlmPauseButton();
             Notifier.ShowInfo(TT("L_Toast_LlmResumed", "LLM возобновлён"), TT("L_Toast_LlmResumedBody", "Вопросы снова отправляются в LLM"));
+            // Спека п.15: накопленный за паузу контекст уходит ОДНИМ запросом —
+            // без очереди на каждую пропущенную реплику.
+            var pausedCount = 0;
+            var pauseImageIds = Config.Ui.LlmDisabled ? null : _pauseBuf.SnapshotImageIds();
+            var paused = Config.Ui.LlmDisabled ? null : _pauseBuf.DrainAsSingleRequest(out pausedCount);
+            // Если сняли паузу, но кнопка «LLM выкл» всё ещё активна — буфер
+            // остаётся и уйдёт одним запросом при включении LLM обратно.
+            if (!string.IsNullOrWhiteSpace(paused))
+            {
+                Logger.Info("LLM resume — сливаю pause-буфер одним запросом", "App");
+                _ = Task.Run(() => DrainPauseBufferAsync(paused, pausedCount, pauseImageIds));
+            }
+            // OCR-гейт: пауза снята — отложенные снимки теперь доступны для «Отправить».
+            OnOcrLlmGateChanged();
         }
         else
         {
@@ -3985,12 +5681,151 @@ public partial class App : Application
             RefreshOverlayStatus();
             _overlay?.RefreshLlmPauseButton();
             Notifier.ShowInfo(TT("L_Toast_LlmPaused", "Пауза LLM"), TT("L_Toast_LlmPausedBody", "Вопросы не отправляются в LLM, аудио продолжает записываться"));
+            // OCR-гейт закрылся: покажем «ждут LLM» у вновь отложенных.
+            OnOcrLlmGateChanged();
         }
     }
 
+    /// <summary>Слитый pause-буфер (спека п.15): один пузырь с КОМПАКТНОЙ меткой
+    /// (настраиваемая Ui.PauseResumeMarker + число реплик) + один ask через общий
+    /// движок (isManual=false → AskPurpose.BackgroundSpeech, без правила «прямой
+    /// вопрос оператора»). Текст-инструкция уходит только в LLM — в пузырь, журнал
+    /// и караоке попадает маркер, а не многострочная свалка (раньше писался
+    /// весь [pause]-блок — засорял чат и журнал встречи).</summary>
+    private async Task DrainPauseBufferAsync(string pausedText, int itemCount,
+        IReadOnlyList<string>? imageIds = null)
+    {
+        // Гонка: пока Task.Run разгонялся, юзер мог снова выключить LLM или
+        // поставить паузу — текст НЕ теряем, возвращаем в буфер одним блоком.
+        if (Config.Ui.LlmDisabled || IsLlmPaused)
+        {
+            Logger.Info("Drain deferred — LLM снова выключен/на паузе, текст возвращён в буфер", "App");
+            _pauseBuf.Add(label: "", text: pausedText, imageIds: imageIds?.ToArray());
+            return;
+        }
+        var marker = Config.Ui.PauseResumeMarker?.Trim();
+        if (string.IsNullOrEmpty(marker))
+            marker = TT("L_PauseMarkerDefault", "⏸ За период паузы");
+        var displayMarker = $"{marker} ({itemCount})";
+
+        // imageIds из буфера → тайлы для пузыря и payload (спека §9: картинки
+        // периода паузы едут одним запросом вместе с текстом).
+        var tiles = ChatImages != null && imageIds?.Count > 0
+            ? imageIds.Select(id => ChatImages.GetTile(id)).Where(t => t != null).Cast<ChatImageTileVm>().ToList()
+            : null;
+        if (tiles?.Count > 0)
+            displayMarker += $" +{tiles.Count}🖼";
+
+        QaPair? pair = null;
+        await Dispatcher.InvokeAsync(() =>
+        {
+            pair = _overlay?.AddSendingItem(displayMarker, 0, DateTime.Now, null, null, 0, imageTiles: tiles);
+            _overlay?.SetStatus(TT("L_Status_ThinkingPaused", "Отвечаю на пропущенное…"));
+            _karaoke?.PushLine("question", displayMarker);
+            AppendJournalWithMemory("question", displayMarker);
+        });
+        if (pair == null) return;
+        // Линковка буферизованных картинок к слитому сообщению (иначе после
+        // снятия черновика они остались бы без ссылок → CollectGarbage).
+        var pauseMid = "pause-" + Guid.NewGuid().ToString("N")[..12];
+        var pauseMeetingId = ChatImages?.CurrentMeetingId ?? SafeEnsureMeeting();
+        if (pauseMeetingId != null && imageIds?.Count > 0 && ChatImages != null)
+        {
+            try
+            {
+                for (var i = 0; i < imageIds.Count; i++)
+                    ChatImages.Store.Link(imageIds[i], pauseMeetingId, pauseMid, i);
+            }
+            catch (Exception ex) { Logger.Warn($"chat-image: pause link {pauseMid}: {ex.Message}", "ChatImg"); }
+        }
+        // LLM получает полный текст с инструкцией; метка для чата уже показана.
+        await RunManualAskAsync(pair, pausedText, isScreen: false, isManual: false,
+            messageId: tiles?.Count > 0 ? pauseMid : null,
+            imageTiles: tiles);
+    }
+
+    /// <summary>Текущий meetingId журнала; журнала нет → null (картинки остаются
+    /// несвязанными до следующей отправки — безопасно).</summary>
+    private string? SafeEnsureMeeting()
+    {
+        try { return MeetingJournal?.EnsureCurrentMeeting(); }
+        catch { return null; }
+    }
+
+    /// <summary>Кэпабилити-сервис картинок (ТЗ §8): каталоги/пробник через свой
+    /// HttpClient (дефолтный дедлайн 100с — это не стриминговый путь), кэш —
+    /// тот же AttachmentStore (attachments.db). Без стора фича выключена.</summary>
+    private Core.Images.IImageCapabilityService? TryCreateImageCapabilityService()
+    {
+        if (_attachmentStore == null) return null;
+        try
+        {
+            return new Core.Images.ImageCapabilityService(
+                new System.Net.Http.HttpClient(), _attachmentStore, () => Config.Api, Logger);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"chat-image: capability service недоступен: {ex.Message}", "ChatImg");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Ключ активной встречи для привязки usage (§8.1/R4 аудита 2026-10-16). Снимается
+    /// на СТАРТЕ ask'а/задания и передаётся в <see cref="AccountUsage"/>. Если встречу
+    /// сменили, пока spend был в полёте (или фоновое задание доехало после сброса),
+    /// TokenLedger уведёт его в фон, и «Потрачено за встречу» не раздувается чужими
+    /// расходами. null — память выключена или встреча ещё не создана: учёт без привязки
+    /// (прежнее поведение).
+    /// </summary>
+    private string? MeetingSpendKey => CurrentMeetingId?.ToString();
+
+    /// <summary>
+    /// Единая точка учёта usage LLM (§8.1 аудита 15.10). Все пути — ручной вопрос,
+    /// речь, MCP, мульти-агенты, сжатие контекста, извлечение фактов/памяти —
+    /// обязаны проходить через неё, иначе счётчик врёт («ответы есть, токены 0»).
+    /// <para>
+    /// <paramref name="background"/> = true для фонового расхода (документы/память/
+    /// сжатие) — он идёт в отдельный счётчик «Документы и память», а не в «Потрачено
+    /// за встречу». <paramref name="meetingKey"/> привязывает spend к встрече, на
+    /// старте которой ask/задание поставлено. Несовпадение с активной встречью
+    /// (смена чата, пока ответ был в полёте) → расход уходит в фон: поздний spend
+    /// старой встречи не надувает «Потрачено за встречу» новой.
+    /// </para>
+    /// <para>
+    /// Нули при UsageReported=false — это «провайдер не сообщил», а не «потрачено 0»:
+    /// взводим NA-флаг, чтобы UI показал «расход недоступен» вместо ложного нуля.
+    /// </para>
+    /// </summary>
+    private void AccountUsage(AskResult? res, bool background = false, string? meetingKey = null)
+    {
+        var spent = _tokenLedger.Add(res, background, meetingKey);
+        if (!spent && !_tokenLedger.UsageUnknown) return;
+        if (meetingKey != null && spent)
+            Logger.Info($"AccountUsage: +{res!.PromptTokens}+{res.CompletionTokens}t, " +
+                $"background={background}, meeting={meetingKey}", "Tokens");
+        else if (!spent)
+            Logger.Info($"AccountUsage: usage не сообщён (NA), background={background}", "Tokens");
+        _ = Dispatcher.InvokeAsync(UpdateTokenDisplay);
+    }
+
+    /// <summary>
+    /// Учёт usage фоновой операции ИЗ ОКНА (AI-резюме встречи в истории): тот же
+    /// <see cref="TokenLedger"/>, что у чата, но публичный вход — окно не дублирует
+    /// логику счётчика и NA-флага. Резюме сохранённой встречи не является ответом
+    /// пользователю в текущем чате, поэтому идёт в счётчик «Документы и память».
+    /// Потокобезопасен: вызывается из колбэков сервиса на пуле потоков.
+    /// </summary>
+    public void AccountBackgroundUsage(AskResult? res) => AccountUsage(res, background: true);
+
     private void UpdateTokenDisplay()
     {
-        _overlay?.SetTokens(TotalTokens, _totalPromptTokens, _totalCompletionTokens);
+        if (_tokenLedger.UsageNotReported)
+            _overlay?.SetTokensDetailed(true, 0, 0, 0, 0);
+        else
+            _overlay?.SetTokensDetailed(false, _tokenLedger.MeetingTokens,
+                _tokenLedger.MeetingPromptTokens, _tokenLedger.MeetingCompletionTokens,
+                _tokenLedger.BackgroundTokens);
     }
 
     // Иконка трея из встроенного ресурса (лого дизайнера). tray.ico объявлена как <Resource>,
@@ -4041,7 +5876,7 @@ public partial class App : Application
         var hideItem = trayItem("L_Tray_Hide", "Скрыть оверлей", (s, e) => { Logger.Debug("Tray: Hide overlay", "UI"); HideOverlay(); });
         var settingsItem = trayItem("L_Tray_Settings", "Настройки", (s, e) => { Logger.Debug("Tray: Open settings", "UI"); OpenSettings(); });
         var logsItem = trayItem("L_Tray_Logs", "Показать логи", (s, e) => { Logger.Debug("Tray: Show logs", "UI"); ShowLogWindow(); });
-        var meetingsItem = trayItem("L_Tray_Meetings", "История встреч", (s, e) => { Logger.Debug("Tray: Meeting history", "UI"); Dispatcher.Invoke(ShowMeetingHistory); });
+        var meetingsItem = trayItem("L_Tray_Meetings", "История встреч", (s, e) => { Logger.Debug("Tray: Meeting history", "UI"); Dispatcher.Invoke(() => ShowMeetingHistory()); });
         var pauseAudioItem = trayItem("L_Tray_PauseAudio", "Пауза захвата аудио", (s, e) =>
         {
             Logger.Debug("Tray: Toggle audio pause", "UI");
@@ -4112,6 +5947,11 @@ public partial class App : Application
         });
         _chunkWriter = chunkChannel.Writer;
         _chunkReader = chunkChannel.Reader;
+
+        // Тест-инъекция речи: env BUDDY_SPEECH_INJECT_FILE — тейлим файл, строки
+        // "<src>\t<текст>" заворачиваем в сентинел "BTX:src:text" и кладём в ту же
+        // chunk-очередь: воркер минует только STT-вызов, весь остальной путь живой.
+        StartSpeechInjectionWatcher(chunkChannel.Writer, ct);
 
         // Очередь ОТВЕТОВ LLM: STT-воркер кладёт сюда задачу и НЕ блокируется, отдельный
         // answer-воркер отвечает и подставляет ответ в свой пузырь. Так транскрипция «течёт рекой»,
@@ -4240,6 +6080,22 @@ public partial class App : Application
                     // [S1]/[S2] внутри строки; null для остальных движков/каналов.
                     IReadOnlyList<BrainstormBuddy.Stt.SttWordSpan>? timedWords = null;
                     bool sttError = false;
+                    // Тест-инъекция через chunk-канал (env BUDDY_SPEECH_INJECT_FILE):
+                    // WAV "BTX:<src>:<текст>" минует только захват+STT — пузырь, журнал,
+                    // pause-буфер и очередь ответов идут по-настоящему.
+                    var injected = wav.Length > 4 && wav[0] == 'B' && wav[1] == 'T' && wav[2] == 'X' && wav[3] == ':';
+                    if (injected)
+                    {
+                        var payload = Encoding.UTF8.GetString(wav.AsSpan(4));
+                        var colon = payload.IndexOf(':');
+                        if (colon > 0)
+                        {
+                            var injSrc = payload[..colon];
+                            if (injSrc is "mic" or "loopback") source = injSrc;
+                            text = payload[(colon + 1)..];
+                        }
+                    }
+                    if (!injected)
                     try
                     {
                         await Dispatcher.InvokeAsync(() => _overlay?.SetTimelineState(TimelineState.Sending));
@@ -4410,14 +6266,23 @@ public partial class App : Application
 
                     if (llmOff)
                     {
-                        Logger.Info($"LLM disabled — chunk #{totalProcessed} показан как чистый транскрипт", "Worker");
+                        // «LLM выкл» — чистый транскрибатор, но реплики НЕ теряем:
+                        // копим в общий pause-буфер (как при IsLlmPaused) — при
+                        // включении уходят ОДНИМ контекстным запросом, иначе LLM
+                        // «слепнет»: не видит сказанное за время выключения.
+                        _pauseBuf.Add(label, markedText);
+                        Logger.Info($"LLM disabled — chunk #{totalProcessed} показан как чистый транскрипт + в буфер", "Worker");
                         continue;
                     }
 
                     if (IsLlmPaused)
                     {
+                        // Спека п.15: во время паузы LLM распознанный текст копится
+                        // в _pauseBuf (на снятии уйдёт одним контекстным запросом),
+                        // а пузырь остаётся транскриптом с меткой паузы.
+                        _pauseBuf.Add(label, markedText);
                         _overlay?.MarkAnswered(pair, TT("L_Mark_LlmPaused", "⏸ LLM на паузе"), DateTime.Now, 0);
-                        Logger.Info($"LLM paused — chunk #{totalProcessed} показан без ответа", "Worker");
+                        Logger.Info($"LLM paused — chunk #{totalProcessed} показан без ответа, добавлен в pause-буфер", "Worker");
                         continue;
                     }
 
@@ -4470,14 +6335,29 @@ public partial class App : Application
                 var text = job.Text;
                 var source = job.Source;
                 var askStart = DateTime.Now;
+                // R4: spend ответа на эту реплику принадлежит встрече, активной на
+                // старте обработки (к ответу чат мог смениться — поздний spend уйдёт
+                // в фон, а не в «Потрачено за встречу» новой). Один ключ на итерацию:
+                // обе ветки ниже (мульти-агентная и одиночный ask) используют его.
+                var meetingKey = MeetingSpendKey;
+                // Pending-запрос (✕-кнопка пузыря): linked-CT снимает и отмену
+                // по кнопке, и общий токен воркера — EndRequest в finally.
+                var req = _overlay?.BeginRequest(pair, isManual: false);
+                var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    ct, req?.Cts.Token ?? CancellationToken.None);
+                var act = linkedCts.Token;
                 try
                 {
                     // «LLM выкл» щёлкнули, пока задача уже стояла в очереди: помечаем
                     // пузырь нейтральным статусом «LLM выключен» — видно, что реплика
                     // дошла, но ответа не будет (раньше закрывали пустой строкой —
                     // пузырь выглядел «зависшим» при вкл→выкл→вкл).
-                    if (Config.Ui.LlmDisabled) { _overlay?.MarkAnswered(pair, T("L_LlmDisabledMark"), DateTime.Now, 0); continue; }
-                    if (IsLlmPaused) { _overlay?.MarkAnswered(pair, TT("L_Mark_LlmPaused", "⏸ LLM на паузе"), DateTime.Now, 0); continue; }
+                    // «LLM выкл»/пауза: реплику НЕ теряем — кладём в общий буфер
+                    // (_pauseBuf): при включении уходит ОДНИМ контекстным запросом
+                    // (спека «дослать пропущенное одним сообщением»). Пузырь
+                    // помечаем статусом — видно, что текст дошёл и буферизован.
+                    if (Config.Ui.LlmDisabled) { _pauseBuf.Add(label: "", text: labeledText); _overlay?.MarkAnswered(pair, T("L_LlmDisabledMark"), DateTime.Now, 0); continue; }
+                    if (IsLlmPaused) { _pauseBuf.Add(label: "", text: labeledText); _overlay?.MarkAnswered(pair, TT("L_Mark_LlmPaused", "⏸ LLM на паузе"), DateTime.Now, 0); continue; }
                     _overlay?.MarkLlmSent(pair, askStart);
 
                     // ── Мульти-агентный режим ──
@@ -4495,7 +6375,8 @@ public partial class App : Application
                             continue;
                         }
 
-                        var responses = await Orchestrator.ProcessAsync(labeledText, Config.Api.ChatModel, ct);
+                        // R4: ключ встречи снят на старте обработки реплики (см. loop body).
+                        var responses = await Orchestrator.ProcessAsync(labeledText, Config.Api.ChatModel, act);
                         var maEnd = DateTime.Now;
                         var maMs = (maEnd - askStart).TotalMilliseconds;
 
@@ -4505,15 +6386,18 @@ public partial class App : Application
                                 Timestamp = askStart, ScenarioName = Orchestrator.ActiveScenario?.Name ?? "", AgentName = r.AgentName,
                                 Color = r.Color, UserText = labeledText, Response = r.Text, LatencyMs = r.LatencyMs, IsSilent = r.IsSilent, IsError = r.Error != null
                             });
-                        Interlocked.Add(ref _totalPromptTokens, responses.Sum(r => r.PromptTokens));
-                        Interlocked.Add(ref _totalCompletionTokens, responses.Sum(r => r.CompletionTokens));
+                        // §8.1: единая точка учёта на все ответы агентов (Interlocked.Add
+                        // обходил AccountUsage и не поднимал NA-флаг).
+                        foreach (var r in responses)
+                            AccountUsage(new AskResult(r.Text, r.PromptTokens, r.CompletionTokens,
+                                r.PromptTokens + r.CompletionTokens), meetingKey: meetingKey);
 
                         // Memory-директивы в ответах агентов: применить + вырезать до показа
                         // (мульти-агентный ответ тоже попадает в пузырь/караоке/журнал).
                         var visible = new List<AgentResponse>();
                         foreach (var r in responses.Where(r => !r.IsSilent))
                         {
-                            var rc = (await ProcessMemoryDirectivesAsync(r.Text, ct)).Clean;
+                            var rc = (await ProcessMemoryDirectivesAsync(r.Text, act)).Clean;
                             if (!string.Equals(rc, r.Text, StringComparison.Ordinal)
                                 ? !string.IsNullOrWhiteSpace(rc)
                                 : true)
@@ -4533,35 +6417,55 @@ public partial class App : Application
                             // Агенты РЕАЛЬНО получили вопрос и решили промолчать — вот здесь «промолчали» уместно.
                             _overlay?.MarkAnswered(pair, T("L_AgentsSilent"), maEnd, maMs);
                         }
-                        await Dispatcher.InvokeAsync(() => { _overlay?.SetTokens(TotalTokens, TotalPromptTokens, TotalCompletionTokens); UpdateTokenDisplay(); });
+                        await Dispatcher.InvokeAsync(() => { _overlay?.SetTimelineState(TimelineState.Received); UpdateTokenDisplay(); });
                         continue;
                     }
 
-                    // ── Одиночный LLM ── (снимок истории берём СЕЙЧАС — предыдущие ответы уже в истории, FIFO)
-                    List<ChatMessage> historySnapshot;
-                    lock (_historyLock) { historySnapshot = new List<ChatMessage>(_conversationHistory); }
+                    // ── Одиночный LLM ──
+                    // Контекст встречи: план (сводка+дословный хвост) заменяет голый
+                    // legacy-history snapshot — ответ опирается на встречу, а не на FIFO.
+                    var ctx = _meetingContext;
+                    var plan = ctx?.BuildPlan(labeledText, Config.Advanced.SystemPrompt,
+                        Config.Advanced.MaxResponseTokens, null, null,
+                        Config.Api.ChatModel, Config.Api.BaseUrl);
+                    // Memory recall + правила директив памяти — общий билдер для всех LLM-путей.
+                    var (sysPrompt, meetingHits) = await BuildSystemPromptWithMemoryAsync(Config.Advanced.SystemPrompt, job.Text, act);
+                    sysPrompt = ApplyContextToPrompt(sysPrompt, plan?.SummaryBlock,
+                        ctx?.State.EarlyContextDropped ?? false, AskPurpose.BackgroundSpeech);
+                    var ctxSt = ctx?.State;
+                    _overlay?.SetContextInfo(ctxSt?.SummaryInFlight == true
+                        ? TT("L_ContextSummarizing", "Обновляю контекст…")
+                        : plan != null ? string.Format(TT("L_ContextInfoFmt", "Контекст: ≈{0}"), plan.EstimatedInputTokens.ToString("N0")) : null,
+                        ctxSt?.SummaryInFlight ?? false);
                     var stream = Config.Advanced.StreamLlmAnswers;
                     var gotDelta = false;
-                    if (stream) _karaoke?.BeginStreamLine("answer");
-                    // Memory recall + правила директив памяти — общий билдер для всех LLM-путей.
-                    var sysPrompt = await BuildSystemPromptWithMemoryAsync(Config.Advanced.SystemPrompt, job.Text, ct);
-                    var askResult = await ApiClient.AskAsync(labeledText, sysPrompt, Config.Advanced.MaxResponseTokens, historySnapshot, ct,
-                        stream ? (Action<string>)(d =>
-                        {
-                            gotDelta = true;
-                            _overlay?.AppendAnswerDelta(pair, d);
-                            _karaoke?.AppendToStreamLine(d);
-                        }) : null);
+                    var streamId = stream ? (_karaoke?.BeginStreamLine("answer") ?? 0) : 0;
+                    // Маршрут вложений общий с ручным ask: Clarify/ошибка чтения
+                    // документа — ImmediateAnswer без финального LLM-вызова,
+                    // map-reduce уже учёл свои вызовы (background).
+                    var attachmentRoute = await BuildAttachmentRouteSafeAsync(job.Text, plan, act);
+                    var attachments = attachmentRoute?.Payload;
+                    var immediateAttachmentAnswer = attachmentRoute?.ImmediateAnswer;
+                    var askResult = immediateAttachmentAnswer != null
+                        ? new AskResult(immediateAttachmentAnswer, 0, 0, 0)
+                        : await ApiClient.AskAsync(labeledText, sysPrompt, Config.Advanced.MaxResponseTokens, plan != null ? new List<ChatMessage>(plan.Tail) : SnapshotLegacyHistory(), act,
+                            stream ? (Action<string>)(d =>
+                            {
+                                gotDelta = true;
+                                _overlay?.AppendAnswerDelta(pair, d);
+                                _karaoke?.AppendToStreamLine(streamId, d);
+                            }) : null,
+                            attachmentsContext: attachments);
                     // Memory-директивы: применить (тост) и вырезать до финала стрим-строки —
                     // сырой текст с [[MEMORY_*]] уже мог отстримиться в ленту.
-                    var mem = await ProcessMemoryDirectivesAsync(askResult?.Content, ct);
+                    var mem = await ProcessMemoryDirectivesAsync(askResult?.Content, act);
                     var answer = mem.Clean;
                     // Фикс «записать в память → промолчала»: голосовая/текстовая команда
                     // с ответом только из [[MEMORY_*]] — Clean пуст, но Applied>0 = успех.
                     if (string.IsNullOrWhiteSpace(answer) && mem.Applied.Count > 0)
                         answer = TT("L_Answer_MemorySaved", "✔ записано в память");
                     var memStripped = !string.Equals(answer, askResult?.Content, StringComparison.Ordinal);
-                    FinalizeKaraokeStreamLine(stream, gotDelta, askResult?.IsSilent == true, memStripped, answer);
+                    FinalizeKaraokeStreamLine(stream, gotDelta, askResult?.IsSilent == true, memStripped, answer, streamId);
                     var askEnd = DateTime.Now;
                     var askMs = (askEnd - askStart).TotalMilliseconds;
 
@@ -4577,8 +6481,9 @@ public partial class App : Application
                     if (!string.IsNullOrWhiteSpace(answer))
                     {
                         totalAnswered++;
-                        _totalPromptTokens += askResult!.PromptTokens;
-                        _totalCompletionTokens += askResult.CompletionTokens;
+                        // §8.1: единая точка учёта (прямой += давал расхождение цифр
+                        // с ручным путём и не поднимал NA-флаг для провайдеров без usage).
+                        AccountUsage(askResult, meetingKey: meetingKey);
                         lock (_historyLock)
                         {
                             _conversationHistory.Add(ChatMessage.User(labeledText));
@@ -4589,7 +6494,12 @@ public partial class App : Application
                         _overlay?.MarkAnswered(pair, answer!, askEnd, askMs);
                         if (!gotDelta) _karaoke?.PushLine("answer", answer!);
                         AppendJournalWithMemory("answer", answer!); // финальный текст — и при стриминге, и без
-                        await Dispatcher.InvokeAsync(() => { _overlay?.SetTimelineState(TimelineState.Received); UpdateTokenDisplay(); }); // зелёный: LLM ответил
+                        await Dispatcher.InvokeAsync(() => { pair.PastMeetingHits = meetingHits; _overlay?.SetTimelineState(TimelineState.Received); UpdateTokenDisplay(); }); // §7: ссылки-источники + зелёный статус
+                        // Контекст встречи параллельно легаси-истории: пара в хвост,
+                        // состояние в sidecar, фоновая сводка по расписанию плана.
+                        ctx?.AddPair(labeledText, answer!);
+                        SaveMeetingContextState();
+                        if (plan?.ScheduleSummary == true) RunContextSummaryAsync();
                     }
                     else if (askResult?.IsSilent == true || memStripped)
                     {
@@ -4597,8 +6507,9 @@ public partial class App : Application
                         // content): промпт суфлёра сам требует тишины на small talk.
                         // Нейтральный статус как у мульти-агентов, НЕ красная плашка.
                         Logger.Info($"LLM silent (stop, empty content) in {askMs:F0}ms", "Answer");
-                        _totalPromptTokens += askResult?.PromptTokens ?? 0;
-                        _totalCompletionTokens += askResult?.CompletionTokens ?? 0;
+                        // Молчание тоже стоит токенов (reasoning-модели жгут бюджет
+                        // на размышления) — учитываем, иначе счётчик врёт.
+                        AccountUsage(askResult, meetingKey: meetingKey);
                         QaLogger?.Log(labeledText, "[молчание]", "SILENT", job.SttMs, askMs, job.AudioSeconds, Config.Api.ChatModel);
                         _overlay?.MarkAnswered(pair, T("L_ModelSilent"), askEnd, askMs);
                         await Dispatcher.InvokeAsync(UpdateTokenDisplay);
@@ -4610,23 +6521,30 @@ public partial class App : Application
                         QaLogger?.Log(labeledText, $"[ERROR: {askResult.Error}]", "FAIL", job.SttMs, askMs, job.AudioSeconds, Config.Api.ChatModel);
                         _overlay?.MarkFailed(pair, askResult.Error, askEnd, askMs);
                     }
-                    else if (askResult?.Canceled == true)
+                    else if (askResult?.Canceled == true || (req != null && req.Cts.IsCancellationRequested))
                     {
-                        // Запрос отменён токеном (пауза/стоп/закрытие) — НЕ ошибка:
-                        // никакой плашки, цикл умрёт сам на следующем ReadAllAsync(ct).
+                        // Запрос отменён (✕ на пузыре или токен воркера) — НЕ ошибка:
+                        // нейтральная метка «Остановлено», без красной плашки.
                         Logger.Info($"Ask cancelled (token) in {askMs:F0}ms", "Answer");
-                        continue;
+                        _overlay?.MarkCancelled(pair);
                     }
                     else
                     {
-                        // 200, но контент пуст и это НЕ осознанное молчание — лимит
-                        // съеден рассуждениями (finish_reason=length) даже после
-                        // авто-ретрая с 1024. Юзер лимит из GUI не меняет — просто
-                        // «модель не ответила», без мёртвого совета про токены.
-                        Logger.Warn("Empty answer from LLM (200, no content, limit exhausted)", "Answer");
-                        QaLogger?.Log(labeledText, "[пустой ответ]", "EMPTY", job.SttMs, askMs, job.AudioSeconds, Config.Api.ChatModel);
-                        _overlay?.MarkFailed(pair, T("L_ModelNoAnswer"), askEnd, askMs);
+                        // 200, но контент пуст и это НЕ осознанное молчание: конкретная
+                        // причина по EmptyKind (лимит съеден размышлениями / кап
+                        // провайдера / повреждённое тело). Совет «увеличьте лимит»
+                        // только при доказанном LengthExhausted — инцидент 2026-10-12.
+                        Logger.Warn($"Empty answer from LLM (200, EmptyKind={askResult?.EmptyKind}, finish={askResult?.FinishReason})", "Answer");
+                        var why = askResult != null ? EmptyAnswerHint(askResult, memStripped) : T("L_ModelNoAnswer");
+                        QaLogger?.Log(labeledText, $"[пустой ответ: {askResult?.EmptyKind}]", "EMPTY", job.SttMs, askMs, job.AudioSeconds, Config.Api.ChatModel);
+                        _overlay?.MarkFailed(pair, why, askEnd, askMs);
                     }
+                }
+                catch (OperationCanceledException) when (req?.Cts.IsCancellationRequested == true && !ct.IsCancellationRequested)
+                {
+                    // Отмена только этой заявки (✕) — воркер живёт, помечаем пузырь.
+                    Logger.Info("Ask cancelled (request token)", "Answer");
+                    _overlay?.MarkCancelled(pair);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (HttpRequestException ex)
@@ -4648,6 +6566,11 @@ public partial class App : Application
                     QaLogger?.Log(labeledText, $"[ERROR: {ex.Message}]", "FAIL", job.SttMs, failMs, job.AudioSeconds, Config.Api.ChatModel);
                     _overlay?.MarkFailed(pair, ex.Message, DateTime.Now, failMs);
                 }
+                finally
+                {
+                    if (req != null) _overlay?.EndRequest(req);
+                    linkedCts.Dispose();
+                }
             }
         }
         catch (OperationCanceledException) { Logger.Info("AnswerWorker: cancelled", "Answer"); }
@@ -4664,6 +6587,173 @@ public partial class App : Application
     private int CountHistory()
     {
         lock (_historyLock) { return _conversationHistory.Count; }
+    }
+
+    /// <summary>
+    /// Старт входящего HTTP-ingress по Mcp.HttpEnabled (+ funnel при
+    /// TunnelMode=tailscale-funnel). Ошибки bind/funnel → статус «Нет связи»
+    /// через ReportTransportState + лог, приложение не падает.
+    /// </summary>
+    private async Task TryStartMcpHttpAsync()
+    {
+        if (!Config.Mcp.Enabled || !Config.Mcp.HttpEnabled) return;
+        try
+        {
+            // Тот же фасад, что у pipe-хоста (единые карточки/активность);
+            // если pipe выключен — свой экземпляр (Dispose на выходе).
+            Core.Mcp.IMcpFacade facade;
+            if (McpHost != null)
+            {
+                facade = McpHost.Facade;
+            }
+            else
+            {
+                var jobs = new Core.Mcp.McpJobStore(AppDataDir);
+                _httpFacade = new Core.Mcp.LocalMcpFacade(
+                    MeetingJournal!, MemoryStore, _attachmentStore, jobs, Config.Mcp, Logger, McpPermissions,
+                    journal: McpJournal, memoryProvider: () => MemoryStore);
+                facade = _httpFacade;
+            }
+            var auth = new Core.Mcp.Http.McpHttpAuthStore(
+                AppDataDir, McpPermissions!, () => Config.Mcp.Connections);
+            AttachMcpFacadeActivity(facade);
+            McpHttp = await Core.Mcp.Http.McpHttpIngress.TryStartAsync(
+                facade, Config.Mcp, auth, () => Config.Mcp.Connections, Logger);
+            // Согласие OAuth-клиентов (first-contact): тост владельцу + Warn-лог;
+            // карточку approve/deny рисует вкладка MCP (ListPendingClients/ResolvePendingClient).
+            facade.PendingClientAdded += OnMcpPendingClient;
+            if (McpHttp != null)
+                Logger.Info($"MCP HTTP ingress on {McpHttp.LocalPrefix}", "Mcp");
+            if (McpHttp != null && Config.Mcp.TunnelMode is "tailscale-funnel" or "tailscale")
+                await TryStartMcpFunnelAsync(facade);
+            else if (McpHttp != null && Config.Mcp.TunnelMode == "manual")
+                facade.ReportTransportState("funnel", true);
+        }
+        catch (Exception ex)
+        {
+            try { McpHost?.Facade.ReportTransportState("http", false, ex.Message); } catch { }
+            Logger.Warn($"MCP HTTP start failed: {ex.Message}", "Mcp");
+        }
+    }
+
+    /// <summary>
+    /// Новый OAuth-клиент ждёт разрешения владельца: тост + Warn. Само решение —
+    /// кнопки на карточке pending-клиента во вкладке MCP (ListPendingClients /
+    /// ResolvePendingClient на фасаде).
+    /// </summary>
+    private void OnMcpPendingClient(Core.Mcp.McpPendingClient p)
+    {
+        Logger.Warn(
+            $"MCP OAuth: клиент '{p.ClientName ?? p.ClientId}' ждёт разрешения ({p.RedirectUri})", "Mcp");
+        var name = p.ClientName ?? p.ClientId;
+        try
+        {
+            Dispatcher.InvokeAsync(() =>
+                Notifier?.ShowWarning(
+                    TT("L_Mcp_PendingClient_Title", "MCP: запрос доступа"),
+                    string.Format(
+                        TT("L_Mcp_PendingClient_BodyFmt",
+                            "Клиент «{0}» запрашивает доступ — Настройки → MCP."), name)));
+        }
+        catch { /* диспетчер может быть недоступен на раннем старте */ }
+    }
+
+    /// <summary>
+    /// Подписаться на «реальный запрос» фасада: карточка подключения в
+    /// настройках обновляет статус без переоткрытия окна. Повторная подписка
+    /// на тот же фасад не дублируется. Здесь же подключается подтверждение
+    /// опасных операций (удаление факта) — карточка в оверлее.
+    /// </summary>
+    private void AttachMcpFacadeActivity(Core.Mcp.IMcpFacade? facade)
+    {
+        if (facade == null) return;
+        foreach (var known in _mcpActivityFacades)
+            if (ReferenceEquals(known, facade)) return;
+        try
+        {
+            facade.RequestObserved += OnMcpRequestObserved;
+            facade.SetApprovalHandler(RequestMcpFactApprovalAsync);
+            _mcpActivityFacades.Add(facade);
+        }
+        catch (Exception ex)
+        {
+            Logger?.Warn($"MCP activity subscribe failed: {ex.Message}", "Mcp");
+        }
+    }
+
+    /// <summary>
+    /// Подтверждение удаления факта по запросу MCP-клиента: карточка
+    /// «Разрешить/Отклонить» ВНУТРИ оверлея (не модалка). Оверлея нет или он
+    /// скрыт — подтвердить нечем, значит отказ (удаление не выполняется).
+    /// </summary>
+    private Task<bool> RequestMcpFactApprovalAsync(Core.Mcp.McpApprovalRequest request)
+    {
+        var overlay = _overlay;
+        if (overlay == null || !overlay.IsVisible)
+            return Task.FromResult(false);
+        try
+        {
+            return overlay.RequestMcpApproval(request.Summary, request.Details);
+        }
+        catch (Exception ex)
+        {
+            Logger?.Warn($"MCP fact approval failed: {ex.Message}", "Mcp");
+            return Task.FromResult(false);
+        }
+    }
+
+    /// <summary>Отписаться от фасада (хост/ingress остановлен).</summary>
+    private void DetachMcpFacadeActivity(Core.Mcp.IMcpFacade? facade)
+    {
+        if (facade == null) return;
+        try { facade.RequestObserved -= OnMcpRequestObserved; } catch { }
+        _mcpActivityFacades.RemoveAll(f => ReferenceEquals(f, facade));
+    }
+
+    /// <summary>Реальный запрос клиента → сигнал UI (карточки подключений).</summary>
+    private void OnMcpRequestObserved(string connectionId, DateTime utc)
+    {
+        Logger?.Debug($"MCP request observed: {connectionId}", "Mcp");
+        try { McpRequestObserved?.Invoke(connectionId, utc); }
+        catch (Exception ex) { Logger?.Warn($"MCP request observer failed: {ex.Message}", "Mcp"); }
+    }
+
+    /// <summary>Tailscale Funnel на локальный HttpPort; отсутствие/сбой → «Нет связи»+причина.</summary>
+    private async Task TryStartMcpFunnelAsync(Core.Mcp.IMcpFacade facade)
+    {
+        try
+        {
+            var info = await Core.Mcp.Http.TailscaleFunnel.DetectAsync(Config.Mcp.HttpPort);
+            switch (info.State)
+            {
+                case Core.Mcp.Http.TailscaleFunnel.State.NotInstalled:
+                case Core.Mcp.Http.TailscaleFunnel.State.DaemonUnavailable:
+                    facade.ReportTransportState("funnel", false,
+                        info.Detail ?? "Tailscale недоступен");
+                    return;
+                case Core.Mcp.Http.TailscaleFunnel.State.Running:
+                    Config.Mcp.PublicBaseUrl = info.PublicUrl ?? "";
+                    facade.ReportTransportState("funnel", true);
+                    return;
+            }
+            var (url, error) = await Core.Mcp.Http.TailscaleFunnel.StartFunnelAsync(Config.Mcp.HttpPort);
+            if (url == null)
+            {
+                facade.ReportTransportState("funnel", false, error ?? "funnel не поднялся");
+                Logger.Warn($"Tailscale funnel failed: {error}", "Mcp");
+                return;
+            }
+            _funnelPort = Config.Mcp.HttpPort;
+            Config.Mcp.PublicBaseUrl = url;
+            SaveConfigSafe();
+            facade.ReportTransportState("funnel", true);
+            Logger.Info($"Tailscale funnel: {url} → 127.0.0.1:{_funnelPort}", "Mcp");
+        }
+        catch (Exception ex)
+        {
+            facade.ReportTransportState("funnel", false, ex.Message);
+            Logger.Warn($"Tailscale funnel error: {ex.Message}", "Mcp");
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -4728,6 +6818,31 @@ public partial class App : Application
             _speakerDiarizer?.Dispose();
             Logger?.Debug("Speaker diarizer disposed", "Speaker");
             LogWindow?.Close();
+            // MCP: исходящие клиенты и входящий pipe-хост — до финального лога.
+            // StopAsync ждём коротко: pipe должен отпуститься до смерти процесса,
+            // иначе следующий старт может встретить зависший listener.
+            try { if (McpHost != null) McpHost.StopAsync().Wait(TimeSpan.FromSeconds(2)); } catch { }
+            // HTTP-ingress и его фасад (только если создавали свой — pipe-хост гасит свой сам).
+            try { if (McpHttp != null) McpHttp.StopAsync().Wait(TimeSpan.FromSeconds(2)); } catch { }
+            try { if (McpHttp != null) McpHttp.Facade.PendingClientAdded -= OnMcpPendingClient; } catch { }
+            try { if (_funnelPort != 0) Core.Mcp.Http.TailscaleFunnel.StopFunnelAsync(_funnelPort).Wait(TimeSpan.FromSeconds(2)); } catch { }
+            try { _httpFacade?.Dispose(); } catch { }
+            // Оркестратор делит McpClientManager с McpOutgoing — гасим первым,
+            // иначе его DisposeAsync закроет общих клиентов дважды.
+            try { if (McpChat != null) McpChat.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2)); } catch { }
+            try { if (McpOutgoing != null) McpOutgoing.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2)); } catch { }
+
+            // Вложения: воркер фактов -> очередь импорта -> нативный OCR -> стор.
+            // Interrupt-метки running-джоб снимает MarkInterruptedJobs на следующем старте.
+            try { _factWorker?.Dispose(); } catch { }
+            try { _importRunner?.Dispose(); } catch { }
+            try { _pdfOcr?.Dispose(); } catch { }
+            try { _attachmentStore?.Dispose(); } catch { }
+
+            // §8: поиск встреч держит meetings-index.db и фоновый до-эмбеддинг E5 —
+            // гасим его ДО teardown памяти и dispose логгера, иначе job пишет в закрытую БД/лог.
+            try { MeetingSearch?.Dispose(); } catch { }
+            MeetingSearch = null;
 
             // Память: финализация встречи (extract-джоба), останов воркера, dispose стора —
             // та же последовательность, что при live-выключении в настройках.

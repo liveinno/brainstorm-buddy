@@ -513,6 +513,11 @@
                                            Foreground="{DynamicResource TextBrightBrush}" VerticalAlignment="Center"
                                            TextTrimming="CharacterEllipsis"/>
                             </DockPanel>
+                            <!-- §6.1: пустая история — видимый placeholder, не тихое скрытие -->
+                            <TextBlock Grid.Row="1" x:Name="HistoryEmpty"
+                                       Text="{DynamicResource L_MC_HistoryEmpty}"
+                                       Style="{StaticResource BodyText}" Foreground="{DynamicResource TextDimBrush}"
+                                       VerticalAlignment="Center" Visibility="Collapsed"/>
                             <ListBox Grid.Row="1" x:Name="HistoryList" BorderThickness="0">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
@@ -719,6 +724,7 @@
                 <Grid Margin="0,16,0,0">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <DockPanel Grid.Row="0" Margin="0,0,0,8">
@@ -729,7 +735,35 @@
                                     Content="{DynamicResource L_MC_Job_Refresh}" Click="OnJobsRefresh"/>
                         </StackPanel>
                     </DockPanel>
-                    <Border Grid.Row="1" Background="{DynamicResource PanelBrush}"
+                    <!-- Карточка fact-job (извлечение фактов из документа):
+                         живой %, имя файла, стоп, причина ошибки. -->
+                    <Border x:Name="FactJobCard" Grid.Row="1" Margin="0,0,0,8"
+                            DockPanel.Dock="Top" Visibility="Collapsed"
+                            Background="{DynamicResource PanelBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="10"
+                            Padding="12,10">
+                        <DockPanel LastChildFill="True">
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
+                                <Button x:Name="FactJobResumeBtn" Margin="8,0,0,0"
+                                        Style="{StaticResource MiniButton}" Visibility="Collapsed"
+                                        Click="OnFactJobResume"/>
+                                <Button x:Name="FactJobStopBtn" Margin="8,0,0,0"
+                                        Style="{StaticResource MiniButton}"
+                                        Content="{DynamicResource L_MC_FactJob_Stop}" Click="OnFactJobStop"/>
+                            </StackPanel>
+                            <StackPanel DockPanel.Dock="Left" MinWidth="0">
+                                <TextBlock x:Name="FactJobTitle" Style="{StaticResource BodyText}"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <ProgressBar x:Name="FactJobProgress" Minimum="0" Maximum="1" Height="4"
+                                             Margin="0,6,0,4" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="FactJobStatusText" Style="{StaticResource DimLabel}"/>
+                                <TextBlock x:Name="FactJobError" Style="{StaticResource DimLabel}"
+                                           Foreground="{DynamicResource ErrorBrush}" TextWrapping="Wrap"
+                                           Visibility="Collapsed"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </Border>
+                    <Border Grid.Row="2" Background="{DynamicResource PanelBrush}"
                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="10">
                         <Grid>
                             <ListBox x:Name="JobsList" BorderThickness="0">

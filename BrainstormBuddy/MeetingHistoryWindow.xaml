@@ -2,11 +2,12 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:BrainstormBuddy"
+        xmlns:controls="clr-namespace:BrainstormBuddy.Controls"
         Title="{DynamicResource L_Meet_Title}" Height="700" Width="1020" MinHeight="520" MinWidth="820"
         Background="{DynamicResource BgBrush}" Foreground="{DynamicResource TextBrush}"
         FontFamily="{DynamicResource UiFontFamily}" FontSize="13"
         TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen" PreviewKeyDown="OnWindowPreviewKeyDown">
 
     <Window.Resources>
 
@@ -106,20 +107,53 @@
         <Grid Grid.Column="0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Text="{DynamicResource L_Meet_SidebarHeader}" Style="{StaticResource LabelText}"
                        Foreground="{DynamicResource TextDimBrush}" Margin="2,0,0,8"/>
-            <Border Grid.Row="1" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+            <!-- §7: поиск по журналам прошлых встреч. Результаты замещают список
+                 встреч (тот же Border-контейнер), очистка строки возвращает список. -->
+            <TextBox Grid.Row="1" x:Name="MeetSearchBox" Height="30"
+                     Margin="0,0,0,10" Padding="8,4" FontSize="13"
+                     ToolTip="{DynamicResource L_Meet_SearchToolTip}"
+                     AutomationProperties.Name="{DynamicResource L_Meet_SearchLabel}"
+                     TextChanged="OnMeetSearchChanged"/>
+            <Border Grid.Row="2" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
                     BorderThickness="1" CornerRadius="10" Padding="4">
-                <ListBox x:Name="MeetingList" Background="Transparent" BorderThickness="0"
-                         SelectionChanged="OnMeetingSelect">
+                <Grid>
+                    <ListBox x:Name="MeetingList" Background="Transparent" BorderThickness="0"
+                             SelectionChanged="OnMeetingSelect">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <StackPanel>
-                                <TextBlock Text="{Binding ListTitle}" FontSize="14" FontWeight="Medium"
-                                           LineHeight="20" LineStackingStrategy="BlockLineHeight"
-                                           TextTrimming="CharacterEllipsis"/>
+                                <DockPanel>
+                                    <!-- Скрепка + число вложений встречи (AttachmentCount заполняет
+                                         LoadMeetings из AttachmentStore.CountByMeeting); скрыт при 0.
+                                         Время встречи (ListTitle) и бейдж в одной строке — высота не растёт. -->
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="6,0,0,0"
+                                                VerticalAlignment="Center">
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding AttachmentCount}" Value="0">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <Path Data="{DynamicResource GeoPaperclip}" Width="12" Height="12"
+                                              Stretch="Uniform" Stroke="{DynamicResource TextDimBrush}"
+                                              StrokeThickness="1.8" Margin="0,0,3,0"
+                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                              VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding AttachmentCount, Mode=OneWay}" FontSize="12"
+                                                   Foreground="{DynamicResource TextDimBrush}"/>
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding ListTitle}" FontSize="14" FontWeight="Medium"
+                                               LineHeight="20" LineStackingStrategy="BlockLineHeight"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </DockPanel>
                                 <TextBlock FontSize="12" LineHeight="18" LineStackingStrategy="BlockLineHeight" Margin="0,4,0,0"
                                            Text="{Binding ListSubtitle, Mode=OneWay}" TextTrimming="CharacterEllipsis">
                                     <TextBlock.Style>
@@ -142,6 +176,35 @@
                         </ContextMenu>
                     </ListBox.ContextMenu>
                 </ListBox>
+                    <!-- Результаты поиска по встречам (§7): поверх списка встреч,
+                         пока в строке поиска есть текст. Клик → встреча + золотая
+                         подсветка совпавшей строки (NavigateToHitAsync). -->
+                    <ListBox x:Name="SearchResultsList" Background="Transparent" BorderThickness="0"
+                             Visibility="Collapsed" SelectionChanged="OnSearchResultSelect">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="2,4">
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Left" Text="{Binding MeetingTitle}"
+                                                   FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource AccentBrush}"/>
+                                        <TextBlock Margin="8,0,0,0" FontSize="11"
+                                                   Foreground="{DynamicResource TextDimBrush}">
+                                            <Run Text="{Binding Ts, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding SpeakerLabel, Mode=OneWay}"/>
+                                        </TextBlock>
+                                    </DockPanel>
+                                    <TextBlock Text="{Binding Snippet}" FontSize="12" Margin="0,2,0,0"
+                                               TextWrapping="Wrap" LineHeight="16"
+                                               LineStackingStrategy="BlockLineHeight"
+                                               Foreground="{DynamicResource TextBrush}"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <TextBlock x:Name="NoResultsText" Text="{DynamicResource L_Meet_SearchEmpty}"
+                               Foreground="{DynamicResource TextDimBrush}" FontSize="12"
+                               TextWrapping="Wrap" Margin="8" Visibility="Collapsed"/>
+                </Grid>
             </Border>
         </Grid>
 
@@ -180,14 +243,172 @@
                           HorizontalScrollBarVisibility="Disabled" Focusable="False">
                 <Grid x:Name="DocGrid" MinHeight="382" Height="{Binding ViewportHeight, ElementName=DocScroll}">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <!-- Ответы ИИ из журнала (сворачиваемый раздел). -->
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="2*" MinHeight="184" x:Name="TranscriptRow"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="1*" MinHeight="186" x:Name="SummaryRow"/>
                     </Grid.RowDefinitions>
 
+                    <!-- Прикреплённые файлы встречи: сворачиваемая секция «Файлы (N)».
+                         Скрыта целиком, пока у встречи нет вложений (FilesSection). -->
+                    <Border Grid.Row="0" x:Name="FilesSection" Visibility="Collapsed" Margin="0,0,0,10"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="8" Padding="8" Background="{DynamicResource BgDarkerBrush}">
+                        <StackPanel>
+                            <Button x:Name="FilesToggleBtn" Click="OnFilesToggle" HorizontalContentAlignment="Left"
+                                    AutomationProperties.AutomationId="MeetingFilesToggle">
+                                <StackPanel Orientation="Horizontal">
+                                    <!-- Та же векторная скрепка (GeoPaperclip), что в списке встреч. -->
+                                    <Path Data="{DynamicResource GeoPaperclip}" Width="13" Height="13"
+                                          Stretch="Uniform" Stroke="{DynamicResource TextDimBrush}"
+                                          StrokeThickness="1.8" Margin="0,0,5,0"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                          VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="FilesHeaderText" Text="{DynamicResource L_Att_FilesHeaderFmt}"/>
+                                </StackPanel>
+                            </Button>
+                            <ItemsControl x:Name="FilesList" ItemsSource="{Binding AttachFiles}"
+                                          Margin="0,8,0,0" Visibility="Collapsed">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <!-- Имя и статус занимают отдельную строку: пять действий
+                                             шире панели, и при DockPanel справа имя файла
+                                             схлопывалось в ноль на обычном окне. -->
+                                        <Grid Margin="0,3">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <StackPanel Grid.Row="0">
+                                                <TextBlock Text="{Binding Doc.DisplayName}" FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Text="{Binding Subtitle}" FontSize="11"
+                                                           Foreground="{DynamicResource TextDimBrush}"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                            </StackPanel>
+                                            <WrapPanel Grid.Row="1" Orientation="Horizontal" Margin="0,4,0,0">
+                                                <Button Tag="{Binding Doc}" Click="OnAttachmentOpen"
+                                                        ToolTip="{DynamicResource L_Att_OpenFile}" Margin="0,0,4,0" Padding="6,2">
+                                                    <TextBlock Text="{DynamicResource L_Att_OpenFile}"/>
+                                                </Button>
+                                                <Button Tag="{Binding Doc}" Click="OnAttachmentSaveAs"
+                                                        ToolTip="{DynamicResource L_Att_SaveAs}" Margin="0,0,4,0" Padding="6,2">
+                                                    <TextBlock Text="{DynamicResource L_Att_SaveAs}"/>
+                                                </Button>
+                                                <Button Tag="{Binding Doc}" Click="OnAttachmentUseInCurrent"
+                                                        ToolTip="{DynamicResource L_Att_UseInCurrent}" Margin="0,0,4,0" Padding="6,2">
+                                                    <TextBlock Text="{DynamicResource L_Att_UseInCurrent}"/>
+                                                </Button>
+                                                <Button Tag="{Binding Doc}" Click="OnAttachmentExtractFacts"
+                                                        ToolTip="{DynamicResource L_Att_ExtractFactsBtn}" Margin="0,0,4,0" Padding="6,2">
+                                                    <TextBlock Text="{DynamicResource L_Att_ExtractFactsBtn}"/>
+                                                </Button>
+                                                <Button Tag="{Binding Doc}" Click="OnAttachmentDelete"
+                                                        ToolTip="{DynamicResource L_Att_DeleteFile}" Margin="0,0,4,0" Padding="6,2">
+                                                    <TextBlock Text="{DynamicResource L_Att_DeleteFile}"/>
+                                                </Button>
+                                            </WrapPanel>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Изображения встречи (feature-chat-images): тайлы превью 116×92,
+                         клик — просмотрщик. Скрыта целиком при пустом списке. -->
+                    <Border Grid.Row="1" x:Name="ImagesSection" Visibility="Collapsed" Margin="0,0,0,10"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="8" Padding="8" Background="{DynamicResource BgDarkerBrush}">
+                        <StackPanel>
+                            <Button x:Name="ImagesToggleBtn" Click="OnImagesToggle" HorizontalContentAlignment="Left">
+                                <TextBlock x:Name="ImagesHeaderText" Text="{DynamicResource L_ImgSection}"/>
+                            </Button>
+                            <ItemsControl x:Name="MeetingImagesList" Margin="0,8,0,0" Visibility="Collapsed">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel Orientation="Horizontal"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Width="116" Height="92" Margin="0,0,8,8"
+                                                Background="{DynamicResource PanelBrush}"
+                                                BorderBrush="{DynamicResource BorderBrush}"
+                                                BorderThickness="1" CornerRadius="8" Cursor="Hand"
+                                                MouseLeftButtonUp="OnMeetingImageClick" Tag="{Binding}">
+                                            <Border.ContextMenu>
+                                                <ContextMenu>
+                                                    <MenuItem Header="{DynamicResource L_ImgMenu_Open}" Tag="{Binding}" Click="OnImageMenuOpen"/>
+                                                    <MenuItem Header="{DynamicResource L_ImgMenu_SaveAs}" Tag="{Binding}" Click="OnImageMenuSaveAs"/>
+                                                    <MenuItem Header="{DynamicResource L_ImgMenu_Copy}" Tag="{Binding}" Click="OnImageMenuCopy"/>
+                                                    <Separator/>
+                                                    <MenuItem Header="{DynamicResource L_ImgMenu_AddToMsg}" Tag="{Binding}" Click="OnImageMenuAddToMsg"/>
+                                                </ContextMenu>
+                                            </Border.ContextMenu>
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="*"/>
+                                                    <RowDefinition Height="20"/>
+                                                </Grid.RowDefinitions>
+                                                <Image Source="{Binding Thumb}" Stretch="Uniform"/>
+                                                <TextBlock Grid.Row="1" Text="{Binding Caption}"
+                                                           Foreground="{DynamicResource TextMutedBrush}" FontSize="12"
+                                                           Margin="6,0" TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Ответы ИИ из журнала встречи: сворачиваемый раздел со
+                         списком сохранённых ответов модели (роль «answer»).
+                         Реплики участников остаются в транскрипте обычным текстом.
+                         Секция скрыта, пока у встречи нет ответов. -->
+                    <Border Grid.Row="2" x:Name="AiAnswersSection" Visibility="Collapsed" Margin="0,0,0,10"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="8" Padding="8" Background="{DynamicResource BgDarkerBrush}">
+                        <StackPanel>
+                            <Button x:Name="AiAnswersToggleBtn" Click="OnAiAnswersToggle" HorizontalContentAlignment="Left"
+                                    AutomationProperties.AutomationId="MeetingAiAnswersToggle">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock x:Name="AiAnswersHeaderText" Text=""
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                            <ItemsControl x:Name="AiAnswersList" ItemsSource="{Binding AiAnswers}"
+                                          Margin="0,8,0,0" Visibility="Collapsed">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,0,8" Padding="8" CornerRadius="6"
+                                                Background="{DynamicResource PanelBrush}"
+                                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding Header}" FontSize="12"
+                                                           Foreground="{DynamicResource TextMutedBrush}"
+                                                           TextTrimming="CharacterEllipsis" Margin="0,0,0,4"/>
+                                                <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto"
+                                                              HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                                                    <controls:MarkdownView Text="{Binding Text}" BaseFontSize="14"/>
+                                                </ScrollViewer>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
                     <!-- Транскрипт -->
-                    <Grid Grid.Row="0">
+                    <Grid Grid.Row="3">
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
@@ -263,9 +484,43 @@
                                 </Button>
                             </WrapPanel>
                         </Grid>
-                        <TextBox x:Name="TranscriptBox" Grid.Row="1" Margin="0,8,0,0" MinHeight="140"
+                        <Grid x:Name="TranscriptSearchPanel" Grid.Row="1" Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="TranscriptSearchBox" Height="32" Padding="8,4"
+                                     ToolTip="{DynamicResource L_Meet_TranscriptSearchToolTip}"
+                                     AutomationProperties.Name="{DynamicResource L_Meet_TranscriptSearchLabel}"
+                                     TextChanged="OnTranscriptSearchChanged"
+                                     PreviewKeyDown="OnTranscriptSearchPreviewKeyDown"
+                                     SelectionBrush="{DynamicResource AccentBrush}"
+                                     SelectionTextBrush="{DynamicResource AccentTextBrush}"/>
+                            <TextBlock x:Name="TranscriptSearchCount" Grid.Column="1" MinWidth="58"
+                                       Margin="8,0,4,0" VerticalAlignment="Center" TextAlignment="Center"
+                                       Foreground="{DynamicResource TextMutedBrush}"
+                                       Text="{DynamicResource L_Meet_TranscriptSearchCountEmpty}"/>
+                            <Button x:Name="TranscriptSearchPrevBtn" Grid.Column="2" Width="32" Height="32" Padding="0" Margin="0,0,4,0"
+                                    ToolTip="{DynamicResource L_Meet_TranscriptSearchPrevious}"
+                                    AutomationProperties.Name="{DynamicResource L_Meet_TranscriptSearchPrevious}"
+                                    Click="OnTranscriptSearchPrevious">
+                                <TextBlock Text="↑" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Button>
+                            <Button x:Name="TranscriptSearchNextBtn" Grid.Column="3" Width="32" Height="32" Padding="0"
+                                    ToolTip="{DynamicResource L_Meet_TranscriptSearchNext}"
+                                    AutomationProperties.Name="{DynamicResource L_Meet_TranscriptSearchNext}"
+                                    Click="OnTranscriptSearchNext">
+                                <TextBlock Text="↓" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Button>
+                        </Grid>
+                        <TextBox x:Name="TranscriptBox" Grid.Row="2" Margin="0,8,0,0" MinHeight="140"
                                  IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
                                  VerticalScrollBarVisibility="Auto" IsInactiveSelectionHighlightEnabled="True"
+                                 SelectionBrush="{DynamicResource SearchHighlightBrush}"
+                                 SelectionTextBrush="{DynamicResource SearchHighlightTextBrush}"
+                                 SelectionOpacity="1"
                                  Background="{DynamicResource BgDarkerBrush}" Foreground="{DynamicResource TextBrush}"
                                  FontSize="15" Padding="{StaticResource TranscriptBoxPadding}"
                                  Text="{DynamicResource L_Meet_Empty}">
@@ -278,11 +533,11 @@
                         </TextBox>
                     </Grid>
 
-                    <GridSplitter Grid.Row="1" Height="4" HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                    <GridSplitter Grid.Row="4" Height="4" HorizontalAlignment="Stretch" VerticalAlignment="Center"
                                   Margin="0,4" Background="{DynamicResource BorderBrush}" ResizeBehavior="PreviousAndNext"/>
 
                     <!-- Саммари -->
-                    <Grid Grid.Row="2">
+                    <Grid Grid.Row="5">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
@@ -335,6 +590,10 @@
                                 </WrapPanel.Style>
                                 <Button x:Name="SummaryBtn" Content="{DynamicResource L_Meet_SummaryBtn}" Style="{StaticResource PrimaryButton}"
                                         Click="OnGenerateSummary" IsEnabled="False" Margin="0,0,8,8"/>
+                                <!-- §5: остановка долгой генерации. Видна всегда, активна
+                                     только пока резюме строится; отмена не стирает старое. -->
+                                <Button x:Name="SummaryStopBtn" Content="{DynamicResource L_Meet_SummaryStopBtn}"
+                                        Click="OnStopSummary" IsEnabled="False" Margin="0,0,8,8"/>
                                 <Button Click="OnCopySummary" Margin="0,0,8,8">
                                     <StackPanel Orientation="Horizontal">
                                         <Image Source="{DynamicResource BuddySettings.Icon.Copy.Default}" Width="16" Height="16" Margin="0,0,6,0"/>
@@ -349,18 +608,16 @@
                                 </Button>
                             </WrapPanel>
                         </Grid>
-                        <TextBox x:Name="SummaryBox" Grid.Row="1" Margin="0,8,0,0" MinHeight="140"
-                                 IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
-                                 VerticalScrollBarVisibility="Auto" IsInactiveSelectionHighlightEnabled="True"
-                                 Background="{DynamicResource BgDarkerBrush}" Foreground="{DynamicResource TextBrush}"
-                                 FontSize="15" Padding="{StaticResource TranscriptBoxPadding}">
-                            <TextBox.ContextMenu>
-                                <ContextMenu>
-                                    <MenuItem Header="{DynamicResource L_Meet_SelectAllMenu}" Command="SelectAll"/>
-                                    <MenuItem Header="{DynamicResource L_Meet_CopyMenu}" Command="Copy"/>
-                                </ContextMenu>
-                            </TextBox.ContextMenu>
-                        </TextBox>
+                        <!-- Саммари — markdown-компонент: форматирование применяется
+                             при отрисовке, исходный текст с разметкой хранится. -->
+                        <Border Grid.Row="1" Margin="0,8,0,0" MinHeight="140"
+                                Background="{DynamicResource BgDarkerBrush}" BorderBrush="{DynamicResource InputBorderBrush}"
+                                BorderThickness="1" CornerRadius="8" Padding="{StaticResource TranscriptBoxPadding}">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                          Focusable="False">
+                                <controls:MarkdownView x:Name="SummaryView" BaseFontSize="15"/>
+                            </ScrollViewer>
+                        </Border>
                     </Grid>
                 </Grid>
             </ScrollViewer>

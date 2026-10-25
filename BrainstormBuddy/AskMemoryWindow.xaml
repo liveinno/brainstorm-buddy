@@ -1,6 +1,7 @@
 <Window x:Class="BrainstormBuddy.AskMemoryWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:BrainstormBuddy.Controls"
         Title="{DynamicResource L_AM_Title}" Height="460" Width="560" MinHeight="340" MinWidth="440"
         Topmost="True" WindowStartupLocation="CenterScreen"
         Background="{DynamicResource BgBrush}" Foreground="{DynamicResource TextBrush}"
@@ -114,13 +115,30 @@
                        Foreground="{DynamicResource TextMutedBrush}"/>
         </StackPanel>
 
-        <!-- Ввод: вопрос + режим + кнопка -->
+        <!-- Ввод: вопрос + источник + режим + кнопка -->
         <Border Grid.Row="1" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1" CornerRadius="12" Padding="10" Margin="0,0,0,10">
             <StackPanel>
                 <TextBox x:Name="QuestionBox" Style="{StaticResource InputText}"
+                         Foreground="{DynamicResource TextBrightBrush}"
+                         CaretBrush="{DynamicResource TextBrightBrush}"
                          ToolTip="{DynamicResource L_AM_TT_Question}"
                          KeyDown="OnQuestionKeyDown"/>
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{DynamicResource L_AM_SourceLabel}"
+                               Style="{StaticResource MetaText}" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,8,0"/>
+                    <ComboBox Grid.Column="1" x:Name="SourceCombo" SelectedIndex="0"
+                              SelectionChanged="OnSourceChanged" HorizontalAlignment="Left" MinWidth="220">
+                        <ComboBoxItem Content="{DynamicResource L_AM_SourceBoth}" Tag="both"/>
+                        <ComboBoxItem Content="{DynamicResource L_AM_SourceMemory}" Tag="memory"/>
+                        <ComboBoxItem Content="{DynamicResource L_AM_SourceMeetings}" Tag="meetings"/>
+                    </ComboBox>
+                </Grid>
                 <Grid Margin="0,8,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -155,12 +173,26 @@
                     Background="{DynamicResource BgMediumBrush}" BorderBrush="{DynamicResource AccentBrush}"
                     BorderThickness="1" CornerRadius="10" Padding="10" Margin="0,0,0,8">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="{DynamicResource L_AM_AnswerHeader}"
-                               Style="{StaticResource LabelText}"
-                               Foreground="{DynamicResource AccentSoftBrush}" Margin="0,0,0,4"/>
-                    <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
-                        <TextBlock x:Name="AnswerText" Style="{StaticResource DocumentText}" TextWrapping="Wrap"
-                                   Foreground="{DynamicResource TextBrightBrush}"/>
+                    <Grid DockPanel.Dock="Top" Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="{DynamicResource L_AM_AnswerHeader}"
+                                   Style="{StaticResource LabelText}"
+                                   Foreground="{DynamicResource AccentSoftBrush}"/>
+                        <!-- Ответ отрисован блоками markdown: мышью фрагмент не выделить,
+                             поэтому копирование - явной кнопкой и по Ctrl+C. -->
+                        <Button Grid.Column="1" x:Name="CopyAnswerBtn" Content="{DynamicResource L_CM_CopyAnswer}"
+                                Style="{StaticResource CompactButton}"
+                                Padding="10,2" Height="26" Margin="8,0,0,0"
+                                Visibility="Collapsed" Click="OnCopyAnswer"/>
+                    </Grid>
+                    <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                        <!-- Ответ модели — с markdown-разметкой (форматирование при отрисовке). -->
+                        <controls:MarkdownView x:Name="AnswerView" BaseFontSize="15"
+                                              Foreground="{DynamicResource TextBrightBrush}"/>
                     </ScrollViewer>
                 </DockPanel>
             </Border>
@@ -175,7 +207,8 @@
                         <DataTemplate>
                             <Border Background="{DynamicResource PanelBrush}"
                                     BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="8,6" Margin="0,0,0,6">
+                                    CornerRadius="8" Padding="8,6" Margin="0,0,0,6"
+                                    Tag="{Binding}" MouseLeftButtonUp="OnOpenSource" Cursor="{Binding RowCursor}">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
                                         <Border Style="{StaticResource ChipBadge}">
@@ -195,6 +228,10 @@
                                     <TextBlock Text="{Binding MetaText}" Style="{StaticResource MetaText}"
                                                Margin="0,3,0,0" TextTrimming="CharacterEllipsis"
                                                Foreground="{DynamicResource TextDimBrush}"/>
+                                    <Button Content="{DynamicResource L_AM_OpenSource}" Tag="{Binding}"
+                                            Visibility="{Binding SourceButtonVisibility}"
+                                            HorizontalAlignment="Left" Margin="0,5,0,0"
+                                            Padding="8,2" Click="OnOpenSource"/>
                                 </StackPanel>
                             </Border>
                         </DataTemplate>

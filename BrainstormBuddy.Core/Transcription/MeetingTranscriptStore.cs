@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace BrainstormBuddy.Transcription;
 
@@ -12,6 +14,13 @@ public sealed class MeetingJournalLine
     [JsonPropertyName("x")] public string Text { get; set; } = "";
     /// <summary>Speaker diarization id ("S1"..). Отсутствует в старых файлах → null.</summary>
     [JsonPropertyName("speaker")] public string? Speaker { get; set; }
+    /// <summary>Стабильный id сообщения (для image_links и восстановления
+    /// незавершённой отправки). Отсутствует в старых файлах → null.</summary>
+    [JsonPropertyName("mid")] public string? MessageId { get; set; }
+    /// <summary>imageIds изображений сообщения (img-*, см. IChatImageStore).
+    /// Реплика без текста, но с ImageIds — полноценная (картинки без вопроса).
+    /// Отсутствует в старых файлах → null.</summary>
+    [JsonPropertyName("imgs")] public string[]? ImageIds { get; set; }
 }
 
 /// <summary>Метаданные встречи (sidecar &lt;id&gt;.meta.json) + производные для списка в UI.</summary>
@@ -24,8 +33,23 @@ public sealed class MeetingInfo
     public int LineCount { get; set; }
     public string FirstLine { get; set; } = "";
     public string Summary { get; set; } = "";
+    /// <summary>Завершённые части и незавершённый ответ AI-резюме для продолжения после ошибки.</summary>
+    public string? SummaryCheckpointJson { get; set; }
+    /// <summary>Сериализованный MeetingContextState (BrainstormBuddy.Context):
+    /// накопительная сводка + прогресс фоновой сводки встречи. Переживает
+    /// перезапуск приложения — свежий хвост реплик всегда в самом журнале.</summary>
+    public string? ContextStateJson { get; set; }
 
     // ── Производные для списка (считать строки в XAML-биндингах хрупко). ──
+    /// <summary>Число прикреплённых файлов встречи: заполняет UI из
+    /// AttachmentStore.CountByMeeting(), в sidecar не сериализуется.</summary>
+    [JsonIgnore] public int AttachmentCount { get; set; }
+    /// <summary>Число изображений встречи: заполняет UI из
+    /// IChatImageStore (GetForMeeting), в sidecar не сериализуется.</summary>
+    [JsonIgnore] public int ImageCount { get; set; }
+    /// <summary>Бейдж «📎 N» — устаревший текстовый вариант; UI рисует векторную
+    /// скрепку (GeoPaperclip) + AttachmentCount. Оставлен как источник числа.</summary>
+    [JsonIgnore] public string ListAttachments => AttachmentCount > 0 ? $"📎 {AttachmentCount}" : "";
     [JsonIgnore] public string ListTitle => StartedAt.ToString("dd.MM.yyyy HH:mm");
     [JsonIgnore] public string ListSubtitle
     {
@@ -73,6 +97,27 @@ public sealed class MeetingTranscriptStore
     }
 
     public string Directory => _dir;
+    /// <summary>Id текущей встречи (null — журнал ещё не создан лениво в Append /
+    /// EnsureCurrentMeeting). Вложения чата привязываются к этому id — это НЕ
+    /// mem_meetings.id из memory.db.</summary>
+    public string? CurrentId
+    {
+        get { lock (_lock) return _currentId; }
+    }
+
+    /// <summary>
+    /// Гарантировать существование текущего файла встречи и вернуть его id.
+    /// Идемпотентно: встреча создаётся один раз и переиспользуется до
+    /// BeginNewMeeting()/Delete(). Используется UI вложений: прикрепление файла
+    /// не должно ждать первой реплики, а фиктивная строка в журнале запрещена —
+    /// создаём пустой .jsonl + sidecar с LineCount=0.
+    /// </summary>
+    public string EnsureCurrentMeeting()
+    {
+        lock (_lock)
+            return EnsureFileLocked();
+    }
+
 
     /// <summary>Путь текущего jsonl-файла встречи (null — файл ещё не создан лениво
     /// в Append). Memory-слой пишет его в mem_meetings.journal_path.</summary>
@@ -92,49 +137,34 @@ public sealed class MeetingTranscriptStore
         }
     }
 
-    /// <summary>Дописать завершённую реплику в живой журнал. Потокобезопасно, best-effort.</summary>
-    public void Append(string role, string text, string? speaker = null)
+    /// <summary>Дописать завершённую реплику в живой журнал. Потокобезопасно, best-effort.
+    /// Реплика без текста, но с imageIds (картинки без вопроса) — полноценная строка;
+    /// пустой text без imageIds по-прежнему пропускается. messageId — стабильный id
+    /// сообщения для image_links и восстановления прерванной отправки.</summary>
+    public void Append(string role, string text, string? speaker = null,
+        string? messageId = null, string[]? imageIds = null)
     {
-        if (string.IsNullOrWhiteSpace(text)) return;
+        if (string.IsNullOrWhiteSpace(text) && (imageIds == null || imageIds.Length == 0)) return;
         try
         {
             lock (_lock)
             {
-                if (_currentPath == null)
-                {
-                    // Первая реплика встречи — создаём файл, имя = момент старта.
-                    _currentStart = DateTime.Now;
-                    _lastLineAt = _currentStart;
-                    // Две встречи в одну секунду (сбросили и тут же заговорили) → суффикс -2, -3…
-                    var id = _currentStart.ToString("yyyy-MM-dd_HH-mm-ss");
-                    var path = Path.Combine(_dir, id + ".jsonl");
-                    for (int n = 2; File.Exists(path); n++)
-                    {
-                        id = $"{_currentStart:yyyy-MM-dd_HH-mm-ss}-{n}";
-                        path = Path.Combine(_dir, id + ".jsonl");
-                    }
-                    _currentId = id;
-                    _currentPath = path;
-                    _currentInfo = new MeetingInfo
-                    {
-                        Id = id,
-                        JournalPath = path,
-                        StartedAt = _currentStart,
-                        LastLineAt = _currentStart
-                    };
-                }
+                EnsureFileLocked();
 
                 var now = DateTime.Now;
+                var trimmed = text?.Trim() ?? "";
                 var line = JsonSerializer.Serialize(new MeetingJournalLine
                 {
                     Ts = now.ToString("HH:mm:ss"),
                     Role = role,
-                    Text = text.Trim(),
-                    Speaker = speaker
+                    Text = trimmed,
+                    Speaker = speaker,
+                    MessageId = messageId,
+                    ImageIds = imageIds is { Length: > 0 } ? imageIds : null
                 }, LineOpts);
 
                 // WriteThrough: байты уходят на диск сразу — kill -9 процесса не теряет реплику.
-                using (var fs = new FileStream(_currentPath, FileMode.Append, FileAccess.Write,
+                using (var fs = new FileStream(_currentPath!, FileMode.Append, FileAccess.Write,
                            FileShare.Read, 4096, FileOptions.WriteThrough))
                 using (var w = new StreamWriter(fs, new UTF8Encoding(true)))
                     w.WriteLine(line);
@@ -143,33 +173,101 @@ public sealed class MeetingTranscriptStore
                 var info = _currentInfo!;
                 info.LastLineAt = now;
                 info.LineCount++;
-                if (info.FirstLine.Length == 0)
-                    info.FirstLine = text.Trim().Replace("\r", " ").Replace('\n', ' ');
+                if (info.FirstLine.Length == 0 && trimmed.Length > 0)
+                    info.FirstLine = trimmed.Replace("\r", " ").Replace('\n', ' ');
                 WriteMetaLocked(info);
             }
         }
         catch { /* журнал best-effort: ни одна реплика не должна ронять пайплайн STT/LLM */ }
     }
 
-    /// <summary>Сохранить обновлённые метаданные (например, AI-саммари из окна истории).</summary>
+    /// <summary>
+    /// Ленивое создание файла встречи (общая часть Append и EnsureCurrentMeeting).
+    /// Возвращает id; при повторном вызове просто отдаёт существующий.
+    /// Вызывается строго под _lock.
+    /// </summary>
+    private string EnsureFileLocked()
+    {
+        if (_currentPath != null)
+            return _currentId!;
+
+        // Первая запись встречи — создаём файл, имя = момент старта.
+        _currentStart = DateTime.Now;
+        _lastLineAt = _currentStart;
+        // Две встречи в одну секунду (сбросили и тут же заговорили) → суффикс -2, -3…
+        var id = _currentStart.ToString("yyyy-MM-dd_HH-mm-ss");
+        var path = Path.Combine(_dir, id + ".jsonl");
+        for (int n = 2; File.Exists(path); n++)
+        {
+            id = $"{_currentStart:yyyy-MM-dd_HH-mm-ss}-{n}";
+            path = Path.Combine(_dir, id + ".jsonl");
+        }
+        _currentId = id;
+        _currentPath = path;
+        _currentInfo = new MeetingInfo
+        {
+            Id = id,
+            JournalPath = path,
+            StartedAt = _currentStart,
+            LastLineAt = _currentStart
+        };
+        // Пустой журнал + sidecar на диске сразу: встреча видна в истории ещё
+        // до первой реплики (например, когда к ней прикрепили только файл).
+        File.WriteAllText(path, "", new UTF8Encoding(true));
+        WriteMetaLocked(_currentInfo);
+        return id;
+    }
+
+    /// <summary>Сохранить резюме и его прогресс, не откатывая состояние живой встречи.</summary>
     public void SaveInfo(MeetingInfo info)
+    {
+        lock (_lock)
+        {
+            var live = _currentInfo?.Id == info.Id ? _currentInfo : null;
+            if (live != null)
+            {
+                info.LineCount = live.LineCount;
+                info.LastLineAt = live.LastLineAt;
+                info.FirstLine = live.FirstLine;
+                info.ContextStateJson = live.ContextStateJson;
+            }
+            WriteMeta(info);
+            if (live != null)
+            {
+                live.Summary = info.Summary;
+                live.SummaryCheckpointJson = info.SummaryCheckpointJson;
+            }
+        }
+    }
+
+    /// <summary>Сохранить состояние контекста встречи (сводка+прогресс) в sidecar
+    /// текущей встречи. Best-effort: ошибка диска не должна ронять пайплайн.</summary>
+    public void SaveContextState(string? contextStateJson)
     {
         try
         {
             lock (_lock)
             {
-                // Не даём окну затереть свежие счётчики живой встречи устаревшим снимком.
-                if (_currentInfo != null && _currentInfo.Id == info.Id)
-                {
-                    info.LineCount = _currentInfo.LineCount;
-                    info.LastLineAt = _currentInfo.LastLineAt;
-                    info.FirstLine = _currentInfo.FirstLine;
-                    _currentInfo.Summary = info.Summary;
-                }
-                WriteMetaLocked(info);
+                if (_currentInfo == null) return;
+                _currentInfo.ContextStateJson = contextStateJson;
+                WriteMetaLocked(_currentInfo);
             }
         }
         catch { /* best-effort */ }
+    }
+
+    /// <summary>Прочитать состояние контекста из sidecar'а встречи по id
+    /// (для восстановления после рестарта — встреча уже не «текущая»).</summary>
+    public string? LoadContextState(string meetingId)
+    {
+        try
+        {
+            var meta = Path.Combine(_dir, meetingId + ".meta.json");
+            if (!File.Exists(meta)) return null;
+            var info = JsonSerializer.Deserialize<MeetingInfo>(File.ReadAllText(meta), MetaOpts);
+            return info?.ContextStateJson;
+        }
+        catch { return null; }
     }
 
     /// <summary>Удалить встречу (журнал + sidecar). Если удаляют ЖИВУЮ встречу —
@@ -246,9 +344,70 @@ public sealed class MeetingTranscriptStore
         catch { /* файл могли удалить прямо сейчас */ }
         return lines;
     }
+    /// <summary>Асинхронное чтение журнала (P0/§3 аудита 2026-10-15): построчно,
+    /// не блокируя UI-поток, отменяемо через ct. Повреждённые строки пропускаем,
+    /// недоступный/удалённый файл → пустой список (как у синхронного ReadLines).</summary>
+    public async Task<List<MeetingJournalLine>> ReadLinesAsync(string journalPath,
+        CancellationToken ct = default)
+    {
+        var lines = new List<MeetingJournalLine>();
+        try
+        {
+            // FileShare.Read — стор пишет append-only с FileShare.Read: совместимо.
+            using var fs = new FileStream(journalPath, FileMode.Open, FileAccess.Read,
+                FileShare.Read, 8192, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            using var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            while (await reader.ReadLineAsync(ct).ConfigureAwait(false) is { } raw)
+            {
+                try
+                {
+                    var l = JsonSerializer.Deserialize<MeetingJournalLine>(raw);
+                    if (l != null) lines.Add(l);
+                }
+                catch { /* битая строка — пропускаем */ }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { /* файл могли удалить прямо сейчас */ }
+        return lines;
+    }
 
-    /// <summary>Человекочитаемый транскрипт: [hh:mm:ss] Роль: текст (как экспорт .txt).</summary>
-    public static string FormatTranscript(IEnumerable<MeetingJournalLine> lines)
+    /// <summary>Асинхронный список встреч: тот же LoadAll, но на пуле потоков —
+    /// перечисление каталога и парсинг sidecar'ов не держат UI-поток.</summary>
+    public Task<List<MeetingInfo>> LoadAllAsync(CancellationToken ct = default) =>
+        Task.Run(() => LoadAll(), ct);
+
+
+    /// <summary>imageIds последнего сообщения роли "user" с картинками, на которое
+    /// в журнале НЕТ следующей строки "answer" (прерванная отправка → восстановление
+    /// черновика без автозапроса). Пустой список — такого сообщения нет. Best-effort:
+    /// неизвестный/недоступный meetingId → пусто.</summary>
+    public IReadOnlyList<string> FindLastUnansweredImageIds(string meetingId)
+    {
+        try
+        {
+            var path = Path.Combine(_dir, meetingId + ".jsonl");
+            if (!File.Exists(path))
+                return [];
+            var lines = ReadLines(path);
+            var answered = false;
+            for (var i = lines.Count - 1; i >= 0; i--)
+            {
+                var l = lines[i];
+                if (l.Role == "answer") answered = true;
+                else if (l.Role == "user" && l.ImageIds is { Length: > 0 })
+                    return answered ? [] : l.ImageIds;
+            }
+            return [];
+        }
+        catch { return []; }
+    }
+
+    /// <summary>Человекочитаемый транскрипт: [hh:mm:ss] Роль: текст + метки
+    /// «[Изображение: имя]» за каждым ImageIds. imageNameResolver переводит
+    /// imageId в имя файла (null/промах → короткий id с обрезкой до 12 символов).</summary>
+    public static string FormatTranscript(IEnumerable<MeetingJournalLine> lines,
+        Func<string, string?>? imageNameResolver = null)
     {
         var sb = new StringBuilder();
         foreach (var l in lines)
@@ -256,11 +415,25 @@ public sealed class MeetingTranscriptStore
             var label = l.Role == "question" && !string.IsNullOrEmpty(l.Speaker)
                 ? l.Speaker
                 : RoleLabel(l.Role);
-            sb.Append('[').Append(l.Ts).Append("] ").Append(label).Append(": ")
-              .Append(l.Text).Append('\n');
+            sb.Append('[').Append(l.Ts).Append("] ").Append(label).Append(": ");
+            if (!string.IsNullOrEmpty(l.Text))
+                sb.Append(l.Text);
+            if (l.ImageIds != null)
+                foreach (var id in l.ImageIds)
+                {
+                    if (string.IsNullOrEmpty(id)) continue;
+                    if (sb.Length > 0 && sb[^1] != ' ') sb.Append(' ');
+                    sb.Append('[').Append(UiText.Tr("Изображение", "Image")).Append(": ")
+                      .Append(imageNameResolver?.Invoke(id) ?? ShortImageId(id)).Append(']');
+                }
+            sb.Append('\n');
         }
         return sb.ToString();
     }
+
+    /// <summary>Короткая форма imageId для метки в тексте (img-abcdef123456… → первые 12 + …).</summary>
+    private static string ShortImageId(string imageId) =>
+        imageId.Length <= 12 ? imageId : imageId[..12] + "…";
 
     public static string RoleLabel(string role) => role switch
     {
@@ -304,7 +477,15 @@ public sealed class MeetingTranscriptStore
 
     private void WriteMetaLocked(MeetingInfo info)
     {
-        try { File.WriteAllText(Path.Combine(_dir, info.Id + ".meta.json"), JsonSerializer.Serialize(info, MetaOpts)); }
+        try { WriteMeta(info); }
         catch { /* sidecar best-effort: журнал важнее */ }
+    }
+
+    private void WriteMeta(MeetingInfo info)
+    {
+        var path = Path.Combine(_dir, info.Id + ".meta.json");
+        var temporary = path + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(info, MetaOpts));
+        File.Move(temporary, path, overwrite: true);
     }
 }

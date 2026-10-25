@@ -98,7 +98,8 @@ public interface IMemoryRanker
 /// <summary>Recall для assistant/Ask Memory/Pre-call Brief.</summary>
 public interface IMemoryRecallService
 {
-    Task<List<MemoryRecallHit>> RecallAsync(MemoryRecallQuery q, CancellationToken ct);
+    Task<List<MemoryRecallHit>> RecallAsync(MemoryRecallQuery q, CancellationToken ct,
+        Action<Recall.MemoryRecallTrace>? trace = null);
     /// <summary>&lt;memory_context&gt;…&lt;/memory_context&gt; блок, уложенный в токен-бюджет.</summary>
     string BuildContextBlock(List<MemoryRecallHit> hits, int maxTokens);
 }
@@ -115,4 +116,6 @@ public interface IMemoryConsolidator
 {
     Task<ConsolidationPlan> PlanAsync(List<MemoryItem> candidates,
         IMemoryStore store, CancellationToken ct);
+    /// <summary>Применить план к store (insert/supersede/confirm; идемпотентно при retry).</summary>
+    Task ApplyAsync(ConsolidationPlan plan, IMemoryStore store);
 }

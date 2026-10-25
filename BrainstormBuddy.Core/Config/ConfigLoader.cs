@@ -10,7 +10,7 @@ public class ConfigLoader
 {
     // Текущая версия схемы конфига. Повышать при смене дефолтов/структуры — тогда
     // старые конфиги пройдут миграцию (чистка dev-остатков, дедуп пресетов и т.п.).
-    public const int CurrentSchemaVersion = 10;
+    public const int CurrentSchemaVersion = 12;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -283,6 +283,34 @@ public class ConfigLoader
             }
         }
 
+        // Схема 11: дефолт лимита ответа поднят до 10000 (владелец: обычный чат и
+        // вопросы по документу должны получать видимый ответ без ручной настройки;
+        // 1500 не хватало reasoning-моделям — видимый ответ рвался finish=length).
+        // Переписываем ТОЛЬКО известные прежние дефолты (180 → 400 → 1500 по
+        // версиям); кастомные значения юзера (3500 и т.п.) не трогаем.
+        if (c.SchemaVersion < 11)
+        {
+            if (c.Advanced.MaxResponseTokens is 180 or 400 or 1500)
+            {
+                _logger.Info($"Migration: Advanced.MaxResponseTokens {c.Advanced.MaxResponseTokens} -> 10000 (стандартный лимит ответа)", "Config");
+                c.Advanced.MaxResponseTokens = 10000;
+            }
+        }
+
+        // Схема 12 (требование владельца 2026-10-12): стандартный бюджет ответа
+        // поднят до 25000. Переписываем ТОЛЬКО известные прежние дефолты —
+        // включая 10000 из схемы 11 и 4096, который лежал в сохранённых конфигах
+        // (лог app.1.log 12:12:31 — запрос уходил с maxTokens=4096); кастомное
+        // значение юзера (8000 и т.п.) не трогаем.
+        if (c.SchemaVersion < 12)
+        {
+            if (c.Advanced.MaxResponseTokens is 1500 or 4096 or 10000)
+            {
+                _logger.Info($"Migration: Advanced.MaxResponseTokens {c.Advanced.MaxResponseTokens} -> 25000 (стандартный бюджет ответа)", "Config");
+                c.Advanced.MaxResponseTokens = 25000;
+            }
+        }
+
         c.SchemaVersion = CurrentSchemaVersion;
     }
 
@@ -386,8 +414,8 @@ public class ConfigLoader
         }
         if (config.Advanced.MaxResponseTokens <= 0)
         {
-            _logger.Warn("Invalid MaxResponseTokens, using 400", "Config");
-            config.Advanced.MaxResponseTokens = 400;
+            _logger.Warn("Invalid MaxResponseTokens, using 25000", "Config");
+            config.Advanced.MaxResponseTokens = 25000;
         }
     }
 }

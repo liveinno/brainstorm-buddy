@@ -8,6 +8,8 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
 using BrainstormBuddy.Ai;
+using BrainstormBuddy.Controls;
+using BrainstormBuddy.Markdown;
 using BrainstormBuddy.Media;
 using BrainstormBuddy.Stt;
 using BrainstormBuddy.Transcription;
@@ -33,20 +35,13 @@ public partial class FileTranscriptionWindow : Window
     /// </summary>
     public const string DefaultSummaryPrompt = BrainstormBuddy.Transcription.MeetingSummarizer.DefaultSummaryPrompt;
 
-    // Остальные промпты саммари-пути (map-reduce и короткий текст) — НЕ кастомизируются,
-    // вынесены в константы только для читабельности SummarizeAsync.
-    private const string SummaryShortUserPrompt = "Составь протокол встречи по транскрибации выше.";
-    private const string SummaryMapUserPrompt =
-        "Выпиши из фрагмента ключевое, СОХРАНЯЯ тайм-коды [мм:сс]: темы, факты, цифры, имена/роли, " +
-        "решения и договорённости. Списком, только по тексту, без воды.";
-    private const string SummaryMapSystemPrompt = "Ты обрабатываешь фрагмент транскрибации встречи.\n\n";
-    private const string SummaryReduceUserPrompt =
-        "Собери из этих конспектов частей ЕДИНЫЙ протокол встречи строго по формату выше.";
-
     private readonly TranscriptionHistoryStore _history;
     private readonly MediaAudioExtractor _extractor = new();
     private readonly ObservableCollection<QueueFileItem> _resultItems = new();
     private readonly List<string> _selectedFiles = new();
+    /// <summary>Markdown-компоненты в карточках результатов, уже подписанные
+    /// на клик по ссылке (подписка идёт по мере появления карточек).</summary>
+    private readonly List<MarkdownView> _linkedViews = new();
     private CancellationTokenSource? _cts;
     private bool _busy;
 
@@ -54,6 +49,10 @@ public partial class FileTranscriptionWindow : Window
     {
         InitializeComponent();
         ResultsList.ItemsSource = _resultItems;
+        // Карточки результатов создаются шаблоном ItemsControl — контейнеры с
+        // markdown-резюме появляются после лейаута, поэтому ссылки в них
+        // подписываемся по мере появления (повторы отсекаются).
+        ResultsList.LayoutUpdated += (_, _) => HookMarkdownLinks(ResultsList);
         _history = new TranscriptionHistoryStore(App.Current.AppDataDir);
         LoadHistory();
         // По умолчанию — как глобальный движок (если выбран Whisper, окно тоже на Whisper).
@@ -400,15 +399,23 @@ public partial class FileTranscriptionWindow : Window
         _cts = new CancellationTokenSource(TimeSpan.FromMinutes(8));
         item.SummaryCts = _cts;
         var ct = _cts.Token;
+        // Причина провала от сервиса (§5): «LLM не ответил» без причины не отличает
+        // исчерпанный бюджет/тишину модели от сетевой ошибки.
+        string? failure = null;
         try
         {
-            string summary = await SummarizeAsync(transcript, ct);
+            string summary = await SummarizeAsync(item, transcript, ct, reason => failure = reason);
             Progress.IsIndeterminate = false;            // <- баг: бегунок продолжал крутиться
             if (string.IsNullOrWhiteSpace(summary))
             {
                 StatusText.Text = L("L_FileTr_LlmNoAnswer");
-                item.ProgressText = L("L_FileTr_SummaryNoResult");
-                App.Current.Notifier?.ShowError(L("L_FileTr_AiSummaryTitle"), L("L_FileTr_LlmUnavailable"));
+                item.ProgressText = string.IsNullOrWhiteSpace(failure)
+                    ? L("L_FileTr_SummaryNoResult")
+                    : string.Format(L("L_FileTr_SummaryErrorFmt"), failure);
+                App.Current.Notifier?.ShowError(L("L_FileTr_AiSummaryTitle"),
+                    string.IsNullOrWhiteSpace(failure)
+                        ? L("L_FileTr_LlmUnavailable")
+                        : string.Format(L("L_FileTr_SummaryFailedFmt"), failure));
             }
             else
             {
@@ -419,7 +426,8 @@ public partial class FileTranscriptionWindow : Window
                 if (item.Record != null)
                 {
                     item.Record.Summary = summary;
-                    _history.Save(item.Record);
+                    item.Record.SummaryCheckpointJson = null;
+                    await Task.Run(() => _history.Save(item.Record));
                     LoadHistory();
                 }
             }
@@ -468,64 +476,41 @@ public partial class FileTranscriptionWindow : Window
     }
 
     /// <summary>
-    /// Составляет ПРОТОКОЛ ВСТРЕЧИ через LLM. Вход — текст с тайм-кодами. Длинный текст —
-    /// map-reduce (части → конспекты с тайм-кодами → единый протокол). Качество зависит
-    /// от модели LLM: маленькая локальная (3B) даёт грубее, чем 7B/облако.
+    /// Составляет ПРОТОКОЛ ВСТРЕЧИ через LLM: тонкая адаптация общего
+    /// <see cref="BrainstormBuddy.Transcription.MeetingSummarizer"/> к UI файловой
+    /// транскрибации (статус, расход токенов, причина ошибки). Вход — текст с
+    /// тайм-кодами; длинный текст сервис сам режет на MAP-части и сводит REDUCE.
     /// </summary>
-    private async Task<string> SummarizeAsync(string transcript, CancellationToken ct)
-    {
-        var api = App.Current.ApiClient;
-        const int chunkChars = 6000;
-
-        // Пустой Advanced.SummaryPrompt → встроенный дефолт (настройки показывают его же).
-        var protocolSys = string.IsNullOrWhiteSpace(App.Current.Config.Advanced.SummaryPrompt)
-            ? DefaultSummaryPrompt
-            : App.Current.Config.Advanced.SummaryPrompt;
-
-        if (transcript.Length <= chunkChars)
-        {
-            var r = await api.AskAsync(SummaryShortUserPrompt,
-                protocolSys + "\n\nТРАНСКРИБАЦИЯ:\n" + transcript, 1500, new List<ChatMessage>(), ct);
-            // AskAsync при отмене возвращает Canceled-результат (не бросает) —
-            // бросаем сами, чтобы показать «Саммари отменено», а не «готово».
-            ct.ThrowIfCancellationRequested();
-            return (r.Content ?? "").Trim();
-        }
-
-        // MAP: из каждого фрагмента вытащить факты, СОХРАНЯЯ тайм-коды.
-        var chunks = SplitChars(transcript, chunkChars);
-        var partials = new List<string>();
-        for (int i = 0; i < chunks.Count; i++)
-        {
-            ct.ThrowIfCancellationRequested();
-            int idx = i;
-            StatusText.Text = string.Format(L("L_FileTr_SummaryMapFmt"), idx + 1, chunks.Count);
-            var r = await api.AskAsync(
-                SummaryMapUserPrompt,
-                SummaryMapSystemPrompt + chunks[i],
-                600, new List<ChatMessage>(), ct);
-            if (!string.IsNullOrWhiteSpace(r.Content)) partials.Add(r.Content!.Trim());
-            ct.ThrowIfCancellationRequested();
-        }
-        if (partials.Count == 0) return "";
-
-        // REDUCE: собрать протокол из конспектов частей.
-        StatusText.Text = L("L_FileTr_SummaryReduce");
-        var combined = string.Join("\n", partials);
-        var final = await api.AskAsync(
-            SummaryReduceUserPrompt,
-            protocolSys + "\n\nКОНСПЕКТЫ ЧАСТЕЙ (с тайм-кодами):\n" + combined, 1800, new List<ChatMessage>(), ct);
-        ct.ThrowIfCancellationRequested();
-        return string.IsNullOrWhiteSpace(final.Content) ? combined : final.Content!.Trim();
-    }
-
-    private static List<string> SplitChars(string s, int size)
-    {
-        var list = new List<string>();
-        for (int i = 0; i < s.Length; i += size)
-            list.Add(s.Substring(i, Math.Min(size, s.Length - i)));
-        return list;
-    }
+    private Task<string> SummarizeAsync(QueueFileItem item, string transcript, CancellationToken ct,
+        Action<string>? onFailure) =>
+        // Вся логика протокола — в общем сервисе: MAP-бюджеты с расчётом на
+        // reasoning, ограниченные продолжения, сохранение успешных частей и
+        // запрет «успешного» протокола с молча пропущенной частью. Местная копия
+        // с бюджетом 600 теряла части длинной встречи молча (§5).
+        BrainstormBuddy.Transcription.MeetingSummarizer.SummarizeAsync(
+            App.Current.ApiClient, transcript,
+            s => Dispatcher.InvokeAsync(() =>
+            {
+                if (!_busy) return;
+                StatusText.Text = s;
+                item.ProgressText = s;
+            }),
+            ct, App.Current.Config.Advanced.SummaryPrompt,
+            onPart: (done, total) => Dispatcher.InvokeAsync(() =>
+            {
+                Progress.IsIndeterminate = total <= 1;
+                Progress.Maximum = total;
+                Progress.Value = Math.Min(done, total);
+            }),
+            onUsage: r => App.Current.AccountBackgroundUsage(r),
+            onFailure: onFailure,
+            checkpointJson: item.Record?.SummaryCheckpointJson,
+            onCheckpoint: checkpoint => Task.Run(() =>
+            {
+                if (item.Record is not { } record) return;
+                record.SummaryCheckpointJson = checkpoint;
+                _history.Save(record);
+            }));
 
     // ---- Копирование / скачивание (на карточке конкретного файла) ----
     private void OnItemCopyTranscript(object sender, RoutedEventArgs e)
@@ -537,7 +522,40 @@ public partial class FileTranscriptionWindow : Window
     private void OnItemCopySummary(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement fe && fe.DataContext is QueueFileItem item)
-            CopyText(item.SummaryText, L("L_FileTr_SummaryCopied"));
+            // Копируем ВИДИМЫЙ текст резюме (без markdown-маркеров).
+            CopyText(PlainText(item.SummaryText), L("L_FileTr_SummaryCopied"));
+    }
+
+    /// <summary>Видимый текст без разметки: то, что пользователь видит и
+    /// копирует из карточки резюме. Разбор не бросает исключений, при
+    /// неудаче отдаём исходный текст.</summary>
+    private static string PlainText(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "";
+        try { return MarkdownSupport.ToPlainText(MarkdownSupport.Parse(raw)); }
+        catch { return raw; }
+    }
+
+    /// <summary>Подписать markdown-компоненты в дереве на клик по ссылке
+    /// (только безопасные схемы http/https/mailto).</summary>
+    private void HookMarkdownLinks(DependencyObject root)
+    {
+        foreach (var view in EnumerateMarkdownViews(root))
+        {
+            if (_linkedViews.Any(v => ReferenceEquals(v, view))) continue;
+            _linkedViews.Add(view);
+            view.LinkClicked += (s, e) => MarkdownLinkOpener.Open(e.Url);
+        }
+    }
+
+    private static IEnumerable<MarkdownView> EnumerateMarkdownViews(DependencyObject root)
+    {
+        if (root is MarkdownView mv) yield return mv;
+        var count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+            foreach (var v in EnumerateMarkdownViews(
+                System.Windows.Media.VisualTreeHelper.GetChild(root, i)))
+                yield return v;
     }
 
     private void CopyText(string text, string ok)
@@ -606,6 +624,7 @@ public partial class FileTranscriptionWindow : Window
 
     private void OnDeleteHistory(object sender, RoutedEventArgs e)
     {
+        if (_busy) return;
         if (HistoryList.SelectedItem is not TranscriptionRecord rec) return;
         _history.Delete(rec.Id);
         // Карточка этого файла на экране больше не привязана к записи — иначе

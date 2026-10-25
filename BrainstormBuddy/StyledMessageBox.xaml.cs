@@ -106,12 +106,19 @@ public static class AppMessageBox
         MessageBoxImage icon = MessageBoxImage.None)
     {
         var dlg = new StyledMessageBox(text, caption, buttons, icon);
-        if (owner != null)
+        // Owner можно задать только на окно с живым hwnd. IsLoaded НЕ эквивалентен:
+        // 17.10 14:23 Application Error — пикер закрылся, IsLoaded ещё true, hwnd
+        // уже сгорел → InvalidOperationException убила процесс. Проверяем Handle
+        // (это же проверяет сам WPF перед приёмом владельца).
+        var shownOwner = owner != null && owner.IsLoaded
+            && new System.Windows.Interop.WindowInteropHelper(owner).Handle != IntPtr.Zero
+            ? owner : null;
+        if (shownOwner != null)
         {
-            dlg.Owner = owner;
+            dlg.Owner = shownOwner;
             // Диалог над Topmost-владельцем (оверлей встречи) — owned-окно и так выше
             // владельца, но без Topmost может уйти под чужие topmost-окна.
-            dlg.Topmost = owner.Topmost;
+            dlg.Topmost = shownOwner.Topmost;
         }
         else
         {

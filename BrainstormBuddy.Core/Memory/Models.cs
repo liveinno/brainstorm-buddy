@@ -77,6 +77,12 @@ public sealed class MemoryItem
     public long? SourceStartMs { get; set; }
     public long? SourceEndMs { get; set; }
     public string? Speaker { get; set; }
+    // Provenance источника-документа (чат-вложения): заполняется при извлечении
+    // фактов из прикреплённого файла (AttachmentFactExtractor). NULL у обычных фактов.
+    public string? SourceDocumentId { get; set; }
+    public string? SourceDocName { get; set; }
+    public string? SourceDocSha256 { get; set; }
+    public string? SourceAnchor { get; set; }
     public string Source { get; set; } = "extraction";   // extraction|user|user-edited
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -124,7 +130,11 @@ public sealed record MemoryRecallQuery(
     int MaxItems = 8,
     int MaxTokens = 2000,
     bool IncludeSuperseded = false,
-    bool IncludeHistorical = false);
+    bool IncludeHistorical = false,
+    // Явный поиск инструментом (memory_search): пользователь/модель запросили
+    // выборку шире авто-подборки, поэтому лимит фактов не режем настройкой
+    // RecallMaxItems. Авто-recall оставляет флаг false.
+    bool ExplicitSearch = false);
 
 /// <summary>Сводка для диагностики/health.</summary>
 public sealed record MemoryStats(

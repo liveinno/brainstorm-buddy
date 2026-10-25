@@ -1,3 +1,6 @@
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text.Json;
 using BrainstormBuddy.Ai;
 
 namespace BrainstormBuddy.Transcription;
@@ -9,9 +12,12 @@ namespace BrainstormBuddy.Transcription;
 /// </summary>
 public static class MeetingSummarizer
 {
-    /// <summary>Протокол по транскрипту. onStatus — прогресс для UI (UI-поток сам маршалит).</summary>
-    // Верхняя граница max_tokens для продолжений (как кламп настройки 2.7.2).
-    private const int MaxTokensCap = 4096;
+    // У reasoning-модели бюджеты 1500 и 3000 исчерпывались до финального текста.
+    // Протокол имеет отдельный лимит, не меняющий 25000 токенов обычного чата.
+    private const int InitialTokens = 4096;
+    private const int MaxTokensCap = 8192;
+    private const int MaxContinuationAttempts = 2;
+    private const int ChunkChars = 6000;
 
     /// <summary>
     /// Встроенный системный промпт протокола встречи — используется, когда
@@ -35,95 +41,264 @@ public static class MeetingSummarizer
     /// Протокол по транскрипту. onStatus — прогресс для UI (UI-поток сам маршалит).
     /// systemPrompt — кастомный системный промпт (Advanced.SummaryPrompt); пусто/null →
     /// встроенный <see cref="DefaultSummaryPrompt"/>.
+    /// <para>
+    /// onPart(done, total) — шаг по частям для детерминированного прогресс-бара
+    /// (короткая встреча — 1 шаг, длинная — MAP-части + REDUCE).
+    /// onUsage — КАЖДЫЙ реальный запрос сервиса, включая ограниченные продолжения:
+    /// расход обязан попасть в TokenLedger (иначе «ответы есть, токены 0»).
+    /// onFailure — человекочитаемая причина, почему вернулась пустая строка
+    /// (ошибка транспорта, пустой ответ модели, исчерпанный бюджет). Пустой
+    /// результат никогда не означает «успешный протокол».
+    /// </para>
     /// </summary>
     public static async Task<string> SummarizeAsync(IApiClient api, string transcript,
-        Action<string>? onStatus, CancellationToken ct, string? systemPrompt = null)
+        Action<string>? onStatus, CancellationToken ct, string? systemPrompt = null,
+        Action<int, int>? onPart = null, Action<AskResult>? onUsage = null,
+        Action<string>? onFailure = null, string? checkpointJson = null,
+        Func<string, Task>? onCheckpoint = null)
     {
-        const int chunkChars = 6000;
-
         var protocolSys = string.IsNullOrWhiteSpace(systemPrompt)
             ? DefaultSummaryPrompt
             : systemPrompt;
-        if (transcript.Length <= chunkChars)
+        var chunkCount = (transcript.Length + ChunkChars - 1) / ChunkChars;
+        var state = RestoreCheckpoint(checkpointJson, transcript, protocolSys,
+            transcript.Length <= ChunkChars ? 0 : chunkCount);
+        if (transcript.Length <= ChunkChars)
         {
-            var r = await AskWithContinuationAsync(api,
+            onPart?.Invoke(0, 1);
+            var shortResult = await AskWithContinuationAsync(api,
                 "Составь протокол встречи по транскрибации выше.",
-                protocolSys + "\n\nТРАНСКРИБАЦИЯ:\n" + transcript, 1500, ct);
-            // AskAsync при отмене возвращает Canceled-результат (не бросает) —
-            // восстанавливаем семантику отмены, чтобы caller показал «отменено».
+                protocolSys + "\n\nТРАНСКРИБАЦИЯ:\n" + transcript, ct,
+                state, onCheckpoint, onStatus, onUsage).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
-            return (r ?? "").Trim();
+            if (shortResult.Failed)
+            {
+                onFailure?.Invoke(shortResult.Failure ?? DescribeEmptyAnswer());
+                return "";
+            }
+            onPart?.Invoke(1, 1);
+            return shortResult.Text!.Trim();
         }
 
-        // MAP: из каждого фрагмента вытащить факты, СОХРАНЯЯ тайм-коды.
-        var chunks = SplitChars(transcript, chunkChars);
-        var partials = new List<string>();
-        for (int i = 0; i < chunks.Count; i++)
+        // Завершённые части переживают отмену, сетевую ошибку и перезапуск.
+        // Хеш входа не позволяет использовать их для другой встречи/инструкции.
+        var totalSteps = chunkCount + 1;
+        onPart?.Invoke(state.CompletedParts.Count, totalSteps);
+        for (int i = state.CompletedParts.Count; i < chunkCount; i++)
         {
             ct.ThrowIfCancellationRequested();
             onStatus?.Invoke(UiText.Tr(
-                $"Протокол · разбор части {i + 1}/{chunks.Count}…",
-                $"Summary · parsing part {i + 1}/{chunks.Count}…"));
+                $"Протокол · разбор части {i + 1}/{chunkCount}…",
+                $"Summary · parsing part {i + 1}/{chunkCount}…"));
+            var offset = i * ChunkChars;
             var part = await AskWithContinuationAsync(api,
                 "Выпиши из фрагмента ключевое, СОХРАНЯЯ тайм-коды [мм:сс]: темы, факты, цифры, имена/роли, " +
                 "решения и договорённости. Списком, только по тексту, без воды.",
-                "Ты обрабатываешь фрагмент транскрибации встречи.\n\n" + chunks[i],
-                600, ct);
-            if (!string.IsNullOrWhiteSpace(part)) partials.Add(part.Trim());
-            ct.ThrowIfCancellationRequested();
+                "Ты обрабатываешь фрагмент транскрибации встречи.\n\n" +
+                    transcript.Substring(offset, Math.Min(ChunkChars, transcript.Length - offset)),
+                ct, state, onCheckpoint, onStatus, onUsage).ConfigureAwait(false);
+            if (part.Failed)
+            {
+                onFailure?.Invoke(UiText.Tr(
+                    $"часть {i + 1}/{chunkCount}: {part.Failure ?? DescribeEmptyAnswer()}",
+                    $"part {i + 1}/{chunkCount}: {part.Failure ?? DescribeEmptyAnswer()}"));
+                return "";
+            }
+            state.CompletedParts.Add(part.Text!.Trim());
+            state.PendingText = "";
+            state.PendingBudget = 0;
+            await SaveCheckpointAsync(state, onCheckpoint).ConfigureAwait(false);
+            onPart?.Invoke(i + 1, totalSteps);
         }
 
-        // REDUCE: собрать протокол из конспектов частей.
+        ct.ThrowIfCancellationRequested();
         onStatus?.Invoke(UiText.Tr("Протокол · сведение…", "Summary · merging…"));
-        var combined = string.Join("\n", partials);
         var final = await AskWithContinuationAsync(api,
             "Собери из этих конспектов частей ЕДИНЫЙ протокол встречи строго по формату выше.",
-            protocolSys + "\n\nКОНСПЕКТЫ ЧАСТЕЙ (с тайм-кодами):\n" + combined, 1800, ct);
+            protocolSys + "\n\nКОНСПЕКТЫ ЧАСТЕЙ (с тайм-кодами):\n" + string.Join("\n", state.CompletedParts),
+            ct, state, onCheckpoint, onStatus, onUsage).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
-        return string.IsNullOrWhiteSpace(final) ? combined : final.Trim();
+        if (final.Failed)
+        {
+            onFailure?.Invoke(final.Failure ?? DescribeEmptyAnswer());
+            return "";
+        }
+        onPart?.Invoke(totalSteps, totalSteps);
+        return final.Text!.Trim();
     }
 
     /// <summary>
-    /// AskAsync + догон обрезанного ответа (бэклог 2.8.x п.9): при WasTruncated досылаем
-    /// «продолжи с места обрыва» с удвоенным max_tokens (максимум 2 продолжения) и склеиваем.
-    /// Ответ пишется НАПРЯМУЮ к хвосту: разрыв мог резать слово/токен, поэтому ни пробел,
-    /// ни перенос не добавляем; визуальный «…» обрезанной части перед склейкой снимаем.
+    /// AskAsync + ограниченный догон обрезанного ответа. Reasoning-модели могут
+    /// вернуть finish_reason=length с пустым Content, когда весь бюджет съеден
+    /// скрытым рассуждением. Повторяем только отсутствующий финальный ответ
+    /// отдельным бюджетом; сырой reasoning никогда не читается и не показывается.
+    /// onUsage вызывается на КАЖДЫЙ реальный запрос (первичный и продолжения):
+    /// провайдер списал токены за все попытки, счётчик обязан это учесть.
     /// </summary>
-    private static async Task<string?> AskWithContinuationAsync(IApiClient api,
-        string userText, string systemPrompt, int maxTokens, CancellationToken ct)
+    private static async Task<SummaryAttempt> AskWithContinuationAsync(IApiClient api,
+        string userText, string systemPrompt, CancellationToken ct, SummaryCheckpoint state,
+        Func<string, Task>? onCheckpoint, Action<string>? onStatus, Action<AskResult>? onUsage)
     {
-        var r = await api.AskAsync(userText, systemPrompt, maxTokens, new List<ChatMessage>(), ct);
-        var text = r.Content;
-        var budget = maxTokens;
-
-        for (var cont = 0; r.WasTruncated && cont < 2 && !string.IsNullOrEmpty(text); cont++)
+        var text = state.PendingText;
+        var maxTokens = Math.Clamp(state.PendingBudget, InitialTokens, MaxTokensCap);
+        for (var attempt = 0; attempt <= MaxContinuationAttempts; attempt++)
         {
-            // Хвост — якорь продолжения: модель видит, где оборвалась мысль, и доезжает
-            // до конца, а не переписывает ответ с начала.
-            var tail = text.TrimEnd();
-            if (tail.EndsWith('…')) tail = tail[..^1].TrimEnd();
-            if (tail.Length == 0) break;
+            ct.ThrowIfCancellationRequested();
+            var hasText = !string.IsNullOrWhiteSpace(text);
+            var nextUser = userText;
+            var nextSystem = systemPrompt;
+            if (hasText)
+            {
+                nextUser += "\nОтвет обрезан. Продолжи ровно с места обрыва, без повторов и нового заголовка.";
+                nextSystem += "\n\nНАЧАЛО ТВОЕГО ОТВЕТА (не повторяй, продолжи):\n" + Tail(text, 2000);
+            }
+            else if (attempt > 0 || state.PendingBudget > 0)
+            {
+                // Сохраняем исходное задание: без него MAP-повтор терял требование
+                // выписать факты, а не просто пересказать транскрипт.
+                nextUser += "\nПредыдущая попытка не дала финального текста. " +
+                    "Дай ответ целиком в пределах нового лимита, без рассуждений.";
+            }
+            if (hasText || attempt > 0)
+                onStatus?.Invoke(UiText.Tr("Протокол · дописываю незавершённый ответ…",
+                    "Summary · continuing unfinished answer…"));
 
-            budget = Math.Min(MaxTokensCap, Math.Max(budget * 2, 1024));
-            var anchor = tail.Length > 400 ? tail[^400..] : tail;
-            var contRes = await api.AskAsync(
-                "Твой предыдущий ответ оборвался по лимиту токенов. Продолжи его с места обрыва " +
-                "— выведи ТОЛЬКО продолжение (без повтора уже написанного, без комментариев).\n\n" +
-                "КОНЕЦ ОБОРВАННОГО ОТВЕТА:\n" + anchor,
-                systemPrompt, budget, new List<ChatMessage>(), ct);
-            if (string.IsNullOrWhiteSpace(contRes.Content)) break;
+            var r = await api.AskAsync(nextUser, nextSystem, maxTokens,
+                new List<ChatMessage>(), ct, background: true,
+                requestTimeout: TimeSpan.FromSeconds(120)).ConfigureAwait(false);
+            onUsage?.Invoke(r);
+            ThrowIfCanceled(r, ct);
+            state.PendingBudget = maxTokens;
+            if (r.Error != null)
+            {
+                await SaveCheckpointAsync(state, onCheckpoint).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(text))
+                    return new SummaryAttempt(null, true, r.Error);
 
-            text = tail + contRes.Content;
-            r = contRes;
+                // Ошибка на продолжении не отменяет уже выданный текст. Возвращаем
+                // честный частичный результат с маркером обрыва: короткий протокол
+                // не стирается, а MAP-часть может попасть в REDUCE вместе с остальными.
+                return new SummaryAttempt(AddTruncationMarker(text), false, r.Error);
+            }
+
+            var incomplete = NeedsContinuation(r);
+            if (!string.IsNullOrWhiteSpace(r.Content))
+            {
+                text += incomplete ? StripTrailingTruncationMarker(r.Content) : r.Content;
+                state.PendingText = text;
+            }
+            if (!incomplete)
+            {
+                if (!string.IsNullOrWhiteSpace(r.Content) && r.EmptyKind != EmptyAnswerKind.ProviderCap)
+                    return new SummaryAttempt(text, false);
+                await SaveCheckpointAsync(state, onCheckpoint).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(text))
+                    return new SummaryAttempt(AddTruncationMarker(text), false, DescribeEmptyResult(r));
+                return new SummaryAttempt(null, true, DescribeEmptyResult(r));
+            }
+
+            await SaveCheckpointAsync(state, onCheckpoint).ConfigureAwait(false);
+            maxTokens = Math.Min(MaxTokensCap, maxTokens * 2);
         }
-        return text;
+        // Частичный ответ сохранён для продолжения, но не заменяет старый протокол.
+        return new SummaryAttempt(null, true,
+            UiText.Tr("бюджет ответа исчерпан; завершённые части сохранены — повторите операцию",
+                "response budget exhausted; completed parts saved — retry the operation"));
     }
 
-    private static List<string> SplitChars(string s, int size)
+    private sealed class SummaryCheckpoint
     {
-        var list = new List<string>();
-        for (int i = 0; i < s.Length; i += size)
-            list.Add(s.Substring(i, Math.Min(size, s.Length - i)));
-        return list;
+        public SummaryCheckpoint() { }
+        public int Schema { get; set; } = 1;
+        public string Fingerprint { get; set; } = "";
+        public List<string> CompletedParts { get; set; } = new();
+        public string PendingText { get; set; } = "";
+        public int PendingBudget { get; set; }
+    }
+
+    private static SummaryCheckpoint RestoreCheckpoint(string? json, string transcript,
+        string protocol, int chunkCount)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Span<int> lengths = stackalloc int[] { transcript.Length, protocol.Length };
+        hash.AppendData(MemoryMarshal.AsBytes(lengths));
+        hash.AppendData(MemoryMarshal.AsBytes(transcript.AsSpan()));
+        hash.AppendData(MemoryMarshal.AsBytes(protocol.AsSpan()));
+        Span<byte> digest = stackalloc byte[32];
+        hash.GetHashAndReset(digest);
+        var fingerprint = Convert.ToHexString(digest);
+        if (!string.IsNullOrWhiteSpace(json))
+        {
+            try
+            {
+                var state = JsonSerializer.Deserialize<SummaryCheckpoint>(json);
+                if (state is { Schema: 1, CompletedParts: not null, PendingText: not null }
+                    && state.Fingerprint == fingerprint && state.CompletedParts.Count <= chunkCount
+                    && state.CompletedParts.TrueForAll(p => !string.IsNullOrWhiteSpace(p)))
+                    return state;
+            }
+            catch (JsonException) { /* повреждённый checkpoint не меняет прежнее резюме */ }
+        }
+        return new SummaryCheckpoint { Fingerprint = fingerprint };
+    }
+
+    private static Task SaveCheckpointAsync(SummaryCheckpoint state, Func<string, Task>? save) =>
+        save?.Invoke(JsonSerializer.Serialize(state)) ?? Task.CompletedTask;
+
+    /// <summary>Причина пустого ответа для UI: ошибка транспорта/бюджет/тишина
+    /// модели. Сырые рассуждения сюда не попадают — их в Content и нет.</summary>
+    private static string DescribeEmptyResult(AskResult r) =>
+        !string.IsNullOrWhiteSpace(r.Error) ? r.Error!
+        : r.EmptyKind == EmptyAnswerKind.LengthExhausted
+            ? UiText.Tr("бюджет ответа исчерпан", "response budget exhausted")
+            : r.EmptyKind == EmptyAnswerKind.ProviderCap
+                ? UiText.Tr("провайдер обрезал ответ по своему лимиту",
+                    "provider truncated the answer by its own limit")
+                : DescribeEmptyAnswer();
+
+    private static string DescribeEmptyAnswer() =>
+        UiText.Tr("модель вернула пустой ответ", "the model returned an empty answer");
+
+    private sealed record SummaryAttempt(string? Text, bool Failed, string? Failure = null);
+    private static string StripTrailingTruncationMarker(string text)
+    {
+        var trimmed = text.TrimEnd();
+        if (trimmed.EndsWith('…'))
+            return trimmed[..^1];
+        if (trimmed.EndsWith("...", StringComparison.Ordinal))
+            return trimmed[..^3];
+        return text;
+    }
+    private static string AddTruncationMarker(string text) =>
+        StripTrailingTruncationMarker(text) + "…";
+
+    private static bool NeedsContinuation(AskResult response)
+    {
+        if (!string.IsNullOrWhiteSpace(response.Error) || response.Canceled)
+            return false;
+        // ProviderCap означает, что провайдер уже применил собственный меньший
+        // предел: повтор тем же запросом бесполезен.
+        if (response.EmptyKind == EmptyAnswerKind.ProviderCap)
+            return false;
+        if (response.WasTruncated || response.EmptyKind == EmptyAnswerKind.LengthExhausted)
+            return true;
+        return string.Equals(response.FinishReason, "length", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(response.FinishReason, "max_tokens", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(response.FinishReason, "max_output_tokens", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ThrowIfCanceled(AskResult response, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (response.Canceled)
+            throw new OperationCanceledException("Summary request was canceled.", ct);
+    }
+
+    private static string Tail(string text, int maxChars)
+    {
+        if (maxChars <= 0 || text.Length <= maxChars) return text;
+        var start = text.Length - maxChars;
+        while (start < text.Length && !char.IsWhiteSpace(text[start])) start++;
+        return start < text.Length ? text[start..] : text[^maxChars..];
     }
 }

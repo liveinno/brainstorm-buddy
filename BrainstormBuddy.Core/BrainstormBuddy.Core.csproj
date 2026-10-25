@@ -7,21 +7,31 @@
     <LangVersion>12</LangVersion>
     <RootNamespace>BrainstormBuddy</RootNamespace>
     <AssemblyName>BrainstormBuddy.Core</AssemblyName>
-    <Version>2.13.2</Version>
+    <Version>2.36.5</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- Разбор ответов LLM как Markdown (жирный/курсив/заголовки/списки/таблицы/код):
+         CommonMark + pipe-таблицы + зачёркивание, без автоссылок и «advanced extensions». -->
+    <PackageReference Include="Markdig" Version="1.4.2" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" GeneratePathProperty="true" />
     <!-- SentencePiece-токенизатор для multilingual-e5-small (XLM-R BPE): читаем
          sentencepiece.bpe.model напрямую. -->
     <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- Чат-вложения: DOCX/XLSX/PPTX через Open XML SDK, PDF-текст через PdfPig
+         (сканы добирает Tesseract через IPdfPageOcr в приложении). -->
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.2.0" />
+    <PackageReference Include="UglyToad.PdfPig" Version="1.7.0-custom-5" />
     <PackageReference Include="Tesseract" Version="5.2.0" />
     <PackageReference Include="Whisper.net" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1" />
+    <!-- Исходящие MCP-подключения чата: SDK-клиент (stdio + Streamable HTTP/SSE). -->
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <!-- DirectML-пакет штатно кладёт onnxruntime.dll в runtimes\win-x64\native;
          копия в корень выхода нужна старым native-загрузчикам, которые ищут её рядом
          с exe (и чтобы её не мог перетереть чужой native-пакет). -->

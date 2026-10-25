@@ -2,9 +2,10 @@ namespace BrainstormBuddy.Memory.Recall;
 
 /// <summary>
 /// Гибридный ранкер recall-кандидатов (спека «MEMORY RETRIEVAL»):
-/// score = 0.35·FTS_norm + 0.30·Vec + 0.12·ScopeMatch + 0.10·Recency
-///       + 0.08·Importance + 0.05·Status + 0.20·Pinned.
-/// FTS нормализуется на максимум выдачи; recency — exp(-days/30) от UpdatedAtUtc.
+/// score = 0.35·FTS + 0.30·Vec + 0.12·ScopeMatch + 0.10·Recency
+/// + 0.08·Importance + 0.05·Status + 0.20·Pinned.
+/// FTS — абсолютный 0..1 (доля покрытия запроса, считает стор), без
+/// max-нормализации; recency - exp(-days/30) от UpdatedAtUtc.
 /// Не-Active статусы не попадают в выдачу: Superseded — только по IncludeSuperseded,
 /// остальные (Pending/Invalidated) — только по IncludeHistorical. Дедуп по Item.Id.
 /// </summary>
@@ -15,6 +16,14 @@ public sealed class MemoryRanker : IMemoryRanker
     public MemoryRanker() : this(null) { }
     /// <summary>Время инъектируемо — ranker чистый и детерминирован в тестах.</summary>
     public MemoryRanker(Func<DateTime>? now) => _now = now ?? (() => DateTime.UtcNow);
+
+    // §6.3 (аудит 2026-10-15): «кфу» возвращал случайные факты — кандидат без
+    // текстового совпадения всплывал на recency/importance/pinned. Для запросов
+    // С ТЕКСТОМ отсекаем тех, у кого нет ни FTS-матча, ни уверенного векторного
+    // (cos < MinVecScore = шумовая близость). Pinned — исключение: закреплённый
+    // факт владелец держит видимым вручную. Blank-запрос (Text пуст) — «покажи
+    // свежие», floor не применяем (кандидаты идут из BlankFallbackItems).
+    internal const double MinVecScore = 0.35;
 
     public List<MemoryRecallHit> Rank(MemoryRecallQuery q,
         List<(MemoryItem Item, double FtsScore)> fts,
@@ -30,9 +39,11 @@ public sealed class MemoryRanker : IMemoryRanker
         foreach (var x in vec) Add(x.Item);
         if (cand.Count == 0) return new List<MemoryRecallHit>();
 
-        double ftsMax = fts.Count > 0 ? fts.Max(x => x.FtsScore) : 0.0;
+        // FtsScore уже абсолютный 0..1 (доля покрытия запроса из стора) —
+        // НЕ max-нормализуем: «лучший» из шумных OR-матчей иначе получал
+        // fts=1.0 и весил как идеальное лексическое совпадение.
         foreach (var x in fts)
-            cand[x.Item.Id].Fts = ftsMax > 0 ? Math.Max(0.0, x.FtsScore) / ftsMax : 0.0;
+            cand[x.Item.Id].Fts = Math.Clamp(x.FtsScore, 0.0, 1.0);
         foreach (var x in vec)
             cand[x.Item.Id].Vec = Math.Clamp(x.VecScore, 0.0, 1.0);
 
@@ -46,8 +57,21 @@ public sealed class MemoryRanker : IMemoryRanker
             if (it.Status != MemoryItemStatus.Active && !q.IncludeHistorical
                 && !(it.Status == MemoryItemStatus.Superseded && q.IncludeSuperseded))
                 continue;
+            // Relevance-floor (§6.3, аудит 15.10): у запроса С ТЕКСТОМ кандидату
+            // нужен хоть какой-то сигнал матча — FTS>0 ИЛИ уверенный вектор
+            // (cos ≥ MinVecScore). Без него факт всплывает только на recency/
+            // importance/pinned — то есть «кфу» тащит случайные свежие факты.
+            // Pinned проходит (владелец закрепил явно), blank-запрос не фильтруем.
+            if (!string.IsNullOrWhiteSpace(q.Text) && !it.Pinned
+                && c.Fts <= 0 && c.Vec < MinVecScore)
+                continue;
             double scope = ScopeScore(q, it);
-            double recency = Math.Exp(-Math.Max(0.0, (now - it.UpdatedAtUtc).TotalDays) / 30.0);
+            // Свежесть — в целых сутках: микросекундная разница created_utc у
+            // фактов одного импорта не должна решать, какой дубль показывать
+            // (иначе выбор случайно падает на последнюю копию). Внутри суток
+            // сортировка детерминирована по id.
+            var ageDays = Math.Floor(Math.Max(0.0, (now - it.UpdatedAtUtc).TotalDays));
+            double recency = Math.Exp(-ageDays / 30.0);
             // Статус-вес — дискриминатор: при равных сигналах свежий факт выше.
             // По IncludeSuperseded superseded-факт обязан всплыть (§30 historical
             // gate) — полный штраф 0.15 навсегда гнал бы его под активные

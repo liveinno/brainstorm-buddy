@@ -14,6 +14,7 @@ public sealed class TranscriptionRecord
     public string TimestampedText { get; set; } = "";
     public string PlainText { get; set; } = "";
     public string Summary { get; set; } = "";
+    public string? SummaryCheckpointJson { get; set; }
 
     // ListBox без DisplayMemberPath берёт ToString.
     public override string ToString() => FileName;
@@ -27,6 +28,7 @@ public sealed class TranscriptionHistoryStore
 {
     private static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
     private readonly string _dir;
+    private readonly object _lock = new();
 
     public TranscriptionHistoryStore(string appDataDir)
     {
@@ -54,13 +56,21 @@ public sealed class TranscriptionHistoryStore
 
     public void Save(TranscriptionRecord r)
     {
-        try { File.WriteAllText(Path.Combine(_dir, r.Id + ".json"), JsonSerializer.Serialize(r, Opts)); }
-        catch { /* best-effort */ }
+        lock (_lock)
+        {
+            var path = Path.Combine(_dir, r.Id + ".json");
+            var temporary = path + ".tmp";
+            File.WriteAllText(temporary, JsonSerializer.Serialize(r, Opts));
+            File.Move(temporary, path, overwrite: true);
+        }
     }
 
     public void Delete(string id)
     {
-        try { File.Delete(Path.Combine(_dir, id + ".json")); }
-        catch { /* best-effort */ }
+        lock (_lock)
+        {
+            try { File.Delete(Path.Combine(_dir, id + ".json")); }
+            catch { /* best-effort */ }
+        }
     }
 }

@@ -1,13 +1,15 @@
 using System.Text.Json;
 using BrainstormBuddy.Config;
+using BrainstormBuddy.Memory.Extraction;
 using BrainstormBuddy.Memory.Storage;
 using BrainstormBuddy.Services;
 
 namespace BrainstormBuddy.Memory.Jobs;
-
 /// <summary>
 /// Стандартные handler'ы memory jobs. Возвращают null при успехе, строку ошибки —
-/// при retryable/фатальном сбое (решение retry vs failed принимает worker).
+/// при сбое. Строка с префиксом «fatal:» → джоба в failed СРАЗУ, без ретраев
+/// (битый payload, встреча удалена — ретраи бессмысленны); остальные ошибки
+/// worker ретраит с backoff до MaxAttempts.
 /// kind'ы:
 ///   extract   {"meetingId":N} — саммари + extraction + consolidation для встречи
 ///   embed     {"itemIds":[...]} | {"meetingId":N} | {} — до-эмбед изменённых items
@@ -76,14 +78,14 @@ public sealed class MemoryJobHandlers
         }
         catch (JsonException ex)
         {
-            return $"extract payload json: {ex.Message}";
+            return $"fatal: extract payload json: {ex.Message}";
         }
         if (payload?.MeetingId is not > 0)
-            return "extract payload: missing meetingId";
+            return "fatal: extract payload: missing meetingId";
 
         var meeting = _store.GetMeeting(payload.MeetingId.Value);
         if (meeting == null)
-            return $"meeting {payload.MeetingId.Value} not found";
+            return $"fatal: meeting {payload.MeetingId.Value} not found";
 
         // Manual-режим: автоматическая экстракция выключена (джоба могла остаться
         // в очереди от прошлой сессии/до смены настройки) — пропускаем до вызова LLM.
@@ -112,12 +114,37 @@ public sealed class MemoryJobHandlers
         {
             result = await _extractor.ExtractAsync(meeting, segments, _ct).ConfigureAwait(false);
         }
+        catch (OperationCanceledException)
+        {
+            // Отмена — не «extract: …»-ошибка и не ретрай: worker сам вернёт
+            // джобу в pending по ct; пробрасываем, чтобы не засорять лог
+            // и не жечь backoff на штатном shutdown.
+            throw;
+        }
         catch (Exception ex)
         {
             return $"extract: {ex.Message}";
         }
         if (result.Error != null)
+        {
+            // «Пустой транскрипт» — content-кейс, не ошибка: успех без ретраев.
+            // Сегменты есть, но после чистки (пустые/[screen]-only) текста нет.
+            if (string.Equals(result.Error, MemoryExtractor.EmptyTranscriptError, StringComparison.Ordinal))
+            {
+                _log?.Info($"extract meeting {meeting.Id}: пустой транскрипт — done без LLM", LogCategory);
+                return null;
+            }
+            // «fatal: …» из extraction = детерминированный контент-провал (все части
+            // транскрипта упёрлись в лимит ответа/нечитаемый JSON): ретрай джобы
+            // повторит ровно те же запросы — пробрасываем префикс как есть, worker
+            // закроет джобу сразу (спека §6).
+            if (result.Error.StartsWith("fatal:", StringComparison.OrdinalIgnoreCase))
+            {
+                _log?.Warn($"extract meeting {meeting.Id}: {result.Error["fatal:".Length..].TrimStart()}", LogCategory);
+                return result.Error;
+            }
             return $"extract: {result.Error}";
+        }
 
         if (_consolidator == null)
             return "consolidator unavailable";
@@ -129,6 +156,7 @@ public sealed class MemoryJobHandlers
                 .ConfigureAwait(false);
             ApplyPlan(plan, meeting.MemoryMode);
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             return $"consolidate: {ex.Message}";
@@ -309,8 +337,11 @@ public sealed class MemoryJobHandlers
         }
         if (payload?.MeetingId is long mid && mid > 0)
         {
-            // Items без собственных embeddings для данной встречи.
-            var have = new HashSet<long>(_store.LoadEmbeddings().Select(e => e.ItemId));
+            // Items без embedding ТЕКУЩЕГО vector-space тега для данной встречи —
+            // как и пустой payload ниже: embedding под прошлой моделью не считается,
+            // иначе после смены embedding-модели часть фактов осталась бы без индекса.
+            var have = new HashSet<long>(_store.LoadEmbeddings()
+                .Where(e => e.Model == _embedder?.EmbeddingTag).Select(e => e.ItemId));
             return _store.ListItems(limit: int.MaxValue)
                 .Where(i => i.SourceMeetingId == mid && !have.Contains(i.Id)).ToList();
         }
@@ -331,9 +362,12 @@ public sealed class MemoryJobHandlers
     /// </summary>
     private async Task<string?> EmbedItemsAsync(List<MemoryItem> items)
     {
+        // Сначала пустая выборка: embed-джоба без целей — no-op даже при
+        // выключенном/недоступном embedder'е (иначе каждая такая джоба —
+        // а они ставятся при каждом extract и на старте — ретраилась до failed).
+        if (items.Count == 0) return null;
         if (_embedder == null || !_embedder.IsAvailable)
             return "embedding provider unavailable";
-        if (items.Count == 0) return null;
 
         float[]?[] vecs;
         try
@@ -342,6 +376,7 @@ public sealed class MemoryJobHandlers
                        items.Select(i => i.Content).ToArray(), isQuery: false, _ct)
                    .ConfigureAwait(false);
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             return $"embed batch: {ex.Message}";

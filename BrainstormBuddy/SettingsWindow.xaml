@@ -227,11 +227,59 @@
 
     <Grid Margin="20">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TabControl x:Name="SettingsTabs" Grid.Row="0" TabStripPlacement="Left"
+        <Border Grid.Row="0" Background="{DynamicResource PanelBrush}"
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                CornerRadius="8" Padding="10" Margin="0,0,0,12">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="SettingsSearchBox" Grid.Row="0" Grid.Column="0"
+                         MinHeight="34" Padding="10,6"
+                         ToolTip="{DynamicResource L_SetSearch_Placeholder}"
+                         AutomationProperties.Name="{DynamicResource L_SetSearch_Label}"
+                         TextChanged="OnSettingsSearchTextChanged"
+                         PreviewKeyDown="OnSettingsSearchBoxPreviewKeyDown"/>
+                <Button x:Name="SettingsSearchCloseBtn" Grid.Row="0" Grid.Column="1"
+                        Content="{DynamicResource L_SetSearch_Close}" Margin="8,0,0,0"
+                        Padding="12,0" MinHeight="34" Click="OnSettingsSearchClose"/>
+                <Grid x:Name="SettingsSearchResultsPanel" Grid.Row="1" Grid.ColumnSpan="2"
+                      Visibility="Collapsed" Margin="0,8,0,0">
+                    <ListBox x:Name="SettingsSearchResultsList" MaxHeight="210"
+                             MouseLeftButtonUp="OnSettingsSearchResultClick"
+                             KeyDown="OnSettingsSearchResultsKeyDown">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="2,1,2,1">
+                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold"
+                                               TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding Section}" Foreground="{DynamicResource AccentBrush}"
+                                               FontSize="12" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding Description}" Foreground="{DynamicResource TextMutedBrush}"
+                                               FontSize="12" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <TextBlock x:Name="SettingsSearchEmptyText"
+                               Text="{DynamicResource L_SetSearch_NoResults}"
+                               Foreground="{DynamicResource TextMutedBrush}"
+                               TextWrapping="Wrap" Padding="8" Visibility="Collapsed"/>
+                </Grid>
+            </Grid>
+        </Border>
+
+        <TabControl x:Name="SettingsTabs" Grid.Row="1" TabStripPlacement="Left"
                     Margin="0"
                     Background="{DynamicResource BgBrush}" BorderBrush="{DynamicResource BorderBrush}"
                     SelectionChanged="OnSettingsTabChanged">
@@ -405,6 +453,26 @@
                                    Foreground="{DynamicResource WarnBrush}" Margin="0,0,0,2" Visibility="Collapsed"/>
                         <TextBlock TextWrapping="Wrap" Style="{StaticResource HelperText}" Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,20"
                                    Text="{DynamicResource L_SetApi_ModelExample}"/>
+                        <!-- Поддержка изображений выбранной моделью (image-chat, спека §8):
+                             кэшированный статус + ручной probe. -->
+                        <Grid Margin="0,0,0,20">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock x:Name="ImageSupportText" TextWrapping="Wrap" Style="{StaticResource HelperText}"
+                                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,2"/>
+                                <TextBlock TextWrapping="Wrap" Style="{StaticResource HelperText}"
+                                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,4"
+                                           Text="{DynamicResource L_ImgProbeNote}"/>
+                            </StackPanel>
+                            <Button x:Name="ProbeImageSupportBtn" Grid.Column="1" Height="32" VerticalAlignment="Top"
+                                    Margin="8,0,0,0" Click="OnProbeImageSupport"
+                                    Style="{StaticResource CompactButton}">
+                                <TextBlock Text="{DynamicResource L_ImgProbeBtn}"/>
+                            </Button>
+                        </Grid>
                         <!-- Настройки распознавания речи (STT) переехали в раздел «Распознавание речи (STT)».
                              Здесь остаётся только LLM (чат), чтобы не путать два разных сервера. -->
                         <TextBlock TextWrapping="Wrap" Style="{StaticResource HelperText}" Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,20"
@@ -424,6 +492,118 @@
                             <TextBlock x:Name="ConnectionStatusText" Margin="0,0,0,8" VerticalAlignment="Center"
                                        Foreground="{DynamicResource TextMutedBrush}" TextWrapping="Wrap"/>
                         </WrapPanel>
+
+                        <!-- Обнаружение локальных провайдеров: сканирование типичных мест,
+                             где на этой машине уже есть ключ (Codex/ChatGPT, opencode,
+                             переменные окружения), и подключение в один клик. -->
+                        <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                CornerRadius="6" Padding="12" Margin="0,20,0,0"
+                                Background="{DynamicResource PanelBrush}">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" VerticalAlignment="Center"
+                                               Text="{DynamicResource L_SetApi_DiscoverTitle}"
+                                               Style="{StaticResource SectionTitleText}"
+                                               Foreground="{DynamicResource AccentBrush}"/>
+                                    <Button Grid.Column="1" x:Name="DiscoveryScanBtn" MinWidth="170"
+                                            Style="{StaticResource CompactButton}" Click="OnDiscoveryScan">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Image Source="{DynamicResource BuddySettings.Icon.Refresh.Default}" Width="16" Height="16" Margin="0,0,6,0"/>
+                                            <TextBlock Text="{DynamicResource L_SetApi_DiscoverScan}"/>
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+                                <TextBlock TextWrapping="Wrap" Style="{StaticResource HelperText}"
+                                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,6,0,8"
+                                           Text="{DynamicResource L_SetApi_DiscoverHint}"/>
+                                <TextBlock x:Name="DiscoveryStatusText" TextWrapping="Wrap"
+                                           Style="{StaticResource HelperText}" Visibility="Collapsed"
+                                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,6"/>
+                                <ItemsControl x:Name="DiscoveryItems">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="{DynamicResource BorderBrush}"
+                                                    BorderThickness="0,0,0,1" Padding="0,8,0,8">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource TextBrightBrush}"/>
+                                                        <TextBlock Text="{Binding StateLabel}" FontSize="12"
+                                                                   TextWrapping="Wrap" Margin="0,1,0,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding State}" Value="Found">
+                                                                            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding State}" Value="Unsupported">
+                                                                            <Setter Property="Foreground" Value="{DynamicResource WarnBrush}"/>
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding State}" Value="Failed">
+                                                                            <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                        <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" FontSize="12"
+                                                                   Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,0"/>
+                                                        <TextBlock Text="{Binding Detail}" TextWrapping="Wrap" FontSize="11"
+                                                                   Foreground="{DynamicResource TextDimBrush}" Margin="0,2,0,0"/>
+                                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                                                                    Visibility="{Binding ModelsVisibility}">
+                                                            <ComboBox Width="260" ItemsSource="{Binding Models}"
+                                                                      SelectedItem="{Binding SelectedModel}"
+                                                                      AutomationProperties.Name="{DynamicResource L_SetApi_DiscoverModelsTitle}"/>
+                                                            <Button Margin="8,0,0,0" Style="{StaticResource CompactButton}"
+                                                                    Content="{DynamicResource L_SetApi_DiscoverApplyModel}"
+                                                                    Click="OnDiscoveryApplyModel"/>
+                                                        </StackPanel>
+                                                        <TextBlock Text="{Binding ModelsStatus}" FontSize="11" Margin="0,4,0,0"
+                                                                   TextWrapping="Wrap"
+                                                                   Visibility="{Binding ModelsStatusVisibility}">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource TextDimBrush}"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding ModelsFailed}" Value="True">
+                                                                            <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="1" VerticalAlignment="Top" Orientation="Horizontal">
+                                                        <Button MinWidth="120" Style="{StaticResource CompactButton}"
+                                                        Content="{DynamicResource L_SetApi_DiscoverConnect}"
+                                                        Click="OnDiscoveryConnect"
+                                                        Visibility="{Binding CanApplyVisibility}"/>
+                                                        <TextBlock Text="{DynamicResource L_SetApi_DiscoverConnected}"
+                                                                   VerticalAlignment="Center" FontSize="12"
+                                                                   Foreground="{DynamicResource AccentBrush}"
+                                                                   Visibility="{Binding ConnectedVisibility}"/>
+                                                        <Button Margin="8,0,0,0" Style="{StaticResource CompactButton}"
+                                                                Content="{DynamicResource L_SetApi_DiscoverModelsBtn}"
+                                                                Click="OnDiscoveryLoadModels"
+                                                                Visibility="{Binding ModelsButtonVisibility}"/>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -531,11 +711,11 @@
                                 <Run Text="{DynamicResource L_SetLlm_HistorySizeNote}" Foreground="{DynamicResource TextMutedBrush}"/>
                             </TextBlock>
                             <TextBlock Text="{DynamicResource L_SetLlm_MaxTokensLabel}" Style="{StaticResource Label}" Margin="0,16,0,6"/>
-                            <TextBox x:Name="MaxTokensBox" Width="90" HorizontalAlignment="Left"
+                            <TextBox x:Name="MaxTokensBox" Width="120" HorizontalAlignment="Left"
                                      ToolTip="{DynamicResource L_SetLlm_MaxTokensHint}"
                                      LostFocus="OnMaxTokensCommit" KeyDown="OnMaxTokensKeyDown"/>
                             <TextBlock TextWrapping="Wrap" Style="{StaticResource HelperText}" Foreground="{DynamicResource TextMutedBrush}" Margin="0,4,0,0"
-                                Text="{DynamicResource L_SetLlm_MaxTokensText}"/>
+                                Text="{DynamicResource L_Llm_MaxTokens_Hint}"/>
                         </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
@@ -1026,7 +1206,11 @@
                             <ComboBoxItem Content="{DynamicResource L_Set_PosBottomRight}" Tag="BottomRight"/>
                             <ComboBoxItem Content="{DynamicResource L_Set_PosBottomLeft}" Tag="BottomLeft"/>
                             <ComboBoxItem Content="{DynamicResource L_Set_PosCenter}" Tag="Center"/>
+                            <ComboBoxItem Content="{DynamicResource L_Set_PosCustom}" Tag="Custom"/>
                         </ComboBox>
+                        <CheckBox Content="{DynamicResource L_SetOvl_RememberGeometry}"
+                                  IsChecked="{Binding RememberWindowGeometry}"
+                                  Margin="0,12,0,0"/>
 
                         <CheckBox Content="{DynamicResource L_SetOvl_CompatBorder}"
                                   IsChecked="{Binding ShowCompatibilityBorder}"
@@ -1043,6 +1227,18 @@
                         <CheckBox Content="{DynamicResource L_SetOvl_QTechLine}"
                                   IsChecked="{Binding ShowQuestionTimingLine}"
                                   Margin="0,0,0,8"/>
+
+                        <CheckBox Content="{DynamicResource L_SetOvl_SessionStats}"
+                                  IsChecked="{Binding ShowSessionStats}"
+                                  Margin="0,0,0,8"/>
+
+                        <CheckBox Content="{DynamicResource L_SetOvl_ShowMeetingSources}"
+                                  IsChecked="{Binding ShowMeetingSources}"
+                                  ToolTip="{DynamicResource L_SetOvl_ShowMeetingSourcesHint}"
+                                  Margin="0,0,0,4"/>
+                        <TextBlock Text="{DynamicResource L_SetOvl_ShowMeetingSourcesHint}"
+                                   TextWrapping="Wrap" Style="{StaticResource HelperText}"
+                                   Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,8"/>
 
                         <CheckBox x:Name="EngineerModeCheck" Content="{DynamicResource L_SetOvl_EngineerMode}"
                                   IsChecked="{Binding EngineerMode}"
@@ -1062,6 +1258,13 @@
                                  MaxLength="60" Margin="0,8,0,6"
                                  ToolTip="{DynamicResource L_SetOvl_StealthHint}"/>
                         <TextBlock Text="{DynamicResource L_SetOvl_StealthNote}"
+                                   TextWrapping="Wrap" Style="{StaticResource HelperText}" Foreground="{DynamicResource TextMutedBrush}"/>
+                        <TextBlock Text="{DynamicResource L_Ui_PauseMarkerLabel}"
+                                   Style="{StaticResource Label}" Margin="0,20,0,0"/>
+                        <TextBox Text="{Binding PauseResumeMarker, UpdateSourceTrigger=LostFocus}"
+                                 MaxLength="80" Margin="0,8,0,6"
+                                 ToolTip="{DynamicResource L_Ui_PauseMarkerHint}"/>
+                        <TextBlock Text="{DynamicResource L_Ui_PauseMarkerNote}"
                                    TextWrapping="Wrap" Style="{StaticResource HelperText}" Foreground="{DynamicResource TextMutedBrush}"/>
                         <TextBlock Text="{DynamicResource L_SetOvl_FontSizeLabel}" Style="{StaticResource Label}" Margin="0,20,0,0"/>
                         <Slider x:Name="FontSizeSlider" Minimum="10" Maximum="22"
@@ -1130,12 +1333,12 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="20">
                         <TextBlock Text="{DynamicResource L_SetPt_Karaoke}" Style="{StaticResource PageTitleText}" Margin="0,0,0,20"/>
-                        <CheckBox Content="{DynamicResource L_SetKar_Enable}"
+                        <CheckBox x:Name="KaraokeEnabledCheck" Content="{DynamicResource L_SetKar_Enable}"
                                   IsChecked="{Binding KaraokeEnabled}"
                                   Margin="0,0,0,20"/>
 
                         <TextBlock Text="{DynamicResource L_SetKar_Position}" Style="{StaticResource Label}"/>
-                        <ComboBox SelectedValue="{Binding KaraokePosition}" SelectedValuePath="Tag" Margin="0,8,0,0">
+                        <ComboBox x:Name="KaraokePositionCombo" SelectedValue="{Binding KaraokePosition}" SelectedValuePath="Tag" Margin="0,8,0,0">
                             <ComboBoxItem Content="{DynamicResource L_Set_PosBottom}" Tag="Bottom"/>
                             <ComboBoxItem Content="{DynamicResource L_Set_PosTop}" Tag="Top"/>
                             <ComboBoxItem Content="{DynamicResource L_Set_PosLeft}" Tag="Left"/>
@@ -1363,7 +1566,7 @@
                     <StackPanel Margin="20">
                         <TextBlock Text="{DynamicResource L_SetPt_Hotkeys}" Style="{StaticResource PageTitleText}" Margin="0,0,0,20"/>
                         <TextBlock Text="{DynamicResource L_SetHK_ToggleOverlay}" Style="{StaticResource Label}" FontSize="14" LineHeight="20" Margin="0,0,0,6"/>
-                        <TextBox Text="{Binding ToggleVisibilityHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8" FontFamily="{DynamicResource MonoFont}" FontSize="12"/>
+                        <TextBox x:Name="ToggleVisibilityHotkeyBox" Text="{Binding ToggleVisibilityHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8" FontFamily="{DynamicResource MonoFont}" FontSize="12"/>
 
                         <TextBlock Text="{DynamicResource L_SetHK_Opacity}" Style="{StaticResource Label}" FontSize="14" LineHeight="20" Margin="0,0,0,6"/>
                         <TextBox Text="{Binding ChangeOpacityHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8" FontFamily="{DynamicResource MonoFont}" FontSize="12"/>
@@ -1386,7 +1589,7 @@
                                    Foreground="{DynamicResource TextDimBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,8"/>
 
                         <TextBlock Text="{DynamicResource L_HK_ShowTray}" Style="{StaticResource Label}" FontSize="14" LineHeight="20" Margin="0,0,0,6"/>
-                        <TextBox Text="{Binding ShowTrayIconHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8" FontFamily="{DynamicResource MonoFont}" FontSize="12"/>
+                        <TextBox x:Name="ShowTrayIconHotkeyBox" Text="{Binding ShowTrayIconHotkey, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8" FontFamily="{DynamicResource MonoFont}" FontSize="12"/>
 
                         <TextBlock Style="{StaticResource HelperText}" Margin="0,28,0,4"><Run Text="{DynamicResource L_Set_Version}" Foreground="{DynamicResource TextMutedBrush}"/><Run x:Name="VersionRun" Foreground="{DynamicResource TextBrightBrush}" FontFamily="{DynamicResource MonoFont}"/></TextBlock>
                         <TextBlock Style="{StaticResource HelperText}" Margin="0,0,0,8"><Run Text="{DynamicResource L_Set_Logs}" Foreground="{DynamicResource TextMutedBrush}"/><Run x:Name="LogPathRun" Text="" Foreground="{DynamicResource TextBrightBrush}" FontFamily="{DynamicResource MonoFont}"/></TextBlock>
@@ -1473,6 +1676,244 @@
                 </ScrollViewer>
             </TabItem>
 
+            <!-- ====================== MCP ====================== -->
+            <TabItem x:Name="McpTab" Header="{DynamicResource L_Tab_Mcp}"
+                     AutomationProperties.AutomationId="McpTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="24">
+                        <TextBlock Text="{DynamicResource L_Mcp_Title}" Style="{StaticResource PageTitleText}"
+                                   Foreground="{DynamicResource TextBrightBrush}" Margin="0,0,0,20"/>
+
+                        <CheckBox x:Name="McpEnabledCheck" Content="{DynamicResource L_Mcp_Enable}"
+                                  IsChecked="{Binding McpEnabled}" Margin="0,0,0,16"/>
+
+                        <!-- Две кнопки входа -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,24">
+                            <Button x:Name="McpConnectAgentBtn" Content="{DynamicResource L_Mcp_ConnectAgent}"
+                                    Style="{StaticResource PrimaryButton}" Padding="12,0" Height="36"
+                                    Margin="0,0,12,0" AutomationProperties.AutomationId="McpConnectAgentBtn"/>
+                            <Button x:Name="McpAddToolBtn" Content="{DynamicResource L_Mcp_AddTool}"
+                                    Padding="12,0" Height="36"
+                                    AutomationProperties.AutomationId="McpAddToolBtn"/>
+                        </StackPanel>
+
+                        <!-- Кто подключён к Buddy (входящие) -->
+                        <TextBlock Text="{DynamicResource L_Mcp_InGroup}" Style="{StaticResource SectionTitleText}"
+                                   Foreground="{DynamicResource TextBrightBrush}" Margin="0,0,0,8"/>
+                        <ItemsControl x:Name="McpIncomingList" ItemsSource="{Binding McpIncomingConnections}" Margin="0,0,0,8">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource CardBorder}">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding Name}" Style="{StaticResource BodyText}"
+                                                           Foreground="{DynamicResource TextBrightBrush}" FontWeight="SemiBold"/>
+                                                <TextBlock Style="{StaticResource MetaText}"
+                                                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,4,0,0">
+                                                    <Run Text="{DynamicResource L_Mcp_RightsLabel}"/>
+                                                    <Run Text=": "/>
+                                                    <Run Text="{Binding RightsText}"/>
+                                                </TextBlock>
+                                                <TextBlock Style="{StaticResource MetaText}"
+                                                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,0">
+                                                    <Run Text="{DynamicResource L_Mcp_ScopeLabel}"/>
+                                                    <Run Text=": "/>
+                                                    <Run Text="{Binding ScopeSummary}"/>
+                                                </TextBlock>
+                                                <TextBlock Style="{StaticResource MetaText}"
+                                                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,0">
+                                                    <Run Text="{DynamicResource L_Mcp_ChannelLabel}"/>
+                                                    <Run Text=": "/>
+                                                    <Run Text="{Binding ChannelText}"/>
+                                                </TextBlock>
+                                                <TextBlock Style="{StaticResource MetaText}"
+                                                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,0">
+                                                    <Run Text="{DynamicResource L_Mcp_TokenLabel}"/>
+                                                    <Run Text=": "/>
+                                                    <Run Text="{Binding TokenText}"/>
+                                                </TextBlock>
+                                                <TextBlock Style="{StaticResource MetaText}"
+                                                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,0">
+                                                    <Run Text="{DynamicResource L_Mcp_PathsLabel}"/>
+                                                    <Run Text=": "/>
+                                                    <Run Text="{Binding PathsText}"/>
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding StatusText}" Margin="0,2,0,0">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock" BasedOn="{StaticResource MetaText}">
+                                                            <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding StatusKind}" Value="ok">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding StatusKind}" Value="warn">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource WarnBrush}"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding StatusKind}" Value="error">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                <Button Content="{DynamicResource L_Mcp_Edit}" Padding="12,0" Height="36" Margin="0,0,8,0"
+                                                        Click="OnMcpConnEdit" AutomationProperties.AutomationId="McpConnEditBtn"/>
+                                                <Button Content="{DynamicResource L_Mcp_Revoke}" Padding="12,0" Height="36"
+                                                        Click="OnMcpConnRevoke" AutomationProperties.AutomationId="McpConnRevokeBtn"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock x:Name="McpIncomingEmpty" Text="{DynamicResource L_Mcp_EmptyAgents}"
+                                   Style="{StaticResource MetaText}" Foreground="{DynamicResource TextMutedBrush}"
+                                   Margin="0,0,0,16" Visibility="Collapsed"/>
+
+                        <!-- Ожидающие разрешения OAuth-клиенты (облачное подключение).
+                             Панель скрыта целиком, когда очереди нет. -->
+                        <Border x:Name="McpPendingPanel" Style="{StaticResource CardBorder}"
+                                Margin="0,0,0,16" Visibility="Collapsed">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L_Mcp_PendingTitle}"
+                                           Style="{StaticResource LabelText}"
+                                           Foreground="{DynamicResource TextBrush}" Margin="0,0,0,8"/>
+                                <ItemsControl x:Name="McpPendingList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding DisplayName}" Style="{StaticResource BodyText}"
+                                                               Foreground="{DynamicResource TextBrightBrush}" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{Binding RedirectUri}" Style="{StaticResource MetaText}"
+                                                               Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,0"/>
+                                                    <TextBlock Text="{Binding RequestedText}" Style="{StaticResource MetaText}"
+                                                               Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,0"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <Button Content="{DynamicResource L_Mcp_PendingAllow}" Tag="{Binding PendingId}"
+                                                            Padding="12,0" Height="36" Margin="0,0,8,0" Click="OnMcpPendingAllow"/>
+                                                    <Button Content="{DynamicResource L_Mcp_PendingDeny}" Tag="{Binding PendingId}"
+                                                            Padding="12,0" Height="36" Click="OnMcpPendingDeny"/>
+                                                </StackPanel>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Чем пользуется чат (исходящие) -->
+                        <TextBlock Text="{DynamicResource L_Mcp_OutGroup}" Style="{StaticResource SectionTitleText}"
+                                   Foreground="{DynamicResource TextBrightBrush}" Margin="0,0,0,8"/>
+                        <ItemsControl x:Name="McpOutgoingList" ItemsSource="{Binding McpOutgoingServers}" Margin="0,0,0,8"
+                                      AutomationProperties.AutomationId="McpOutgoingList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource CardBorder}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Name}" Style="{StaticResource BodyText}"
+                                                               Foreground="{DynamicResource TextBrightBrush}" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{Binding StatusText}" Style="{StaticResource MetaText}"
+                                                               Foreground="{DynamicResource TextMutedBrush}" Margin="0,4,0,0"/>
+                                                </StackPanel>
+                                                <!-- Правка подключения: URL/транспорт/токен. -->
+                                                <Button Grid.Column="1" Content="{DynamicResource L_Mcp_Edit}" Tag="{Binding Id}"
+                                                        Padding="12,0" Height="36" Margin="8,0,0,0" VerticalAlignment="Center"
+                                                        Click="OnMcpOutEdit"
+                                                        AutomationProperties.AutomationId="McpOutgoingEditBtn"/>
+                                                <CheckBox Grid.Column="2" IsChecked="{Binding Enabled, Mode=TwoWay}" VerticalAlignment="Center" Margin="8,0,0,0"
+                                                        Checked="OnMcpOutToggled" Unchecked="OnMcpOutToggled"/>
+                                            </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock x:Name="McpOutgoingEmpty" Text="{DynamicResource L_Mcp_EmptyTools}"
+                                   Style="{StaticResource MetaText}" Foreground="{DynamicResource TextMutedBrush}"
+                                   Margin="0,0,0,16" Visibility="Collapsed"/>
+
+                        <!-- Незавершённые задачи -->
+                        <TextBlock Text="{DynamicResource L_Mcp_PendingJobs}" Style="{StaticResource SectionTitleText}"
+                                   Foreground="{DynamicResource TextBrightBrush}" Margin="0,0,0,8"/>
+                        <ItemsControl x:Name="McpPendingJobsList" ItemsSource="{Binding McpPendingJobs}" Margin="0,0,0,8">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource CardBorder}">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Summary}" Style="{StaticResource BodyText}"
+                                                       Foreground="{DynamicResource TextBrush}"/>
+                                            <TextBlock Text="{Binding StateText}" Style="{StaticResource MetaText}"
+                                                       Foreground="{DynamicResource TextMutedBrush}" Margin="0,4,0,0"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock x:Name="McpJobsEmpty" Text="{DynamicResource L_Mcp_EmptyJobs}"
+                                   Style="{StaticResource MetaText}" Foreground="{DynamicResource TextMutedBrush}"
+                                   Margin="0,0,0,16" Visibility="Collapsed"/>
+
+                        <!-- Облачный доступ -->
+                        <Border Style="{StaticResource CardBorder}" Margin="0,0,0,16">
+                            <StackPanel>
+                                <TextBlock x:Name="McpCloudStatusText" Style="{StaticResource BodyText}"
+                                           Foreground="{DynamicResource TextBrush}"/>
+                                <Button x:Name="McpCloudSetupBtn" Content="{DynamicResource L_Mcp_CloudSetup}"
+                                        Padding="12,0" Height="36" Margin="0,12,0,0" HorizontalAlignment="Left"
+                                        AutomationProperties.AutomationId="McpCloudSetupBtn"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Проверка живости MCP: канал, токены, журнал, инструменты -->
+                        <Border x:Name="McpCheckPanel" Style="{StaticResource CardBorder}" Margin="0,16,0,0"
+                                Visibility="Collapsed">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L_Mcp_CheckTitle}" Style="{StaticResource LabelText}"
+                                           Foreground="{DynamicResource TextBrightBrush}"/>
+                                <TextBox x:Name="McpCheckReport" IsReadOnly="True" AcceptsReturn="True"
+                                         TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                                         MaxHeight="260" Margin="0,8,0,0"
+                                         FontFamily="Consolas" FontSize="12"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         Background="{DynamicResource BgMediumBrush}"
+                                         AutomationProperties.AutomationId="McpCheckReport"/>
+                            </StackPanel>
+                        </Border>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                            <Button x:Name="McpCheckBtn" Content="{DynamicResource L_Mcp_CheckBtn}"
+                                    Style="{StaticResource PrimaryButton}" Padding="12,0" Height="36"
+                                    Margin="0,0,12,0" Click="OnMcpCheck"
+                                    AutomationProperties.AutomationId="McpCheckBtn"/>
+                            <Button x:Name="McpCopyInstructionsBtn" Content="{DynamicResource L_Mcp_CopyInstructions}"
+                                    Padding="12,0" Height="36" Margin="0,0,12,0"
+                                    Click="OnMcpCopyInstructions"
+                                    AutomationProperties.AutomationId="McpCopyInstructionsBtn"/>
+                            <Button x:Name="McpJournalBtn" Content="{DynamicResource L_Mcp_JournalLink}"
+                                    Padding="12,0" Height="36" HorizontalAlignment="Left"
+                                    Click="OnMcpJournalOpen" AutomationProperties.AutomationId="McpJournalBtn"/>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <!-- ====================== Экран OCR ====================== -->
             <TabItem x:Name="ScreenOcrTab" Header="{DynamicResource L_Tab_ScreenOcr}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -1502,7 +1943,7 @@
                                   SelectedValuePath="Tag" Margin="0,2,0,8"/>
 
                         <TextBlock Text="{DynamicResource L_SetOcr_Engine}" Style="{StaticResource Label}" Margin="0,0,0,6"/>
-                        <ComboBox SelectedValue="{Binding ScreenOcrEngine, Mode=TwoWay}"
+                        <ComboBox x:Name="ScreenOcrEngineCombo" SelectedValue="{Binding ScreenOcrEngine, Mode=TwoWay}"
                                   SelectedValuePath="Tag" Margin="0,2,0,6">
                             <ComboBoxItem Content="Tesseract" Tag="tesseract"/>
                             <ComboBoxItem Content="Windows OCR (WinRT)" Tag="windows"/>
@@ -1553,7 +1994,7 @@
                             <Run Text="{DynamicResource L_Set_UnitChars}"/>
                         </TextBlock>
 
-                        <CheckBox Content="{DynamicResource L_SetOcr_AutoAnswer}"
+                        <CheckBox x:Name="ScreenOcrAutoAnswerCheck" Content="{DynamicResource L_SetOcr_AutoAnswer}"
                                   IsChecked="{Binding ScreenOcrAutoAnswer}"
                                   Margin="0,0,0,8"/>
 
@@ -1699,6 +2140,49 @@
                                                     </Style>
                                                 </TextBlock.Style>
                                             </TextBlock>
+                                            <!-- Бейдж прикреплённых файлов встречи: векторная скрепка
+                                                 (GeoPaperclip из Icons*.xaml) + AttachmentCount из
+                                                 AttachmentStore.CountByMeeting через RefreshMeetingList. -->
+                                            <StackPanel Orientation="Horizontal" Margin="0,1,0,0">
+                                                <StackPanel.Style>
+                                                    <Style TargetType="StackPanel">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding AttachmentCount}" Value="0">
+                                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </StackPanel.Style>
+                                                <Path Data="{DynamicResource GeoPaperclip}" Width="12" Height="12"
+                                                      Stretch="Uniform" StrokeThickness="1.8" Margin="0,0,3,0"
+                                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                                      VerticalAlignment="Center">
+                                                    <Path.Style>
+                                                        <Style TargetType="Path">
+                                                            <Setter Property="Stroke" Value="{DynamicResource TextDimBrush}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                                                             Value="True">
+                                                                    <Setter Property="Stroke" Value="{DynamicResource TextBrush}"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Path.Style>
+                                                </Path>
+                                                <TextBlock Text="{Binding AttachmentCount, Mode=OneWay}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock" BasedOn="{StaticResource MetaText}">
+                                                            <Setter Property="Foreground" Value="{DynamicResource TextDimBrush}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                                                             Value="True">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </StackPanel>
                                             <TextBlock Margin="0,1,0,0"
                                                        Text="{Binding ListSubtitle, Mode=OneWay}"
                                                        TextTrimming="CharacterEllipsis">
@@ -1755,7 +2239,7 @@
                         <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
                                 BorderThickness="1" CornerRadius="12" Padding="16" Margin="0,0,0,20">
                             <StackPanel>
-                                <CheckBox Content="{DynamicResource L_Mem_Enabled}"
+                                <CheckBox x:Name="MemoryEnabledCheck" Content="{DynamicResource L_Mem_Enabled}"
                                           IsChecked="{Binding MemoryEnabled}"
                                           ToolTip="{DynamicResource L_Mem_EnabledHint}" Margin="0,0,0,8"/>
                                 <CheckBox Content="{DynamicResource L_Mem_DefaultUse}"
@@ -1880,27 +2364,96 @@
                                           IsChecked="{Binding MemoryAutoRecall}"
                                           ToolTip="{DynamicResource L_Mem_AutoRecallHint}" Margin="0,0,0,8"/>
 
-                                <TextBlock Text="{DynamicResource L_Mem_RecallMaxTokens}" Style="{StaticResource Label}" Margin="0,0,0,6"/>
-                                <Slider x:Name="MemoryRecallTokensSlider" Minimum="500" Maximum="8000"
-                                        Value="{Binding MemoryRecallMaxTokens, Mode=TwoWay}"
-                                        TickFrequency="250" IsSnapToTickEnabled="True" Margin="0,2,0,4"/>
+                                <TextBlock Text="{DynamicResource L_Mem_AutoBudget}" Style="{StaticResource Label}" Margin="0,0,0,6"/>
+                                <Slider x:Name="MemoryAutoBudgetSlider" Minimum="2000" Maximum="16000"
+                                        Value="{Binding MemoryAutoRecallBudget, Mode=TwoWay}"
+                                        TickFrequency="500" IsSnapToTickEnabled="True" Margin="0,2,0,4"/>
                                 <TextBlock Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,4">
                                     <Run Text="{DynamicResource L_Mem_Current}"/>
-                                    <Run Text="{Binding Value, ElementName=MemoryRecallTokensSlider, Mode=OneWay, StringFormat=F0}"
+                                    <Run Text="{Binding Value, ElementName=MemoryAutoBudgetSlider, Mode=OneWay, StringFormat=F0}"
                                          Foreground="{DynamicResource TextBrightBrush}"/>
                                 </TextBlock>
-                                <TextBlock Text="{DynamicResource L_Mem_RecallMaxTokensHint}" TextWrapping="Wrap"
-                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,8"/>
-                                <TextBlock Text="{DynamicResource L_Mem_RecallMaxItems}" Style="{StaticResource Label}" Margin="0,0,0,6"/>
-                                <Slider x:Name="MemoryRecallItemsSlider" Minimum="1" Maximum="20"
-                                        Value="{Binding MemoryRecallMaxItems, Mode=TwoWay}"
-                                        TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,2,0,4"/>
+                                <TextBlock Text="{DynamicResource L_Mem_AutoBudgetHint}" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,12"/>
+                                <TextBlock Text="{DynamicResource L_Mem_ExtraSearchBudget}" Style="{StaticResource Label}" Margin="0,0,0,6"/>
+                                <Slider x:Name="MemoryExtraBudgetSlider" Minimum="4000" Maximum="64000"
+                                        Value="{Binding MemoryExtraSearchBudget, Mode=TwoWay}"
+                                        TickFrequency="2000" IsSnapToTickEnabled="True" Margin="0,2,0,4"/>
                                 <TextBlock Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,4">
                                     <Run Text="{DynamicResource L_Mem_Current}"/>
-                                    <Run Text="{Binding Value, ElementName=MemoryRecallItemsSlider, Mode=OneWay, StringFormat=F0}"
+                                    <Run Text="{Binding Value, ElementName=MemoryExtraBudgetSlider, Mode=OneWay, StringFormat=F0}"
+                                         Foreground="{DynamicResource TextBrightBrush}"/>
+                                </TextBlock>
+                                <TextBlock Text="{DynamicResource L_Mem_ExtraSearchBudgetHint}" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,12"/>
+                                <CheckBox x:Name="MemoryBuiltinToolsCheck" Content="{DynamicResource L_Mem_BuiltinTools}"
+                                          IsChecked="{Binding MemoryBuiltinSearchTools}"
+                                          ToolTip="{DynamicResource L_Mem_BuiltinToolsHint}" Margin="0,0,0,6"/>
+                                <TextBlock Text="{DynamicResource L_Mem_BuiltinToolsHint}" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,12"/>
+                                <TextBlock Text="{DynamicResource L_Mem_RecallMaxItems}" Style="{StaticResource Label}" Margin="0,0,0,6"/>
+                                <Slider x:Name="MemoryRecallItemsSlider" Minimum="1" Maximum="51"
+                                        Value="{Binding MemoryRecallMaxItemsUi, Mode=TwoWay}"
+                                        TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,2,0,4"
+                                        ToolTip="{DynamicResource L_Mem_RecallMaxItemsAllHint}"/>
+                                <TextBlock Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,4">
+                                    <Run Text="{DynamicResource L_Mem_Current}"/>
+                                    <Run Text="{Binding MemoryRecallMaxItemsText, Mode=OneWay}"
                                          Foreground="{DynamicResource TextBrightBrush}"/>
                                 </TextBlock>
                                 <TextBlock Text="{DynamicResource L_Mem_RecallMaxItemsHint}" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,2"/>
+
+                                <!-- §6.4: интенсивность извлечения фактов (low/medium/high). -->
+                                <TextBlock Text="{DynamicResource L_Mem_ExtractIntensity}" Style="{StaticResource Label}" Margin="0,12,0,6"/>
+                                <ComboBox x:Name="MemoryIntensityCombo" SelectedIndex="{Binding MemoryExtractionIntensityIndex}"
+                                          HorizontalAlignment="Left" MinWidth="200" Margin="0,0,0,6"
+                                          ToolTip="{DynamicResource L_Mem_ExtractIntensityHint}">
+                                    <ComboBoxItem Content="{DynamicResource L_Mem_IntensityLow}"/>
+                                    <ComboBoxItem Content="{DynamicResource L_Mem_IntensityMedium}"/>
+                                    <ComboBoxItem Content="{DynamicResource L_Mem_IntensityHigh}"/>
+                                </ComboBox>
+                                <TextBlock Text="{DynamicResource L_Mem_ExtractIntensityHint}" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,2"/>
+                                <!-- R5: пользовательский лимит извлечения фактов из одного документа -->
+                                <TextBlock Text="{DynamicResource L_Att_FactExtractMaxChars}" Style="{StaticResource Label}" Margin="0,12,0,6"/>
+                                <Slider x:Name="FactExtractMaxCharsSlider" Minimum="10000" Maximum="5000000"
+                                        Value="{Binding FactExtractMaxChars, Mode=TwoWay}"
+                                        TickFrequency="10000" IsSnapToTickEnabled="True" Margin="0,2,0,4"
+                                        ToolTip="{DynamicResource L_Att_FactExtractMaxCharsHint}"/>
+                                <TextBlock Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,4">
+                                    <Run Text="{DynamicResource L_Mem_Current}"/>
+                                    <Run Text="{Binding FactExtractMaxCharsText, Mode=OneWay}"
+                                         Foreground="{DynamicResource TextBrightBrush}"/>
+                                    <Run Text="{DynamicResource L_Att_CharsSuffix}"/>
+                                </TextBlock>
+                                <TextBlock Text="{DynamicResource L_Att_FactExtractMaxCharsHint}" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,2"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 2.33.0: поиск по журналам прошлых встреч — вкл/выкл и таймаут.
+                             Таймаут ограничен, чтобы ответ не ждал неразумно долго. -->
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="12" Padding="16" Margin="0,0,0,20">
+                            <StackPanel>
+                                <CheckBox Content="{DynamicResource L_Mem_MeetingSearch}"
+                                          IsChecked="{Binding MeetingSearchEnabled}"
+                                          ToolTip="{DynamicResource L_Mem_MeetingSearchHint}" Margin="0,0,0,8"/>
+                                <TextBlock Text="{DynamicResource L_Mem_MeetingSearchHint}" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,10"/>
+                                <TextBlock Text="{DynamicResource L_Mem_MeetingSearchTimeout}" Style="{StaticResource Label}" Margin="0,0,0,6"/>
+                                <Slider x:Name="MeetingSearchTimeoutSlider" Minimum="500" Maximum="10000"
+                                        Value="{Binding MeetingSearchTimeoutMs, Mode=TwoWay}"
+                                        TickFrequency="250" IsSnapToTickEnabled="True" Margin="0,2,0,4"
+                                        IsEnabled="{Binding MeetingSearchEnabled}"
+                                        ToolTip="{DynamicResource L_Mem_MeetingSearchTimeoutHint}"/>
+                                <TextBlock Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,4">
+                                    <Run Text="{DynamicResource L_Mem_Current}"/>
+                                    <Run Text="{Binding MeetingSearchTimeoutMsText, Mode=OneWay}"
+                                         Foreground="{DynamicResource TextBrightBrush}"/>
+                                </TextBlock>
+                                <TextBlock Text="{DynamicResource L_Mem_MeetingSearchTimeoutHint}" TextWrapping="Wrap"
                                            Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,2"/>
                             </StackPanel>
                         </Border>
@@ -1981,6 +2534,98 @@
                 </ScrollViewer>
             </TabItem>
 
+            <!-- ====================== Резервная копия и перенос ====================== -->
+            <TabItem x:Name="BackupTab" Header="{DynamicResource L_Tab_Backup}"
+                     AutomationProperties.AutomationId="BackupTab">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <!-- BackupSection: якорь поиска настроек (индексируется только сама карточка,
+                         парольные поля в поиск не попадают). -->
+                    <StackPanel x:Name="BackupSection" Margin="20">
+                        <TextBlock Text="{DynamicResource L_SetPt_Backup}" Style="{StaticResource PageTitleText}" Margin="0,0,0,20"/>
+
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="12" Padding="16" Margin="0,0,0,20">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L_Bak_CreateTitle}" Style="{StaticResource SectionTitleText}" Foreground="{DynamicResource TextBrightBrush}" Margin="0,0,0,12"/>
+                                <TextBlock Text="{DynamicResource L_Bak_CreateDesc}" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource BodyText}" Margin="0,0,0,12"/>
+                                <TextBlock Text="{DynamicResource L_Bak_Password}" Style="{StaticResource Label}" Margin="0,0,0,6"/>
+                                <PasswordBox x:Name="BackupPasswordBox" Margin="0,0,0,8"
+                                             AutomationProperties.AutomationId="BackupPasswordBox"/>
+                                <TextBlock Text="{DynamicResource L_Bak_PasswordConfirm}" Style="{StaticResource Label}" Margin="0,0,0,6"/>
+                                <PasswordBox x:Name="BackupPasswordConfirmBox" Margin="0,0,0,8"
+                                             AutomationProperties.AutomationId="BackupPasswordConfirmBox"/>
+                                <TextBlock Text="{DynamicResource L_Bak_PasswordNote}" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" Margin="0,0,0,8"/>
+                                <CheckBox x:Name="BackupExcludeModelsCheck" IsChecked="True" Margin="0,0,0,8"
+                                          AutomationProperties.AutomationId="BackupExcludeModelsCheck"
+                                          Content="{DynamicResource L_Bak_ExcludeModels}"
+                                          ToolTip="{DynamicResource L_Bak_ExcludeModelsHint}"/>
+                                <CheckBox x:Name="BackupIncludeLogsCheck" IsChecked="False" Margin="0,0,0,12"
+                                          AutomationProperties.AutomationId="BackupIncludeLogsCheck"
+                                          Content="{DynamicResource L_Bak_IncludeLogs}"/>
+                                <WrapPanel>
+                                    <Button x:Name="BackupCreateBtn" Style="{StaticResource PrimaryButton}"
+                                            AutomationProperties.AutomationId="BackupCreateBtn"
+                                            Click="OnCreateBackup" Margin="0,0,8,8">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Image Source="{DynamicResource BuddySettings.Icon.Add.Default}" Width="16" Height="16" Margin="0,0,6,0"/>
+                                            <TextBlock Text="{DynamicResource L_Bak_CreateBtn}"/>
+                                        </StackPanel>
+                                    </Button>
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="12" Padding="16" Margin="0,0,0,20">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L_Bak_RestoreTitle}" Style="{StaticResource SectionTitleText}" Foreground="{DynamicResource TextBrightBrush}" Margin="0,0,0,12"/>
+                                <TextBlock Text="{DynamicResource L_Bak_RestoreDesc}" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource BodyText}" Margin="0,0,0,12"/>
+                                <TextBlock Text="{DynamicResource L_Bak_PasswordRestore}" Style="{StaticResource Label}" Margin="0,0,0,6"/>
+                                <PasswordBox x:Name="BackupRestorePasswordBox" Margin="0,0,0,12"
+                                             AutomationProperties.AutomationId="BackupRestorePasswordBox"/>
+                                <WrapPanel>
+                                    <Button x:Name="BackupValidateBtn" AutomationProperties.AutomationId="BackupValidateBtn"
+                                            Click="OnValidateBackup" Margin="0,0,8,8">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Image Source="{DynamicResource BuddySettings.Icon.Refresh.Default}" Width="16" Height="16" Margin="0,0,6,0"/>
+                                            <TextBlock Text="{DynamicResource L_Bak_ValidateBtn}"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <Button x:Name="BackupRestoreBtn" AutomationProperties.AutomationId="BackupRestoreBtn"
+                                            Click="OnRestoreBackup" Margin="0,0,8,8">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Image Source="{DynamicResource BuddySettings.Icon.BrowseFolder.Default}" Width="16" Height="16" Margin="0,0,6,0"/>
+                                            <TextBlock Text="{DynamicResource L_Bak_RestoreBtn}"/>
+                                        </StackPanel>
+                                    </Button>
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Grid x:Name="BackupProgressRow" Visibility="Collapsed" Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ProgressBar x:Name="BackupProgressBar" Minimum="0" Maximum="1" Height="8"
+                                         VerticalAlignment="Center"/>
+                            <Button x:Name="BackupCancelBtn" Grid.Column="1" Margin="8,0,0,0"
+                                    AutomationProperties.AutomationId="BackupCancelBtn"
+                                    Click="OnBackupCancel" Content="{DynamicResource L_Bak_Cancel}"/>
+                        </Grid>
+                        <TextBlock x:Name="BackupStageText" Foreground="{DynamicResource TextMutedBrush}"
+                                   AutomationProperties.AutomationId="BackupStageText"
+                                   Style="{StaticResource HelperText}" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="BackupStatusText" Foreground="{DynamicResource TextMutedBrush}"
+                                   AutomationProperties.AutomationId="BackupStatusText"
+                                   Style="{StaticResource BodyText}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <!-- ====================== О приложении ====================== -->
             <TabItem Header="{DynamicResource L_Tab_About}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -1998,7 +2643,7 @@
             </TabItem>
         </TabControl>
 
-        <Border Grid.Row="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,16,0,0" Padding="20,12">
+        <Border Grid.Row="2" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,16,0,0" Padding="20,12">
             <b:TwoPanePanel Breakpoint="560" Gap="8">
                 <Button Content="{DynamicResource L_Set_OnboardingBtn}" Click="OnShowOnboarding"
                         Margin="0"

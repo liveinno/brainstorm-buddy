@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -7,9 +8,10 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Data;
-using System.Windows.Media;
+using BrainstormBuddy.Core.Attachments;
 using BrainstormBuddy.Memory;
 using BrainstormBuddy.Services;
+using BrainstormBuddy.Transcription;
 using Application = System.Windows.Application;
 using Button = System.Windows.Controls.Button;
 using CheckBox = System.Windows.Controls.CheckBox;
@@ -42,6 +44,8 @@ public partial class MemoryCenterWindow : Window
     private readonly ObservableCollection<ProjectRow> _projects = new();
     private readonly ObservableCollection<MemoryPerson> _people = new();
     private readonly ObservableCollection<JobRow> _jobs = new();
+    /// <summary>Последний fact-job (извлечение фактов из вложения) для карточки на вкладке «Задачи».</summary>
+    private FactJob? _factJob;
 
     private Dictionary<long, string> _projectNames = new();
     private Dictionary<long, string> _personNames = new();
@@ -75,7 +79,16 @@ public partial class MemoryCenterWindow : Window
         if (FiltersPanel is { } filtersPanel)
             filtersPanel.SizeChanged += OnFiltersPanelSizeChanged;
         UpdateProjectPanelState();   // стартовое состояние правой панели: «ничего не выбрано»
-        Loaded += (_, _) => RefreshCurrentTab();
+        Loaded += (_, _) =>
+        {
+            if (App.Current is { } app) app.FactJobChanged += OnFactJobChanged;
+            RefreshCurrentTab();
+            RefreshFactJobCard();
+        };
+        Closed += (_, _) =>
+        {
+            if (App.Current is { } app) app.FactJobChanged -= OnFactJobChanged;
+        };
     }
 
     private static string L(string key)
@@ -175,7 +188,7 @@ public partial class MemoryCenterWindow : Window
     {
         var parts = new List<string>
         {
-            it.UpdatedAtUtc.ToLocalTime().ToString("d MMM", CultureInfo.CurrentUICulture),
+            it.UpdatedAtUtc.ToLocalTime().ToString("dd.MM.yyyy HH:mm", CultureInfo.CurrentUICulture),
             Lf("L_MC_ImportanceFmt", it.Importance),
         };
         if (it.SourceMeetingId is { } mid)
@@ -386,8 +399,12 @@ public partial class MemoryCenterWindow : Window
                 _history.Add(new FactRow(it, L($"L_MC_Type_{it.Type}"), ScopeBadge(it), MetaText(it), TagText(it)));
             var title = row.Item.Content.Length > 60 ? row.Item.Content[..60] + "…" : row.Item.Content;
             HistoryTitle.Text = Lf("L_MC_HistoryTitle", title);
-            // «Если есть»: панель показываем только когда цепочка версий > 1.
-            HistoryPanel.Visibility = _history.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+            // §6.1 (аудит 2026-10-15): пустая история — не «тихое скрытие», а
+            // видимое «Изменений пока нет»: одна версия = правок не было.
+            var single = _history.Count <= 1;
+            HistoryEmpty.Visibility = single ? Visibility.Visible : Visibility.Collapsed;
+            HistoryList.Visibility = single ? Visibility.Collapsed : Visibility.Visible;
+            HistoryPanel.Visibility = Visibility.Visible;
         }
         catch (Exception ex) { Error($"History for item #{row.Item.Id} failed", ex); }
     }
@@ -444,17 +461,24 @@ public partial class MemoryCenterWindow : Window
         var move = new MenuItem { Header = L("L_MCA_MoveScope") };
         move.Items.Add(MItem(L("L_MCA_ScopeGlobal"), (_, _) => SetScope(row, MemoryScopeType.Global, null)));
         var meetingId = it.ScopeType == MemoryScopeType.Meeting ? it.ScopeId : it.SourceMeetingId;
-        var meetingItem = MItem(L("L_MCA_ScopeMeeting"), (_, _) => SetScope(row, MemoryScopeType.Meeting, meetingId));
-        meetingItem.IsEnabled = meetingId != null;
-        move.Items.Add(meetingItem);
+        // §6.1: недоступная область не молча-серая — клик объясняет причину.
+        move.Items.Add(MItem(L("L_MCA_ScopeMeeting"), meetingId != null
+            ? (_, _) => SetScope(row, MemoryScopeType.Meeting, meetingId)
+            : (_, _) => ShowInfo(L("L_MC_NoLinkedMeeting"))));
         var projSub = new MenuItem { Header = L("L_MCA_ScopeProject") };
         foreach (var p in _store?.ListProjects(includeArchived: true) ?? new List<MemoryProject>())
             projSub.Items.Add(MItem(p.Name, (_, _) => SetScope(row, MemoryScopeType.Project, p.Id)));
-        projSub.IsEnabled = projSub.Items.Count > 0;
+        if (projSub.Items.Count == 0)
+            projSub.Items.Add(MItem(L("L_MC_NoProjects"), (_, _) => ShowInfo(L("L_MC_NoProjects"))));
         move.Items.Add(projSub);
+        // §6.1: scope Person был недостижим из меню — список людей, как проектов.
+        var personSub = new MenuItem { Header = L("L_MCA_ScopePerson") };
+        foreach (var pe in _store?.ListPeople() ?? new List<MemoryPerson>())
+            personSub.Items.Add(MItem(pe.Name, (_, _) => SetScope(row, MemoryScopeType.Person, pe.Id)));
+        if (personSub.Items.Count == 0)
+            personSub.Items.Add(MItem(L("L_MC_NoPeople"), (_, _) => ShowInfo(L("L_MC_NoPeople"))));
+        move.Items.Add(personSub);
         menu.Items.Add(move);
-
-        // Change project: плоский список проектов (та же операция, что Project ▸ в Move scope)
         var change = new MenuItem { Header = L("L_MCA_ChangeProject") };
         foreach (var p in _store?.ListProjects(includeArchived: true) ?? new List<MemoryProject>())
             change.Items.Add(MItem(p.Name, (_, _) => SetScope(row, MemoryScopeType.Project, p.Id)));
@@ -475,36 +499,136 @@ public partial class MemoryCenterWindow : Window
             var it = row.Item;
             var meeting = it.SourceMeetingId is { } mid ? _store.GetMeeting(mid) : null;
             MemorySegment? seg = null;
+            var segIndex = -1;   // позиция реплики в журнале для «перейти к реплике»
             if (meeting != null && it.SourceSegmentId is { } sid)
-                seg = _store.GetSegments(meeting.Id).FirstOrDefault(s => s.Id == sid || s.Seq == sid);
-
-            if (meeting == null && seg == null)
             {
-                ShowInfo(L("L_MCA_NoSource"));
-                return;
+                var segs = _store.GetSegments(meeting.Id);
+                for (var i = 0; i < segs.Count; i++)
+                    if (segs[i].Id == sid || segs[i].Seq == sid) { seg = segs[i]; segIndex = i; break; }
+            }
+
+            // §6.2 provenance: источник документа (SourceDocId/SourceDocName/SourceAnchor —
+            // стабильные id, живут после рестарта; путь к копии берём из attachments.db).
+            StoredDocument? doc = null;
+            if (!string.IsNullOrEmpty(it.SourceDocumentId) && App.Current?.Attachments != null)
+            {
+                try { doc = App.Current.Attachments.Get(it.SourceDocumentId); }
+                catch { /* документ стёрт/база недоступна — показываем что есть */ }
+            }
+            // SourceDocName без DocId — legacy: показываем имя, но НЕ ищем
+            // «похожий» файл (имя ≠ путь, подмена источника недопустима).
+
+            var isManual = it.SourceMeetingId == null
+                && string.IsNullOrEmpty(it.SourceDocumentId)
+                && it.SourceSegmentId == null
+                && (it.Source == "user" || it.Source == "user-edited" || it.Source == "imported");
+
+            if (meeting == null && seg == null && doc == null && !isManual)
+            {
+                // Неполный legacy-источник: честно показываем, что сохранено,
+                // вместо молчания или выдуманного имени файла/спикера.
+                if (string.IsNullOrEmpty(it.SourceDocName) && string.IsNullOrEmpty(it.SourceAnchor)
+                    && it.SourceStartMs == null && string.IsNullOrEmpty(it.Speaker))
+                {
+                    ShowInfo(L("L_MCA_NoSource"));
+                    return;
+                }
             }
 
             var started = meeting?.StartedAtUtc.ToLocalTime()
-                .ToString("d MMM yyyy HH:mm", CultureInfo.CurrentUICulture) ?? $"#{it.SourceMeetingId}";
+                .ToString("d MMM yyyy HH:mm", CultureInfo.CurrentUICulture)
+                ?? (doc != null ? doc.DisplayName : $"#{it.SourceMeetingId}");
             var header = Lf("L_MCA_SourceFmt", started, seg?.Seq.ToString() ?? "—");
 
             var body = new StringBuilder();
+            // Шапка provenance: как создан + когда. Origin отдельно от текущего scope.
+            body.AppendLine(Lf("L_MCA_OriginFmt",
+                string.IsNullOrEmpty(it.Source) ? "?" : it.Source,
+                it.CreatedAtUtc.ToLocalTime().ToString("d MMM yyyy HH:mm", CultureInfo.CurrentUICulture)));
+            if (isManual)
+                body.AppendLine(L("L_MCA_ManualSource"));
+
+            if (doc != null || !string.IsNullOrEmpty(it.SourceDocName))
+            {
+                var name = doc?.DisplayName ?? it.SourceDocName;
+                body.AppendLine($"📄 {name}");
+                // SourceAnchor факта из документа — DocAnchor.JSON (локатор +
+                // диапазон символов + дословная цитата). Legacy «часть i/N» не
+                // парсится — показываем как есть.
+                if (AttachmentFactExtractor.DocAnchor.TryParse(it.SourceAnchor, out var parts))
+                {
+                    var loc = AttachmentFactExtractor.DocAnchor.Describe(parts);
+                    if (!string.IsNullOrEmpty(loc)) body.AppendLine($"📍 {loc}");
+                    if (!string.IsNullOrEmpty(parts.Quote)) body.AppendLine($"❝ {parts.Quote} ❞");
+                }
+                else if (!string.IsNullOrEmpty(it.SourceAnchor))
+                    body.AppendLine($"· {it.SourceAnchor}");
+                if (doc?.Deleted == true)
+                    body.AppendLine(L("L_MCA_DocDeleted"));
+            }
             if (seg != null)
             {
                 if (seg.StartMs != null || seg.EndMs != null)
                     body.AppendLine($"[{FmtMs(seg.StartMs)} → {FmtMs(seg.EndMs)}]");
+                if (!string.IsNullOrEmpty(seg.Speaker))
+                    body.AppendLine($"🗣 {seg.Speaker}");
                 body.AppendLine(seg.Text);
             }
             else
             {
-                // сегмент не найден — показываем саммари встречи и provenance-поля факта
                 if (it.SourceStartMs != null || it.SourceEndMs != null)
                     body.AppendLine($"[{FmtMs(it.SourceStartMs)} → {FmtMs(it.SourceEndMs)}] {it.Speaker ?? ""}".Trim());
-                body.AppendLine(meeting?.Summary.Length > 0 ? meeting.Summary : meeting?.Title ?? "");
+                if (meeting != null)
+                    body.AppendLine(meeting.Summary.Length > 0 ? meeting.Summary : meeting.Title ?? "");
             }
-            ShowTextDialog(header, body.ToString().Trim());
+            // Кнопки реальной навигации: файл документа и реплика во встрече.
+            var actions = new List<(string Label, Action OnClick)>();
+            if (doc != null && App.Current?.Attachments != null)
+            {
+                string path;
+                try { path = App.Current.Attachments.GetSourcePath(doc); }
+                catch { path = ""; }
+                if (path.Length > 0 && File.Exists(path))
+                    actions.Add((L("L_MCA_SrcOpenDoc"), () => OpenExternalFile(path)));
+            }
+            if (meeting != null && seg != null && segIndex >= 0 && meeting.JournalPath.Length > 0)
+                actions.Add((L("L_MCA_SrcJumpMeeting"), () => JumpToMeetingUtterance(meeting, seg, segIndex)));
+            ShowTextDialog(header, body.ToString().Trim(), actions.ToArray());
         }
         catch (Exception ex) { ShowError($"ViewSource item #{row.Item.Id} failed", ex); }
+    }
+
+    /// <summary>Открыть файл документа системным приложением (ассоциация ОС).</summary>
+    private static void OpenExternalFile(string path)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            App.Current?.Logger?.Warn($"OpenExternalFile failed for {path}: {ex.Message}", "UI");
+        }
+    }
+
+    /// <summary>Открыть историю встреч и выделить реплику факта (журнал
+    /// meetings/&lt;id&gt;.jsonl, строка = позиция сегмента в mem_segment).</summary>
+    private static void JumpToMeetingUtterance(MemoryMeeting meeting, MemorySegment seg, int lineIndex)
+    {
+        var hit = new MeetingSearchHit
+        {
+            MeetingId = Path.GetFileNameWithoutExtension(meeting.JournalPath),
+            MeetingStartedAt = meeting.StartedAtUtc.ToLocalTime(),
+            LineIndex = lineIndex,
+            Ts = seg.StartMs is { } ms
+                ? TimeSpan.FromMilliseconds(ms).ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture)
+                : "",
+            Role = seg.Role,
+            Speaker = seg.Speaker,
+            LineText = seg.Text,
+            Snippet = seg.Text.Length > 160 ? seg.Text[..160] + "…" : seg.Text,
+        };
+        App.Current?.ShowMeetingHistory(hit);
     }
 
     private static string FmtMs(long? ms)
@@ -521,7 +645,9 @@ public partial class MemoryCenterWindow : Window
         {
             row.Item.Content = content;
             row.Item.Importance = importance;
-            row.Item.Source = "user-edited";   // спека EDIT MEMORY: ручная правка → Source=UserEdited (trust ↑)
+            // §6.2: правка НЕ трогает Source — origin (extraction/attachment/user)
+            // это provenance, её стирание ломает кнопку «источник». Last-edit —
+            // это UpdatedAtUtc (бампится в сторе).
             _store.UpdateItem(row.Item);       // UpdatedAtUtc бампится в сторе
             RefreshFacts();
             RefreshStatusBar();
@@ -588,7 +714,7 @@ public partial class MemoryCenterWindow : Window
         {
             row.Item.ScopeType = type;
             row.Item.ScopeId = scopeId;
-            row.Item.Source = "user-edited";    // ручная смена scope — тоже правка (спека EDIT MEMORY)
+            // §6.2: Source — provenance (как создан), не last-edit — не перетираем.
             _store.UpdateItem(row.Item);
             _log?.Info($"Item #{row.Item.Id} scope → {type}:{scopeId}", LogCategory);
             RefreshFacts();
@@ -672,8 +798,11 @@ public partial class MemoryCenterWindow : Window
         FontSize = FontSize,
     };
 
-    /// <summary>Модальный просмотр текста (источник факта): заголовок + прокручиваемый текст + Close.</summary>
-    private void ShowTextDialog(string title, string text)
+    /// <summary>Модальный просмотр текста (источник факта): заголовок + прокручиваемый
+    /// текст + кнопки действий (слева) + Close. Кнопки — реальная навигация:
+    /// открыть файл документа / перейти к реплике во встрече.</summary>
+    private void ShowTextDialog(string title, string text,
+        params (string Label, Action OnClick)[] actions)
     {
         var dlg = NewDialog(title, 560, 340);
         var grid = new Grid { Margin = new Thickness(14) };
@@ -692,17 +821,30 @@ public partial class MemoryCenterWindow : Window
             Padding = new Thickness(14, 12, 14, 12),
             Background = TryFindResource("BgDarkerBrush") as Brush,
         };
+        var footer = new Grid();
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var left = new StackPanel { Orientation = Orientation.Horizontal };
+        foreach (var (label, onClick) in actions)
+        {
+            var btn = new Button { Content = label, Margin = new Thickness(0, 0, 6, 0), MinHeight = 26 };
+            btn.Click += (_, _) => { dlg.DialogResult = true; onClick(); };
+            left.Children.Add(btn);
+        }
         var close = new Button
         {
             Content = L("L_MC_Close"), IsCancel = true,
             HorizontalAlignment = HorizontalAlignment.Right,
         };
         close.Click += (_, _) => dlg.DialogResult = true;
+        footer.Children.Add(left);
+        Grid.SetColumn(close, 1);
+        footer.Children.Add(close);
         Grid.SetRow(tb, 1);
-        Grid.SetRow(close, 2);
+        Grid.SetRow(footer, 2);
         grid.Children.Add(new TextBlock { Text = title, FontSize = 20, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
         grid.Children.Add(tb);
-        grid.Children.Add(close);
+        grid.Children.Add(footer);
         dlg.Content = grid;
         dlg.ShowDialog();
     }
@@ -1107,6 +1249,142 @@ public partial class MemoryCenterWindow : Window
             RefreshPeople();
         }
         catch (Exception ex) { Error($"Delete person #{p.Id} failed", ex); }
+    }
+
+    // ------------------------------------------------ Fact-job карточка -------
+
+    /// <summary>App.FactJobChanged прилетает с фон-потока → маршалим на UI.</summary>
+    private void OnFactJobChanged(FactJob job)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _factJob = job;
+            RefreshFactJobCard();
+        }));
+    }
+
+    /// <summary>
+    /// Отрисовать карточку последнего fact-job'а на вкладке «Задачи»: живой %
+    /// (RequestsDone/RequestsPlanned), имя файла, стоп-кнопка, текст состояния,
+    /// причина ошибки. Пусто — карточка скрыта; Done/NoFacts/PendingReview скрывают её.
+    /// </summary>
+    private void RefreshFactJobCard()
+    {
+        var job = _factJob;
+        if (job == null)
+        {
+            try { job = App.Current?.Attachments?.ListFactJobs().FirstOrDefault(); }
+            catch { /* attachments.db недоступна — карточку просто прячем */ }
+            _factJob = job;
+        }
+
+        if (job == null || job.Status is FactJobStatus.Done or FactJobStatus.NoFacts
+                or FactJobStatus.PendingReview)
+        {
+            FactJobCard.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        FactJobCard.Visibility = Visibility.Visible;
+
+        // Имя файла — из attachments.db (FactJob хранит только DocumentId).
+        var name = job.DocumentId;
+        try
+        {
+            var doc = App.Current?.Attachments?.Get(job.DocumentId);
+            if (!string.IsNullOrWhiteSpace(doc?.DisplayName)) name = doc!.DisplayName;
+        }
+        catch { /* best effort — остаётся id */ }
+        FactJobTitle.Text = name;
+
+        FactJobProgress.IsIndeterminate = job.Status == FactJobStatus.Running && job.RequestsPlanned <= 0;
+        FactJobProgress.Value = job.RequestsPlanned > 0
+            ? Math.Clamp((double)job.RequestsDone / job.RequestsPlanned, 0, 1)
+            : 0;
+
+        // Подпись статуса + доп.строка. Verify-mode → «На проверке: N» (не «сохранено»).
+        FactJobStatusText.Text = job.Status switch
+        {
+            FactJobStatus.Queued => L("L_Att_FactsQueued"),
+            FactJobStatus.Running when job.RequestsDone > 0 && job.RequestsPlanned > 0 =>
+                // §6.1: процент + части + сохранённые факты («44% · обработано 4 из 9…»).
+                Lf("L_MC_FactJob_RunningFullFmt",
+                    job.RequestsDone * 100 / job.RequestsPlanned,
+                    job.RequestsDone, job.RequestsPlanned, job.FactsSaved),
+            // До первого ответа — «Обрабатываю часть 1 из N», не висим на «Запрос 0/N».
+            FactJobStatus.Running when job.RequestsPlanned > 0 =>
+                Lf("L_MC_FactJob_PartFmt", job.RequestsDone + 1, job.RequestsPlanned),
+            FactJobStatus.Running => L("L_MC_FactJob_Starting"),
+            FactJobStatus.Interrupted => L("L_Att_FactsInterrupted"),
+            // §6.1: ошибка — какая часть не дошла + сколько фактов уже сохранено.
+            FactJobStatus.Error => job.RequestsDone > 0
+                ? Lf("L_MC_FactJob_ErrorFullFmt",
+                    job.RequestsDone + 1, job.RequestsPlanned, job.FactsSaved, job.Error ?? "")
+                : Lf("L_Att_FactsErrorFmt", job.Error ?? ""),
+            FactJobStatus.Canceled => Lf("L_MC_FactJob_StoppedFmt",
+                job.RequestsDone, job.RequestsPlanned, job.FactsSaved),
+            _ => job.Status.ToString(),
+        };
+
+        // Verify-mode: промежуточные факты лежат «на проверке», а не «сохранено».
+        if (job.Status == FactJobStatus.Running && job.FactsPending > 0)
+            FactJobStatusText.Text += $" · {Lf("L_Att_FactsPendingReviewFmt", job.FactsPending)}";
+
+        // Доп. строка ошибки — когда статус сам по себе её не показывает (причину держим видимой).
+        var showError = !string.IsNullOrWhiteSpace(job.Error) && job.Status != FactJobStatus.Error;
+        FactJobError.Visibility = showError ? Visibility.Visible : Visibility.Collapsed;
+        FactJobError.Text = showError ? job.Error : "";
+
+        // Остановить — для активных. Продолжить (Canceled) / Повторить (Error) — возобновляют
+        // с RequestsDone: завершённые части повторно не отправляются, факты не дублируются.
+        FactJobStopBtn.IsEnabled = job.Status is FactJobStatus.Queued
+            or FactJobStatus.Running or FactJobStatus.Interrupted;
+        FactJobStopBtn.Tag = job.Id;
+
+        var canResume = job.Status is FactJobStatus.Canceled or FactJobStatus.Error;
+        FactJobResumeBtn.Visibility = canResume ? Visibility.Visible : Visibility.Collapsed;
+        if (canResume)
+        {
+            FactJobResumeBtn.Content = job.Status == FactJobStatus.Error
+                ? L("L_MC_FactJob_Retry") : L("L_MC_FactJob_Resume");
+            FactJobResumeBtn.IsEnabled = true;
+            FactJobResumeBtn.Tag = job.Id;
+        }
+    }
+
+    /// <summary>«Продолжить» (Canceled) / «Повторить» (Error): job → Queued, RequestsDone
+    /// сохраняется — экстрактор доедет с неотправленной части (см. AttachmentFactExtractor).</summary>
+    private void OnFactJobResume(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not long jobId) return;
+        FactJobResumeBtn.IsEnabled = false;
+        try
+        {
+            var app = App.Current;
+            if (app == null) return;
+            var job = app.Attachments?.ListFactJobs().FirstOrDefault(j => j.Id == jobId);
+            if (job == null) return;
+            var resumed = job with { Status = FactJobStatus.Queued, Error = null };
+            app.Attachments?.UpdateFactJob(resumed);
+            _factJob = resumed;   // карточка сразу показывает «В очереди»
+            app.KickFactWorker();
+            RefreshFactJobCard();
+        }
+        catch (Exception ex) { Error($"ResumeFactJob #{jobId} failed", ex); }
+    }
+
+    private async void OnFactJobStop(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not long jobId) return;
+        FactJobStopBtn.IsEnabled = false;
+        try
+        {
+            var app = App.Current;
+            if (app != null)
+                await app.CancelFactJobAsync(jobId); // seam: App.CancelFactJobAsync (интегратор)
+            RefreshFactJobCard();
+        }
+        catch (Exception ex) { Error($"CancelFactJob #{jobId} failed", ex); }
     }
 
     // ------------------------------------------------ Задачи (джобы) ----------

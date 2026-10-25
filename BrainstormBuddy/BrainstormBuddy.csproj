@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -14,7 +14,7 @@
     <ApplicationIcon>Resources\Icons\app.ico</ApplicationIcon>
     <AssemblyName>BrainstormBuddy</AssemblyName>
     <RootNamespace>BrainstormBuddy</RootNamespace>
-  <Version>2.28.2</Version>
+    <Version>2.39.2</Version>
     <Company>BrainstormBuddy</Company>
     <Product>BrainstormBuddy</Product>
     <LangVersion>12</LangVersion>
@@ -32,8 +32,8 @@
     <!-- Явный пиннинг: транзитивные STJ/STE 10.0.2 (через Microsoft.Extensions.AI)
          при self-contained publish проигрывали runtime-pack и в выход попадала
          сборка 8.0.0.0 при deps.json=10.0.2 → падение на старте. -->
-    <PackageReference Include="System.Text.Json" Version="10.0.2" />
-    <PackageReference Include="System.Text.Encodings.Web" Version="10.0.2" />
+    <PackageReference Include="System.Text.Json" Version="10.0.10" />
+    <PackageReference Include="System.Text.Encodings.Web" Version="10.0.10" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,4 +1,4 @@
-using BrainstormBuddy.Config;
+﻿using BrainstormBuddy.Config;
 using BrainstormBuddy.Memory.Embeddings;
 using BrainstormBuddy.Services;
 
@@ -14,11 +14,37 @@ namespace BrainstormBuddy.Memory.Recall;
 public sealed class MemoryRecallService : IMemoryRecallService
 {
     private const string LogCategory = "Memory";
-    private const int FtsCandidateLimit = 50;
+    // Кандидаты FTS до перескоринга покрытием: OR-запрос по длинному естественному
+    // вопросу легко давал 50 строк шума, и тематические факты не доживали до
+    // ранкера. 200 строк на локальном индексе — микросекунды, покрытие режет.
+    private const int FtsCandidateLimit = 200;
+    /// <summary>Кандидаты для режима «Все» (§6.4): 2000 хватает за глаза,
+    /// но не бесконечно — защита от патологической БД.</summary>
+    private const int AllItemsCandidateLimit = 2000;
     /// <summary>Сколько recall готов ждать embed-запроса, когда модель ещё грузится
     /// (спека §15: FTS не должен ждать E5 load). Модель продолжает греться в
     /// фоне — следующий recall уже получит векторную ветку.</summary>
     private static readonly TimeSpan ColdEmbedWait = TimeSpan.FromMilliseconds(1500);
+    // Порог только для смысловой ветки без FTS: E5 на нерелевантной паре
+    // даёт 0.75–0.82, реальный перефраз — обычно ≥0.80 при отрыве от медианы.
+    private const double SemanticOnlyMinCosine = 0.80;
+    // Та же калибровка, что в MeetingSearchService: на реальном E5 отсутствующий
+    // запрос даёт отрыв от медианы ~0.039, реальный перефраз — 0.053–0.066.
+    // 0.02 пропускал нейтральные факты как «совпадения».
+    private const double SemanticMedianMargin = 0.045;
+    // Лексический матч слабее половины веса запроса — тема покрыта частично
+    // (часть слов вопроса в памяти отсутствует). Держим короткий список
+    // смежного вместо 50 случайных фактов; «Все» (RecallMaxItems<=0) не режем.
+    private const double WeakLexicalCoverage = 0.5;
+    private const int WeakLexicalMaxResults = 8;
+    // Потолок явного memory_search: тот же размер, что отдаёт FTS-кандидатов.
+    // Схема инструмента разрешает limit ≤ 50, поэтому больше не нужно.
+    internal const int ExplicitSearchMaxItems = 50;
+    // Когда лексические хиты уже есть, векторный кандидат без лексики должен
+    // быть уверенным перефразом: иначе E5-«близость» почти ко всему
+    // добавляет в блок чужие факты (проверено на реальной памяти владельца).
+    private const double MixedParaphraseCosine = 0.85;
+    private const double MixedParaphraseMargin = 0.06;
 
     private readonly IMemoryStore _store;
     private readonly IMemoryEmbeddingProvider? _embeddings;
@@ -47,13 +73,30 @@ public sealed class MemoryRecallService : IMemoryRecallService
         _scopeName = scopeName;
     }
 
-    public async Task<List<MemoryRecallHit>> RecallAsync(MemoryRecallQuery q, CancellationToken ct)
+    /// <summary>Запрос требует полного списка («все», «полный перечень»):
+    /// App расширяет бюджет и снимает лимит фактов. Делегат к внутреннему
+    /// нормализатору запроса, чтобы правило жило в одном месте.</summary>
+    public static bool QueryWantsFullList(string? query) => QueryText.WantsFullList(query);
+
+    public async Task<List<MemoryRecallHit>> RecallAsync(
+        MemoryRecallQuery q, CancellationToken ct, Action<MemoryRecallTrace>? trace = null)
     {
         ArgumentNullException.ThrowIfNull(q);
+        // §6.4 (аудит 2026-10-15): «Все» = RecallMaxItems <= 0 — все ACTIVE факты
+        // выбранного scope'а без скрытого лимита 20. Потолок снимаем целиком.
+        // Явная просьба «все/полный список» — тот же режим: лимит по числу
+        // фактов снят, объём ответа ограничивает только бюджет токенов (блок
+        // честно помечается усечённым), иначе просьбу выполнить невозможно.
+        var allItems = _config.RecallMaxItems <= 0 || QueryWantsFullList(q.Text);
+        // [secret]/[screen] — метка канала, не часть вопроса: иначе маркер
+        // попадает в FTS/эмбеддинг и перетягивает служебные факты.
         var query = q with
         {
-            MaxItems = Math.Clamp(q.MaxItems, 0, _config.RecallMaxItems),
-            MaxTokens = Math.Clamp(q.MaxTokens, 0, _config.RecallMaxTokens),
+            Text = QueryText.StripServiceMarkers(q.Text),
+            MaxItems = allItems ? int.MaxValue
+                                : Math.Clamp(q.MaxItems, 0,
+                                    q.ExplicitSearch ? ExplicitSearchMaxItems : _config.RecallMaxItems),
+            MaxTokens = Math.Clamp(q.MaxTokens, 0, MaxContextBudgetTokens),
         };
         if (query.MaxItems == 0) return new List<MemoryRecallHit>();
 
@@ -62,9 +105,11 @@ public sealed class MemoryRecallService : IMemoryRecallService
         // Memory с пустым запросом не приходили с нулём.
         var fts = string.IsNullOrWhiteSpace(query.Text)
             ? new List<(MemoryItem Item, double FtsScore)>()
-            : _store.SearchFts(query.Text, FtsCandidateLimit)
+            : _store.SearchFts(query.Text, allItems ? AllItemsCandidateLimit : FtsCandidateLimit)
                     .Where(x => IsVisibleForScope(query, x.Item)).ToList();
         List<(MemoryItem Item, double VecScore)>? vec = null;
+
+        var embeddingsFailed = false;
 
         // Векторная ветка — только когда auto-recall включён и провайдер реально доступен.
         // Remote embed может быть медленным: ct наружу, любой сбой → мягкий FTS-fallback.
@@ -100,22 +145,86 @@ public sealed class MemoryRecallService : IMemoryRecallService
             }
             catch (Exception ex)
             {
+                embeddingsFailed = true;
                 _log?.Warn($"Memory recall: embedding path failed, FTS-only fallback ({ex.Message})",
                     LogCategory);
             }
         }
 
-        // Blank-запрос без векторного сигнала → топ свежих Active по recency/importance
-        // (всплывают в ранкере: FTS=0, vec=0, score от recency/importance/pinned).
-        // Scope-фильтр обязателен: ListItems(status) без scope выдал бы Active-факты
-        // чужих проектов/персон — утёк бы чужой контекст в PreCallBrief/Ask Memory.
+        var ftsCandidates = fts.Count;
+        var vectorCandidates = vec?.Count ?? 0;
+        var embeddingsAvailable = _embeddings?.IsAvailable == true;
+
+        // FTS не нашёл ничего, а E5 всегда возвращает «ближайшее»: без
+        // абсолютного/относительного порога отсутствующий вопрос («квантовый
+        // флюгегехаймен») тащит случайные факты с cos 0.75–0.82. Если же
+        // лексический матч есть, его дополняем векторами без отсечения.
+        if (fts.Count == 0 && vec is { Count: > 0 } && !string.IsNullOrWhiteSpace(query.Text))
+        {
+            var scores = vec.Select(x => x.VecScore).OrderBy(v => v).ToList();
+            var mid = scores.Count / 2;
+            var median = scores.Count == 0 ? 0.0
+                : scores.Count % 2 == 0
+                    ? (scores[mid - 1] + scores[mid]) / 2.0
+                    : scores[mid];
+            var useMedian = scores.Count >= 3;
+            vec = vec.Where(x => x.VecScore >= SemanticOnlyMinCosine
+                && (!useMedian || x.VecScore - median >= SemanticMedianMargin)).ToList();
+        }
+
+        // Смешанный случай: лексические кандидаты есть, но E5 «близок почти ко
+        // всему» (медиана нерелевантных пар ~0.75), поэтому векторная ветка
+        // добавляла десятки случайных фактов к любому вопросу. Векторный факт
+        // остаётся, только если он связан лексически (Fts>0) или это уверенный
+        // перефраз: абсолютный порог и отрыв от медианы. Итог: вопрос о теме,
+        // которой в памяти нет, возвращает несколько слабых лексических фактов,
+        // а не 50 случайных свежих.
+        if (vec is { Count: > 0 } && fts.Count > 0 && !string.IsNullOrWhiteSpace(query.Text))
+        {
+            var ftsIds = fts.Select(x => x.Item.Id).ToHashSet();
+            var all = vec.Select(x => x.VecScore).OrderBy(v => v).ToList();
+            var mid = all.Count / 2;
+            var median = all.Count % 2 == 0
+                ? (all[mid - 1] + all[mid]) / 2.0
+                : all[mid];
+            var useMedian = all.Count >= 3;
+            var kept = vec.Where(x => ftsIds.Contains(x.Item.Id) ||
+                (x.VecScore >= MixedParaphraseCosine
+                 && (!useMedian || x.VecScore - median >= MixedParaphraseMargin)))
+                .ToList();
+            if (kept.Count != vec.Count)
+                _log?.Debug($"Memory recall: vec noise filtered {vec.Count} → {kept.Count}" +
+                            $" (median {median:F3}, lexical {ftsIds.Count})", LogCategory);
+            vec = kept;
+        }
+
         if (string.IsNullOrWhiteSpace(query.Text) && vec is not { Count: > 0 })
-            fts = BlankFallbackItems(query)
+            fts = BlankFallbackItems(query, allItems)
                     .Select(it => (Item: it, FtsScore: 0.0)).ToList();
+
+        // Слабое покрытие темы: вопрос содержит слова, которых в памяти нет
+        // («мобильное приложение»), поэтому «отвечает» давало 50 правдоподобных
+        // фактов. Оставляем короткий список смежного — модель обязана сказать
+        // «точных данных нет», а не выдавать соседние факты за ответ.
+        if (!allItems && fts.Count > WeakLexicalMaxResults)
+        {
+            var bestFts = fts.Max(x => x.FtsScore);
+            if (bestFts < WeakLexicalCoverage)
+            {
+                fts = fts.OrderByDescending(x => x.FtsScore)
+                         .ThenBy(x => x.Item.Id)
+                         .Take(WeakLexicalMaxResults)
+                         .ToList();
+                _log?.Debug($"Memory recall: weak coverage {bestFts:F2} — " +
+                            $"capped to {fts.Count} candidates", LogCategory);
+            }
+        }
 
         var hits = _ranker.Rank(query, fts, vec ?? new List<(MemoryItem, double)>());
         _log?.Debug($"Memory recall: '{query.Text}' → {hits.Count} hits " +
                     $"(fts={fts.Count}, vec={vec?.Count ?? 0})", LogCategory);
+        trace?.Invoke(new MemoryRecallTrace(ftsCandidates, vectorCandidates, hits.Count,
+            embeddingsAvailable, embeddingsFailed));
         return hits;
     }
 
@@ -125,14 +234,17 @@ public sealed class MemoryRecallService : IMemoryRecallService
     /// в fallback не нужен, чужие факты не показываем). Дедуп по Id на случай
     /// scope=Global.
     /// </summary>
-    private List<MemoryItem> BlankFallbackItems(MemoryRecallQuery query)
+    private List<MemoryItem> BlankFallbackItems(MemoryRecallQuery query, bool allItems = false)
     {
-        var limit = Math.Max(query.MaxItems, FtsCandidateLimit);
-        var result = new List<MemoryItem>(limit);
+        // «Все» (§6.4): MaxItems=int.MaxValue — ListItems отдаёт все Active-факты
+        // scope'а; limit в SQL трактует <=0/MAX как «без ограничения».
+        var limit = allItems ? int.MaxValue : Math.Max(query.MaxItems, FtsCandidateLimit);
+        var result = new List<MemoryItem>(Math.Min(limit, 4096));
         var seen = new HashSet<long>();
         void Collect(MemoryScopeType scope, long? scopeId)
         {
-            foreach (var it in _store.ListItems(scope, scopeId, MemoryItemStatus.Active, limit))
+            foreach (var it in _store.ListItems(scope, scopeId, MemoryItemStatus.Active,
+                                               allItems ? 0 : limit))
                 if (seen.Add(it.Id)) result.Add(it);
         }
         Collect(MemoryScopeType.Global, null);
@@ -188,5 +300,12 @@ public sealed class MemoryRecallService : IMemoryRecallService
     }
 
     public string BuildContextBlock(List<MemoryRecallHit> hits, int maxTokens)
-        => ContextBlockBuilder.Build(hits, Math.Clamp(maxTokens, 0, _config.RecallMaxTokens), _scopeName);
+        => ContextBlockBuilder.Build(hits, Math.Clamp(maxTokens, 0, MaxContextBudgetTokens), _scopeName);
+
+    /// <summary>Верхняя граница блока: обычный recall-лимит ИЛИ полный бюджет
+    /// автоматического ответа + дополнительного поиска (настройки «Бюджет
+    /// памяти на автоответ»/«Бюджет дополнительного поиска»), если он больше —
+    /// режим «покажи все» обязан получать больше 2000 токенов.</summary>
+    private int MaxContextBudgetTokens =>
+        Math.Max(_config.RecallMaxTokens, _config.AutoRecallBudgetTokens + _config.ExtraSearchBudgetTokens);
 }

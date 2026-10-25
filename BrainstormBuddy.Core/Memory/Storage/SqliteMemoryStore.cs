@@ -19,6 +19,32 @@ public sealed class SqliteMemoryStore : IMemoryStore
          '"', '\'', '«', '»', '—', '–', '/', '\\', '|', '*', '+', '=', '<', '>', '@', '#',
          '$', '%', '^', '&', '~', '`'];
 
+    // Покрытие запроса вместо голого bm25: смысловым считается слово от 2 букв
+    // (короткие термины «QA», «AI», «ML», «ID» — тема, а не шум); служебные
+    // слова отсекает QueryText (точное совпадение + опечатки по стему).
+    // Стем fallback не короче 4 букв и не чаще ~1/8 корпуса.
+    private const int MinContentWordLen = 2;
+    private const int StemMinLen = 4;
+    private const int MinTermDf = 25;
+    private const int MaxTermDfDivisor = 8;
+
+    /// <summary>Мета-слова памяти: в вопросе «есть доступ к памяти? поищи sensor
+    /// supply» они описывают способ поиска, а не тему. Убираются до MATCH,
+    /// чтобы не приносить FAQ-факты о самой памяти в топ. Запрос только из
+    /// таких слов возвращается через fallback QueryText (поведение не ломается).</summary>
+    private static readonly HashSet<string> MemoryScaffolding = new(StringComparer.Ordinal)
+    {
+        "память", "памяти", "памятью", "памятях",
+        "доступ", "доступа", "доступе", "доступом", "доступен", "доступна",
+        "доступно", "доступны", "доступность",
+        "запомни", "запомнил", "запомнила", "запомнить", "помнишь", "помню",
+        "помнит", "помнят", "вспомни", "вспомнить", "вспоминать",
+        "знаешь", "знаем", "знают", "знание", "знания", "знаний",
+        "факт", "факты", "фактов", "фактах", "фактам",
+        "информация", "информации", "информацию", "сведения", "сведений",
+        "memory", "memories",
+    };
+
     private readonly SqliteConnection _db;
     private readonly LoggingService? _log;
     private readonly object _gate = new();
@@ -67,6 +93,35 @@ public sealed class SqliteMemoryStore : IMemoryStore
             FtsAvailable = MemoryDbMigrator.Migrate(_db, msg => _log?.Warn(msg, Category));
             if (!FtsAvailable)
                 _log?.Warn("FTS5 недоступен: SearchFts работает через LIKE-fallback", Category);
+            EnsureAttachmentProvenanceColumns();
+        }
+    }
+
+    /// <summary>
+    /// +4 nullable TEXT-колонки provenance чат-вложений (фича «файлы в контексте»).
+    /// Идемпотентно: SQLite не умеет ADD COLUMN IF NOT EXISTS — проверяем
+    /// PRAGMA table_info. Старые БД (v1/v2) добирают колонки здесь, свежая
+    /// v1-схема создаёт их сразу — обе дороги сходятся.
+    /// </summary>
+    private void EnsureAttachmentProvenanceColumns()
+    {
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var info = _db.CreateCommand())
+        {
+            info.CommandText = "PRAGMA table_info(mem_item);";
+            using var r = info.ExecuteReader();
+            while (r.Read())
+                existing.Add(r.GetString(1));
+        }
+
+        foreach (var col in new[] { "source_doc_id", "source_doc_name",
+                                    "source_doc_sha256", "source_anchor" })
+        {
+            if (existing.Contains(col)) continue;
+            using var alter = _db.CreateCommand();
+            alter.CommandText = $"ALTER TABLE mem_item ADD COLUMN {col} TEXT NULL;";
+            alter.ExecuteNonQuery();
+            _log?.Info($"migrate: mem_item + колонка {col} (provenance вложений)", Category);
         }
     }
 
@@ -225,30 +280,27 @@ public sealed class SqliteMemoryStore : IMemoryStore
 
     // ---------------- items ----------------
 
+    // Новые колонки — строго в конец (позиционное чтение в ReadItem + score-ordinal
+    // в SearchFtsTable/SearchLikeFallback завязаны на этот порядок).
     private const string ItemColumns = """
         id, scope_type, scope_id, type, content, importance, confidence, pinned, status,
         valid_from_utc, valid_until_utc, superseded_by, source_meeting_id, source_segment_id,
         source_start_ms, source_end_ms, speaker, source, created_utc, updated_utc,
-        last_confirmed_utc
+        last_confirmed_utc, source_doc_id, source_doc_name, source_doc_sha256, source_anchor
         """;
 
-    private const string ItemParams = """
-        $id, $scope, $scopeId, $type, $content, $imp, $conf, $pin, $status,
-        $vfrom, $vuntil, $supBy, $srcM, $srcS, $srcStart, $srcEnd, $speaker, $src,
-        $created, $updated, $confirmed
-        """;
 
     private const string ItemInsertColumns = """
         scope_type, scope_id, type, content, importance, confidence, pinned, status,
         valid_from_utc, valid_until_utc, superseded_by, source_meeting_id, source_segment_id,
         source_start_ms, source_end_ms, speaker, source, created_utc, updated_utc,
-        last_confirmed_utc
+        last_confirmed_utc, source_doc_id, source_doc_name, source_doc_sha256, source_anchor
         """;
 
     private const string ItemInsertParams = """
         $scope, $scopeId, $type, $content, $imp, $conf, $pin, $status,
         $vfrom, $vuntil, $supBy, $srcM, $srcS, $srcStart, $srcEnd, $speaker, $src,
-        $created, $updated, $confirmed
+        $created, $updated, $confirmed, $srcDocId, $srcDocName, $srcDocSha, $srcAnchor
         """;
 
     public long InsertItem(MemoryItem it)
@@ -282,7 +334,9 @@ public sealed class SqliteMemoryStore : IMemoryStore
                     superseded_by=$supBy, source_meeting_id=$srcM, source_segment_id=$srcS,
                     source_start_ms=$srcStart, source_end_ms=$srcEnd, speaker=$speaker,
                     source=$src, created_utc=$created, updated_utc=$updated,
-                    last_confirmed_utc=$confirmed
+                    last_confirmed_utc=$confirmed, source_doc_id=$srcDocId,
+                    source_doc_name=$srcDocName, source_doc_sha256=$srcDocSha,
+                    source_anchor=$srcAnchor
                 WHERE id=$id;
                 """;
             BindItem(cmd, it, withId: true);
@@ -314,6 +368,10 @@ public sealed class SqliteMemoryStore : IMemoryStore
         cmd.Parameters.AddWithValue("$created", Iso(it.CreatedAtUtc));
         cmd.Parameters.AddWithValue("$updated", Iso(it.UpdatedAtUtc));
         cmd.Parameters.AddWithValue("$confirmed", (object?)IsoOrNull(it.LastConfirmedAtUtc) ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$srcDocId", (object?)it.SourceDocumentId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$srcDocName", (object?)it.SourceDocName ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$srcDocSha", (object?)it.SourceDocSha256 ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$srcAnchor", (object?)it.SourceAnchor ?? DBNull.Value);
     }
 
     private static MemoryItem ReadItem(SqliteDataReader r) => new()
@@ -339,6 +397,10 @@ public sealed class SqliteMemoryStore : IMemoryStore
         CreatedAtUtc = ParseIso(r.GetString(18)),
         UpdatedAtUtc = ParseIso(r.GetString(19)),
         LastConfirmedAtUtc = r.IsDBNull(20) ? null : ParseIso(r.GetString(20)),
+        SourceDocumentId = r.IsDBNull(21) ? null : r.GetString(21),
+        SourceDocName = r.IsDBNull(22) ? null : r.GetString(22),
+        SourceDocSha256 = r.IsDBNull(23) ? null : r.GetString(23),
+        SourceAnchor = r.IsDBNull(24) ? null : r.GetString(24),
     };
 
     public MemoryItem? GetItem(long id)
@@ -375,8 +437,14 @@ public sealed class SqliteMemoryStore : IMemoryStore
                 sql += " AND status=$status";
                 cmd.Parameters.AddWithValue("$status", status.Value.ToString());
             }
-            sql += " ORDER BY updated_utc DESC, id DESC LIMIT $lim";
-            cmd.Parameters.AddWithValue("$lim", limit);
+            // limit <= 0 = «без ограничения» (режим «Все», §6.4): SQLite
+            // LIMIT 0 вернул бы ноль строк, а не «все».
+            sql += " ORDER BY updated_utc DESC, id DESC";
+            if (limit > 0)
+            {
+                sql += " LIMIT $lim";
+                cmd.Parameters.AddWithValue("$lim", limit);
+            }
             cmd.CommandText = sql;
 
             var list = new List<MemoryItem>();
@@ -553,22 +621,36 @@ public sealed class SqliteMemoryStore : IMemoryStore
 
     public void AddTag(long itemId, string tag)
     {
+        // §6.3 (аудит 2026-10-15): ключ тега нормализован (trim, без '#', lower)
+        // — поиск/дедуп регистронезависимы; исходное написание храним в tag_disp.
+        var disp = tag.Trim().TrimStart('#').Trim();
+        tag = NormalizeTag(tag);
+        if (tag.Length == 0) return;
         lock (_gate)
         {
             using var cmd = _db.CreateCommand();
-            cmd.CommandText = "INSERT OR IGNORE INTO mem_tag(item_id, tag) VALUES($id, $tag);";
+            cmd.CommandText = """
+                INSERT INTO mem_tag(item_id, tag, tag_disp) VALUES($id, $tag, $disp)
+                ON CONFLICT(item_id, tag) DO UPDATE SET tag_disp = excluded.tag_disp;
+                """;
             cmd.Parameters.AddWithValue("$id", itemId);
             cmd.Parameters.AddWithValue("$tag", tag);
+            cmd.Parameters.AddWithValue("$disp", disp);
             cmd.ExecuteNonQuery();
         }
     }
+
+    /// <summary>Единая нормализация тега: trim, снятие ведущих '#', lower.
+    /// Применяется и при записи (AddTag), и при разборе запроса (SearchFts).</summary>
+    internal static string NormalizeTag(string tag) =>
+        tag.Trim().TrimStart('#').Trim().ToLowerInvariant();
 
     public List<string> GetTags(long itemId)
     {
         lock (_gate)
         {
             using var cmd = _db.CreateCommand();
-            cmd.CommandText = "SELECT tag FROM mem_tag WHERE item_id=$id ORDER BY tag;";
+            cmd.CommandText = "SELECT COALESCE(tag_disp, tag) FROM mem_tag WHERE item_id=$id ORDER BY COALESCE(tag_disp, tag);";
             cmd.Parameters.AddWithValue("$id", itemId);
             var list = new List<string>();
             using var r = cmd.ExecuteReader();
@@ -579,45 +661,138 @@ public sealed class SqliteMemoryStore : IMemoryStore
     }
 
     // ---------------- FTS + embeddings ----------------
-
     public List<(MemoryItem Item, double FtsScore)> SearchFts(string query, int limit = 50)
     {
-        var words = SplitQueryWords(query);
-        if (words.Count == 0 || limit <= 0)
+        // [secret]/[screen] — метки канала, не содержание запроса.
+        query = QueryText.StripServiceMarkers(query);
+        // '#' не входит в QuerySeparators → «#файл» приходит одним словом-тегом.
+        var words = QueryText.FilterScaffolding(SplitQueryWords(query), MemoryScaffolding);
+        var tags = words.Where(w => w.StartsWith('#'))
+                        .Select(NormalizeTag)
+                        .Where(t => t.Length > 0)
+                        .Distinct()
+                        .ToList();
+        var contentWords = words.Where(w => !w.StartsWith('#')).ToList();
+        if ((contentWords.Count == 0 && tags.Count == 0) || limit <= 0)
             return [];
 
         lock (_gate)
         {
-            return FtsAvailable
-                ? SearchFtsTable(words, limit)
-                : SearchLikeFallback(words, limit);
+            // §6.3: теги живут в mem_tag — FTS5 по контенту их не видит
+            // ('#' вообще не токенизируется). Тег-кандидаты получают полное
+            // покрытие (score 1.0): тег — явный маркер пользователя.
+            var tagged = tags.Count > 0
+                ? SearchTags(tags, limit)
+                : new List<(MemoryItem Item, double FtsScore)>();
+            if (contentWords.Count == 0)
+                return tagged;
+
+            var content = FtsAvailable
+                ? SearchFtsTable(contentWords, limit)
+                : SearchLikeFallback(contentWords, limit);
+            if (tags.Count == 0)
+                return content;
+
+            // Смешанный запрос «#тег слова»: тег — фильтр, текст ранжирует
+            // внутри него; тег-кандидаты без текстового матча — в хвост (0.5).
+            var tagIds = new HashSet<long>(tagged.Select(t => t.Item.Id));
+            var merged = content.Where(c => tagIds.Contains(c.Item.Id)).ToList();
+            var matched = new HashSet<long>(merged.Select(m => m.Item.Id));
+            merged.AddRange(tagged.Where(t => !matched.Contains(t.Item.Id))
+                                  .Select(t => (t.Item, 0.5)));
+            return merged.Take(limit).ToList();
         }
     }
 
-    /// <summary>Разбить запрос на слова: обрезать все FTS5-спецсимволы/кавычки.</summary>
+    /// <summary>Поиск по тегам: item с ЛЮБЫМ из нормализованных тегов (OR),
+    /// новые сверху. Score 1.0 — тег-матч считается полным покрытием запроса.</summary>
+    private List<(MemoryItem Item, double FtsScore)> SearchTags(List<string> tags, int limit)
+    {
+        using var cmd = _db.CreateCommand();
+        var inList = string.Join(", ", tags.Select((_, i) => $"$t{i}"));
+        cmd.CommandText = $"""
+            SELECT DISTINCT {ItemColumns}, 1.0 AS score
+            FROM mem_item JOIN mem_tag ON mem_tag.item_id = mem_item.id
+            WHERE mem_tag.tag IN ({inList})
+            ORDER BY mem_item.id DESC LIMIT $lim;
+            """;
+        for (var i = 0; i < tags.Count; i++)
+            cmd.Parameters.AddWithValue($"$t{i}", tags[i]);
+        cmd.Parameters.AddWithValue("$lim", limit);
+
+        var list = new List<(MemoryItem, double)>();
+        using (var r = cmd.ExecuteReader())
+            while (r.Read())
+                list.Add((ReadItem(r), 1.0));
+        return list;
+    }
+    /// <summary>Разбить запрос на слова: обрезать все FTS5-спецсимволы/кавычки.
+    /// '#' НЕ разделитель — «#файл» остаётся целым токеном-тегом (SearchFts).</summary>
+    private static readonly char[] QuerySeparators =
+        WordSeparators.Where(c => c != '#').ToArray();
+
     private static List<string> SplitQueryWords(string query)
     {
         var words = new List<string>();
         if (string.IsNullOrWhiteSpace(query))
             return words;
-        foreach (var w in query.Split(WordSeparators, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var w in query.Split(QuerySeparators, StringSplitOptions.RemoveEmptyEntries))
         {
             var word = w.Trim();
-            if (word.Length > 0 && word != "-" && word != "+")
+            if (word.Length > 0 && word != "-" && word != "+" && word != "#")
                 words.Add(word);
         }
         return words;
     }
 
-    /// <summary>FTS5 MATCH: каждое слово в двойных кавычках (literal), слова через AND.</summary>
+    /// <summary>
+    /// FTS5 MATCH: слова через OR с prefix-звёздочкой («token*»). OR+prefix нужен
+    /// для recall — естественный вопрос содержит стоп-слова и флексии русского,
+    /// AND по точным словам падал в ноль. Порядок задаёт НЕ голый bm25:
+    /// -bm25 по любому корню зашумляет top — одно совпавшее слово («Alpha»,
+    /// «ли*») давало шумному кандидату ftsNorm≈1 после max-нормализации ранкера.
+    /// Поэтому FtsScore = IDF-взвешенная доля покрытых слов запроса (0..1,
+    /// шкала сравнима с косинусом E5-ветки), bm25 идёт только тай-брейком.
+    /// Для слова без prefix-матчей ищем укороченный терм (формы русского слова:
+    /// «мерджить*»→«мердж*»…), но не короче StemMinLen и не чаще MaxTermDf
+    /// корпуса — иначе короткий стем заливает выдачу шумом.
+    /// </summary>
     private List<(MemoryItem Item, double FtsScore)> SearchFtsTable(List<string> words, int limit)
     {
-        // Кавычки внутри слова уже отрезаны splitter'ом; "\"" удваивания не требует.
-        var match = string.Join(" AND ", words.Select(w => "\"" + w + "\""));
+        // Слова ≥MinContentWordLen — «смысловые»: только они считаются в покрытии.
+        // Короткие («в», «ли», «за») в MATCH остаются для recall-кандидатов,
+        // но их однокорневые prefix-матчи не дают очков покрытия.
+        var orderedContent = words
+            .Where(w => w.Length >= MinContentWordLen)
+            .Select(w => w.ToLowerInvariant())
+            .ToList();
+        var contentWords = orderedContent.Distinct().ToList();
+        var phraseNgrams = QueryText.BuildPhraseNgrams(orderedContent);
+
+        // df (document frequency) терма по FTS-индексу + выбор рабочего терма
+        // с prefix-fallback. df=0 у смыслового слова — исключаем из знаменателя
+        // покрытия: такое слово всё равно ничего не различает по токенам.
+        // Слово, которого нет в корпусе вовсе, но чей стем — служебный
+        // («поисктаь» ← «поискать»), тоже не терм: опечатка служебного слова
+        // не должна приносить редкий стем «поиск» и перевешивать тему запроса.
+        var terms = new List<(string Word, string Term, long Df)>();
+        long rowCount = CountRows("mem_item");
+        foreach (var w in contentWords)
+        {
+            var (term, df, dfFull) = ResolveTerm(w, rowCount);
+            if (dfFull == 0 && QueryText.IsNearStopWord(w, MemoryScaffolding))
+                continue;
+            terms.Add((w, term, df));
+        }
+
+        var match = string.Join(" OR ",
+            words.Select(w => "\"" + w + "\"*")
+                 .Concat(terms.Where(t => t.Df > 0 && t.Term != t.Word)
+                              .Select(t => "\"" + t.Term + "\"*")));
 
         using var cmd = _db.CreateCommand();
         // bm25() возвращает отрицательные значения (меньше = лучше) — возвращаем -bm25
-        // как FtsScore, чтобы «больше = релевантнее», и сортируем по убыванию.
+        // как сырой сигнал тай-брейка, сортируем по убыванию.
         cmd.CommandText = $"""
             SELECT mem_item.*, -bm25(mem_item_fts) AS score
             FROM mem_item_fts JOIN mem_item ON mem_item.id = mem_item_fts.rowid
@@ -627,21 +802,148 @@ public sealed class SqliteMemoryStore : IMemoryStore
         cmd.Parameters.AddWithValue("$q", match);
         cmd.Parameters.AddWithValue("$lim", limit);
 
-        var list = new List<(MemoryItem, double)>();
-        using var r = cmd.ExecuteReader();
-        while (r.Read())
-            list.Add((ReadItem(r), r.GetDouble(21)));
+        var rows = new List<(MemoryItem Item, double Raw)>();
+        using (var r = cmd.ExecuteReader())
+            while (r.Read())
+                rows.Add((ReadItem(r), r.GetDouble(r.GetOrdinal("score"))));
+
+        return ScoreByCoverage(rows, terms, rowCount, phraseNgrams);
+    }
+
+    /// <summary>
+    /// Итоговый FtsScore кандидата: IDF-взвешенная доля покрытых смысловых
+    /// слов запроса (0..1 — шкала сравнима с косинусом E5-ветки ранкера).
+    /// Слово «покрыто», если токен контента делит с ним общий стем
+    /// (<see cref="SharesStem"/>). Нормированный raw-score движка даёт ±5%
+    /// тай-брейк внутри одного уровня покрытия; при пустом списке слов
+    /// (знаменатель нулевой) остаётся старый порядок по raw. Слово, которого
+    /// нет в корпусе вовсе (df=0), всё равно входит в знаменатель с весом
+    /// самого редкого терма: иначе вопрос о теме, отсутствующей в памяти
+    /// («мобильное приложение»), получал бы 1.0 за одно служебное слово
+    /// «отвечает» и выглядел как полное совпадение. Точная пара/тройка
+    /// соседних слов запроса («sensor supply») — бонус к покрытию: это тема
+    /// вопроса, а не набор служебных слов вокруг неё.
+    /// </summary>
+    private static List<(MemoryItem, double)> ScoreByCoverage(
+        List<(MemoryItem Item, double Raw)> rows,
+        List<(string Word, string Term, long Df)> terms,
+        long rowCount,
+        HashSet<string>? phraseNgrams = null)
+    {
+        double maxRaw = rows.Count > 0 ? rows.Max(x => x.Raw) : 0.0;
+        // df=0 — слово отсутствует в корпусе: весит как редчайший терм, но
+        // не покрывается ни одним кандидатом (см. doc-комментарий выше).
+        double idfDen = terms.Sum(t => Idf(t.Df > 0 ? t.Df : 1, rowCount));
+        var list = new List<(MemoryItem, double)>(rows.Count);
+        foreach (var (item, raw) in rows)
+        {
+            double num = 0.0;
+            if (idfDen > 0)
+            {
+                var toks = item.Content.Split(WordSeparators,
+                    StringSplitOptions.RemoveEmptyEntries);
+                foreach (var (word, _, df) in terms)
+                {
+                    if (df <= 0) continue;
+                    if (toks.Any(t => SharesStem(word, t)))
+                        num += Idf(df, rowCount);
+                }
+            }
+            double cov = idfDen > 0 ? num / idfDen : 0.0;
+            double score = cov * (1.0 + 0.05 * (maxRaw > 0 ? raw / maxRaw : 0.0));
+            if (phraseNgrams is { Count: > 0 } && cov > 0)
+            {
+                var normalized = QueryText.NormalizeForPhrase(item.Content);
+                var matches = QueryText.CountPhraseMatches(normalized, phraseNgrams);
+                // Один точный биграмм темы весит больше, чем разница покрытия
+                // от служебного слова; кап — чтобы длинная фраза не давала
+                // неограниченный бонус за счёт повторов.
+                if (matches > 0) score += Math.Min(0.6, 0.5 * matches);
+            }
+            if (cov <= 0 && idfDen <= 0)
+                score = maxRaw > 0 ? raw / maxRaw : 0.0;
+            list.Add((item, score));
+        }
+        list.Sort((a, b) => b.Item2 != a.Item2
+            ? b.Item2.CompareTo(a.Item2) : a.Item1.Id.CompareTo(b.Item1.Id));
         return list;
     }
 
-    /// <summary>Fallback без FTS5: все слова через AND LIKE %word% (медленно, только при IsFts=false).</summary>
+    /// <summary>
+    /// Рабочий терм для слова, его df и df самого слова (без стем-фолбэка):
+    /// само слово, если у него есть prefix-матчи в корпусе; иначе укорачиваем
+    /// (мин. StemMinLen) до первого терма с df>0 и умеренной частотой — так
+    /// «Ивану»/«мерджить» находят формы «Иван»/«мердж*» без стеммера. Полное
+    /// слово с частотой за капом не сокращаем: оно само по себе легальный
+    /// частотный терм. dfFull=0 — слова нет в корпусе (опечатка/незнакомое).
+    /// </summary>
+    private (string Term, long Df, long DfFull) ResolveTerm(string word, long rowCount)
+    {
+        long maxDf = Math.Max(MinTermDf, rowCount / MaxTermDfDivisor);
+        long dfFull = MatchCount(word);
+        if (dfFull > 0) return (word, dfFull, dfFull);
+        for (int len = word.Length - 1; len >= Math.Min(StemMinLen, word.Length); len--)
+        {
+            long df = MatchCount(word[..len]);
+            // df за капом (стем слишком частотный) — короче только шумнее.
+            if (df > 0 && df <= maxDf) return (word[..len], df, 0);
+            if (df > maxDf) break;
+        }
+        return (word, 0, 0);
+    }
+
+    /// <summary>См. <see cref="QueryText.SharesStem"/> — стем общий, если
+    /// префикс «достаточен» для длины слова (2/3/4 буквы).</summary>
+    internal static bool SharesStem(string a, string b) => QueryText.SharesStem(a, b);
+
+
+    private static double Idf(long df, long n) =>
+        Math.Log(1.0 + (n - df + 0.5) / (df + 0.5));
+
+    /// <summary>Число строк FTS-индекса, где есть токен с префиксом term.</summary>
+    private long MatchCount(string term)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT count(*) FROM mem_item_fts WHERE mem_item_fts MATCH $m";
+        cmd.Parameters.AddWithValue("$m", "\"" + term + "\"*");
+        return (long)(cmd.ExecuteScalar() ?? 0L);
+    }
+
+    private long CountRows(string table)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = $"SELECT count(*) FROM {table}";
+        return (long)(cmd.ExecuteScalar() ?? 0L);
+    }
+
+    /// <summary>Fallback без FTS5: слова через OR LIKE %word% (зеркалит
+    /// OR-семантику MATCH; медленно, только при IsFts=false). Порядок — тот же
+    /// coverage-скоринг, df считается LIKE-подстрокой (грубее токенов, редкий путь).</summary>
     private List<(MemoryItem Item, double FtsScore)> SearchLikeFallback(List<string> words, int limit)
     {
+        var orderedContent = words
+            .Where(w => w.Length >= MinContentWordLen)
+            .Select(w => w.ToLowerInvariant())
+            .ToList();
+        var contentWords = orderedContent.Distinct().ToList();
+        var phraseNgrams = QueryText.BuildPhraseNgrams(orderedContent);
+        var terms = new List<(string Word, string Term, long Df)>();
+        long rowCount = CountRows("mem_item");
+        foreach (var w in contentWords)
+        {
+            var df = LikeCount(w);
+            // Та же защита, что в FTS-ветке: неизвестное слово со служебным
+            // стемом — опечатка служебного слова, а не тема.
+            if (df == 0 && QueryText.IsNearStopWord(w, MemoryScaffolding))
+                continue;
+            terms.Add((w, w, df));
+        }
+
         using var cmd = _db.CreateCommand();
         var sql = $"SELECT {ItemColumns}, 1.0 AS score FROM mem_item WHERE ";
         for (var i = 0; i < words.Count; i++)
         {
-            if (i > 0) sql += " AND ";
+            if (i > 0) sql += " OR ";
             sql += $"content LIKE $w{i} ESCAPE '\\'";
             cmd.Parameters.AddWithValue($"$w{i}",
                 "%" + EscapeLike(words[i]) + "%");
@@ -650,11 +952,20 @@ public sealed class SqliteMemoryStore : IMemoryStore
         cmd.Parameters.AddWithValue("$lim", limit);
         cmd.CommandText = sql;
 
-        var list = new List<(MemoryItem, double)>();
-        using var r = cmd.ExecuteReader();
-        while (r.Read())
-            list.Add((ReadItem(r), r.GetDouble(21)));
-        return list;
+        var rows = new List<(MemoryItem Item, double Raw)>();
+        using (var r = cmd.ExecuteReader())
+            while (r.Read())
+                rows.Add((ReadItem(r), 1.0));
+        return ScoreByCoverage(rows, terms, rowCount, phraseNgrams);
+    }
+
+    /// <summary>Число строк, где content содержит подстроку word (LIKE).</summary>
+    private long LikeCount(string word)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT count(*) FROM mem_item WHERE content LIKE $w ESCAPE '\\'";
+        cmd.Parameters.AddWithValue("$w", "%" + EscapeLike(word) + "%");
+        return (long)(cmd.ExecuteScalar() ?? 0L);
     }
 
     private static string EscapeLike(string word) =>

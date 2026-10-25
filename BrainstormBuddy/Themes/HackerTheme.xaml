@@ -44,6 +44,11 @@
     <SolidColorBrush x:Key="TextDimBrush" Color="#7f8ea8"/>
     <SolidColorBrush x:Key="TextFaintBrush" Color="#6d7f9e"/>
 
+    <!-- §7: подсветка совпадения в транскрипте/резюме - золото бренда,
+         непрозрачное, с тёмным текстом: читаемо и в тёмной, и в светлой теме. -->
+    <SolidColorBrush x:Key="SearchHighlightBrush" Color="#f4c542"/>
+    <SolidColorBrush x:Key="SearchHighlightTextBrush" Color="#1a1a1a"/>
+
     <!-- Акцент: индиго linear-gradient(135deg, #6f8cff, #5563e6) -->
     <SolidColorBrush x:Key="AccentBrush" Color="#6f8cff"/>
     <SolidColorBrush x:Key="AccentDimBrush" Color="#5563e6"/>
@@ -74,4 +79,13 @@
         <GradientStop Color="#161f30" Offset="0"/>
         <GradientStop Color="#131b2a" Offset="1"/>
     </LinearGradientBrush>
+
+    <!-- Markdown-разметка в ответах: фон и рамка кода, цитаты, таблицы, ссылки. -->
+    <SolidColorBrush x:Key="MarkdownCodeBgBrush" Color="#10192b"/>
+    <SolidColorBrush x:Key="MarkdownCodeBorderBrush" Color="#2f3c5a"/>
+    <SolidColorBrush x:Key="MarkdownQuoteBarBrush" Color="#5563e6"/>
+    <SolidColorBrush x:Key="MarkdownQuoteTextBrush" Color="#9fb0cc"/>
+    <SolidColorBrush x:Key="MarkdownTableBorderBrush" Color="#2f3c5a"/>
+    <SolidColorBrush x:Key="MarkdownTableHeaderBgBrush" Color="#1b2540"/>
+    <SolidColorBrush x:Key="MarkdownLinkBrush" Color="#8fa8ff"/>
 </ResourceDictionary>

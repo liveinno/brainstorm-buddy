@@ -66,7 +66,10 @@ public static class ResolveMemoryApiClient
             SttBeamSize = config.Api.SttBeamSize,
             SttVadFilter = config.Api.SttVadFilter,
             ReasoningEffortOverride = config.Api.ReasoningEffortOverride,
-            CustomProviders = config.Api.CustomProviders
+            CustomProviders = config.Api.CustomProviders,
+            // refresh_token подписки нужен и отдельному клиенту: без него
+            // истёкший access_token памяти не обновить (401 без попытки).
+            CodexRefreshToken = config.Api.CodexRefreshToken
         };
 
         try

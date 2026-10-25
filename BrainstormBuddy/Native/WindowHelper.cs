@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using BrainstormBuddy.Config;
 
 namespace BrainstormBuddy.Native;
 
@@ -97,5 +98,94 @@ public static class WindowHelper
         var source = HwndSource.FromHwnd(hwnd);
         source?.AddHook(hook);
         return hwnd;
+    }
+}
+
+/// <summary>
+/// Валидация и восстановление сохранённой геометрии окон (DIP).
+/// Сохраняем/применяем только конечные значения в нормальном состоянии;
+/// NaN/Infinity, свёрнутое окно и полностью уехавшая за экран геометрия
+/// отбрасываются. Частично видимое окно подтягивается в границы виртуального
+/// рабочего стола, чтобы его нельзя было «потерять» после смены мониторов.
+/// </summary>
+public static class WindowGeometryHelper
+{
+    /// <summary>Минимальная видимая часть окна, чтобы считать позицию не потерянной.</summary>
+    private const double MinVisibleWidth = 96;
+    private const double MinVisibleHeight = 40;
+
+    private static Rect VirtualScreen => new(
+        SystemParameters.VirtualScreenLeft,
+        SystemParameters.VirtualScreenTop,
+        SystemParameters.VirtualScreenWidth,
+        SystemParameters.VirtualScreenHeight);
+
+    /// <summary>
+    /// Проверить сохранённую геометрию и вернуть прямоугольник для восстановления.
+    /// false — данных нет/они невалидны: окно открывается по прежним правилам.
+    /// </summary>
+    public static bool TryGetRestoreRect(
+        WindowGeometryConfig? saved, double minWidth, double minHeight, out Rect rect)
+        => TryGetRestoreRect(saved, minWidth, minHeight,
+            double.PositiveInfinity, double.PositiveInfinity, out rect);
+
+    /// <summary>Вариант с верхними границами окна (Window.MaxWidth/MaxHeight).</summary>
+    public static bool TryGetRestoreRect(
+        WindowGeometryConfig? saved, double minWidth, double minHeight,
+        double maxWidth, double maxHeight, out Rect rect)
+    {
+        rect = Rect.Empty;
+        if (saved is null || !saved.IsComplete) return false;
+        double left = saved.Left!.Value, top = saved.Top!.Value;
+        double width = saved.Width!.Value, height = saved.Height!.Value;
+        if (!double.IsFinite(left) || !double.IsFinite(top) ||
+            !double.IsFinite(width) || !double.IsFinite(height)) return false;
+        if (width < minWidth || height < minHeight) return false;
+
+        var screen = VirtualScreen;
+        if (screen.IsEmpty || screen.Width <= 0 || screen.Height <= 0) return false;
+
+        // Окно больше виртуального экрана/MaxWidth — ужимаем (минимумы XAML всё равно сильнее).
+        double limitWidth = double.IsFinite(maxWidth) && maxWidth > 0
+            ? Math.Min(screen.Width, maxWidth) : screen.Width;
+        double limitHeight = double.IsFinite(maxHeight) && maxHeight > 0
+            ? Math.Min(screen.Height, maxHeight) : screen.Height;
+        width = Math.Min(width, Math.Max(minWidth, limitWidth));
+        height = Math.Min(height, Math.Max(minHeight, limitHeight));
+
+        // Полностью/почти полностью за экраном — восстановление невозможно.
+        var visible = Rect.Intersect(new Rect(left, top, width, height), screen);
+        if (visible.IsEmpty || visible.Width < MinVisibleWidth || visible.Height < MinVisibleHeight)
+            return false;
+
+        // Частично видимое окно подтягиваем целиком в границы виртуального экрана.
+        left = Math.Clamp(left, screen.Left, Math.Max(screen.Left, screen.Right - width));
+        top = Math.Clamp(top, screen.Top, Math.Max(screen.Top, screen.Bottom - height));
+        rect = new Rect(left, top, width, height);
+        return true;
+    }
+
+    /// <summary>
+    /// Снять текущую геометрию в конфиг. false — окно свёрнуто/не загружено/
+    /// значения невалидны; в этом случае конфиг не трогаем.
+    /// </summary>
+    public static bool TryCapture(Window window, WindowGeometryConfig target, double minWidth, double minHeight)
+    {
+        if (window.WindowState != WindowState.Normal) return false;
+        if (!window.IsLoaded) return false;
+        double left = window.Left, top = window.Top;
+        double width = window.Width, height = window.Height;
+        if (!double.IsFinite(left) || !double.IsFinite(top) ||
+            !double.IsFinite(width) || !double.IsFinite(height)) return false;
+        if (width < minWidth || height < minHeight) return false;
+
+        var screen = VirtualScreen;
+        if (screen.IsEmpty || screen.Width <= 0 || screen.Height <= 0) return false;
+        var visible = Rect.Intersect(new Rect(left, top, width, height), screen);
+        if (visible.IsEmpty || visible.Width < MinVisibleWidth || visible.Height < MinVisibleHeight)
+            return false;
+
+        target.Set(left, top, width, height);
+        return true;
     }
 }

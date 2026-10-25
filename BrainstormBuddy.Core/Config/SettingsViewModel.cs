@@ -380,11 +380,11 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Advanced.HistorySize = value; OnPropertyChanged(); }
     }
 
-    /// <summary>Максимум токенов ответа (config: Advanced.MaxResponseTokens, лимит 50..4096).</summary>
+    /// <summary>Максимум токенов ответа (config: Advanced.MaxResponseTokens, лимит 50..32768).</summary>
     public int MaxResponseTokens
     {
         get => _config.Advanced.MaxResponseTokens;
-        set { _config.Advanced.MaxResponseTokens = Math.Clamp(value, 50, 4096); OnPropertyChanged(); }
+        set { _config.Advanced.MaxResponseTokens = Math.Clamp(value, 50, 32768); OnPropertyChanged(); }
     }
 
     public bool StreamLlmAnswersVm
@@ -522,6 +522,16 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Ui.WindowPosition = value; OnPropertyChanged(); }
     }
 
+    /// <summary>Пользовательская геометрия окна: запоминать положение/размер (вкл. по умолчанию).</summary>
+    public bool RememberWindowGeometry
+    {
+        get => _config.Ui.RememberWindowGeometry;
+        set { _config.Ui.RememberWindowGeometry = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Оверлей перетащили → WindowPosition стал "Custom"; обновляем комбо в открытых настройках.</summary>
+    public void NotifyWindowPositionChanged() => OnPropertyChanged(nameof(WindowPosition));
+
 
     public string Theme
     {
@@ -585,6 +595,14 @@ public class SettingsViewModel : INotifyPropertyChanged
     {
         get => _config.Ui.StealthProcessName;
         set { _config.Ui.StealthProcessName = value?.Trim() ?? string.Empty; OnPropertyChanged(); }
+    }
+
+    /// <summary>Маркер пузыря «после паузы LLM» — текст в чате/журнале вместо
+    /// свалки накопленных реплик. Пусто = локализованный дефолт.</summary>
+    public string PauseResumeMarker
+    {
+        get => _config.Ui.PauseResumeMarker;
+        set { _config.Ui.PauseResumeMarker = value?.Trim() ?? string.Empty; OnPropertyChanged(); }
     }
 
     public string ToggleVisibilityHotkey
@@ -829,6 +847,22 @@ public class SettingsViewModel : INotifyPropertyChanged
     {
         get => _config.Ui.ShowQuestionTimingLine;
         set { _config.Ui.ShowQuestionTimingLine = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Футер оверлея «Токены за встречу · Контекст · часы» — отключаемый.</summary>
+    public bool ShowSessionStats
+    {
+        get => _config.Ui.ShowSessionStats;
+        set { _config.Ui.ShowSessionStats = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Источники прошлых встреч под ответом (2.33.0): одна компактная
+    /// горизонтальная строка; снятая галка скрывает блок целиком. Старые конфиги
+    /// без поля получают true — источники остаются видимыми.</summary>
+    public bool ShowMeetingSources
+    {
+        get => _config.Ui.ShowMeetingSources;
+        set { _config.Ui.ShowMeetingSources = value; OnPropertyChanged(); }
     }
 
     // Инженерный режим: показывать на главном оверлее тонкие настройки (слайдеры паузы/чанка,
@@ -1095,6 +1129,24 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Memory.EmbeddingsMode = value; OnPropertyChanged(); }
     }
 
+    /// <summary>Лимит символов извлечения фактов из ОДНОГО документа
+    /// (Config.Attachments.FactExtractMaxChars; 0 → боевой дефолт 700 000).
+    /// Документ больше лимита пропускается с заметкой, остальные извлекаются.</summary>
+    public int FactExtractMaxChars
+    {
+        get => _config.Attachments.FactExtractMaxChars;
+        set
+        {
+            _config.Attachments.FactExtractMaxChars = Math.Clamp(value, 10_000, 5_000_000);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(FactExtractMaxCharsText));
+        }
+    }
+
+    /// <summary>Подпись лимита: «120 000 симв.» — точка рядом со слайдером.</summary>
+    public string FactExtractMaxCharsText =>
+        $"{_config.Attachments.FactExtractMaxChars:N0}";
+
     public string MemoryEmbeddingsModel
     {
         get => _config.Memory.EmbeddingsModel;
@@ -1121,10 +1173,66 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Memory.AutoRecall = value; OnPropertyChanged(); }
     }
 
+    /// <summary>Поиск по журналам прошлых встреч в контексте ответа (2.33.0).
+    /// Старые конфиги без поля получают true — как в версиях до 2.33.</summary>
+    public bool MeetingSearchEnabled
+    {
+        get => _config.Memory.MeetingSearchEnabled;
+        set { _config.Memory.MeetingSearchEnabled = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Таймаут поиска по встречам, мс (2.33.0): 500-10000, дефолт 1500.
+    /// Значение из конфига клампится при чтении и записи, чтобы ручная правка
+    /// config.json не подвесила ответ на неразумное время.</summary>
+    public int MeetingSearchTimeoutMs
+    {
+        get => Math.Clamp(_config.Memory.MeetingSearchTimeoutMs, 500, 10_000);
+        set
+        {
+            _config.Memory.MeetingSearchTimeoutMs = Math.Clamp(value, 500, 10_000);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(MeetingSearchTimeoutMsText));
+        }
+    }
+
+    /// <summary>Подпись текущего таймаута: «1 500 ms».</summary>
+    public string MeetingSearchTimeoutMsText => $"{MeetingSearchTimeoutMs:N0} ms";
+
     public int MemoryRecallMaxTokens
     {
         get => _config.Memory.RecallMaxTokens;
         set { _config.Memory.RecallMaxTokens = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Бюджет памяти на автоматический ответ (промпт каждой реплики).
+    /// Клампится 2000..16000: ниже — блок бесполезен, выше — съедает контекст LLM.</summary>
+    public int MemoryAutoRecallBudget
+    {
+        get => _config.Memory.AutoRecallBudgetTokens;
+        set
+        {
+            _config.Memory.AutoRecallBudgetTokens = Math.Clamp(value, 2000, 16000);
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Дополнительный бюджет, когда модель ищет сама (встроенные
+    /// инструменты памяти): верхняя граница общего контекста памяти.</summary>
+    public int MemoryExtraSearchBudget
+    {
+        get => _config.Memory.ExtraSearchBudgetTokens;
+        set
+        {
+            _config.Memory.ExtraSearchBudgetTokens = Math.Clamp(value, 4000, 64000);
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Встроенные инструменты memory.search/meetings.search в чате.</summary>
+    public bool MemoryBuiltinSearchTools
+    {
+        get => _config.Memory.BuiltinSearchTools;
+        set { _config.Memory.BuiltinSearchTools = value; OnPropertyChanged(); }
     }
 
     public int MemoryRecallMaxItems
@@ -1132,6 +1240,50 @@ public class SettingsViewModel : INotifyPropertyChanged
         get => _config.Memory.RecallMaxItems;
         set { _config.Memory.RecallMaxItems = value; OnPropertyChanged(); }
     }
+
+    /// <summary>§6.4: позиция слайдера «Максимум фактов» — 1..50; 51 = «Все»
+    /// (все ACTIVE факты выбранного scope в пределах бюджета токенов; в конфиге
+    /// хранится 0). Верхние 50 — честный предел «обычной» выдачи: больше
+    /// контекст не влезает и без режима «Все».</summary>
+    public int MemoryRecallMaxItemsUi
+    {
+        get => _config.Memory.RecallMaxItems <= 0 ? 51 : Math.Min(50, _config.Memory.RecallMaxItems);
+        set
+        {
+            _config.Memory.RecallMaxItems = value >= 51 ? 0 : Math.Clamp(value, 1, 50);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(MemoryRecallMaxItems));
+            OnPropertyChanged(nameof(MemoryRecallMaxItemsText));
+        }
+    }
+
+    /// <summary>§6.4: интенсивность извлечения — 0=low,1=medium,2=high.</summary>
+    public int MemoryExtractionIntensityIndex
+    {
+        get => (_config.Memory.ExtractionIntensity ?? "medium").Trim().ToLowerInvariant() switch
+        {
+            "low" => 0,
+            "high" => 2,
+            _ => 1,
+        };
+        set
+        {
+            _config.Memory.ExtractionIntensity = value switch
+            {
+                0 => "low",
+                2 => "high",
+                _ => "medium",
+            };
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Подпись текущего значения «Максимум фактов»: число или «Все»
+    /// (без лимита по числу, но в пределах бюджета токенов памяти).</summary>
+    public string MemoryRecallMaxItemsText =>
+        _config.Memory.RecallMaxItems <= 0
+            ? UiText.Tr("Все (в пределах бюджета)", "All (within budget)")
+            : _config.Memory.RecallMaxItems.ToString();
 
     public string MemoryTranscriptRetention
     {
@@ -1479,6 +1631,74 @@ public class SettingsViewModel : INotifyPropertyChanged
 
     private void UpdateLlmLogText()
         => LlmLogText = string.Join(Environment.NewLine, _llmLogLines);
+
+    // ===== MCP =====
+    public bool McpEnabled
+    {
+        get => _config.Mcp.Enabled;
+        set { _config.Mcp.Enabled = value; OnPropertyChanged(); }
+    }
+
+    private readonly System.Collections.ObjectModel.ObservableCollection<McpIncomingRow> _mcpIncoming = new();
+    private readonly System.Collections.ObjectModel.ObservableCollection<McpOutgoingRow> _mcpOutgoing = new();
+    private readonly System.Collections.ObjectModel.ObservableCollection<McpJobRow> _mcpJobs = new();
+
+    public System.Collections.ObjectModel.ObservableCollection<McpIncomingRow> McpIncomingConnections => _mcpIncoming;
+    public System.Collections.ObjectModel.ObservableCollection<McpOutgoingRow> McpOutgoingServers => _mcpOutgoing;
+    public System.Collections.ObjectModel.ObservableCollection<McpJobRow> McpPendingJobs => _mcpJobs;
+
+    /// <summary>Хранилище токенов MCP — нужно для маски токена в карточке (может быть null).</summary>
+    public BrainstormBuddy.Core.Mcp.McpPermissionStore? McpPermissions { get; set; }
+
+    /// <summary>Имя входящего канала (named pipe) — показывается в карточке подключения.</summary>
+    public string? McpIncomingPipe { get; set; }
+
+    /// <summary>Корень данных приложения — пути, доступные подключению.</summary>
+    public string? McpDataRoot { get; set; }
+
+    /// <summary>Маска токена подключения для карточки (сам токен не показываем).</summary>
+    private string MaskToken(string connectionId)
+    {
+        var store = McpPermissions;
+        if (store == null) return "неизвестно";
+        try
+        {
+            if (!store.HasGrant(connectionId)) return "не выдан";
+            var token = store.TryRevealToken(connectionId);
+            if (string.IsNullOrEmpty(token)) return "не выдан";
+            return "••••" + token[^4..];
+        }
+        catch { return "неизвестно"; }
+    }
+
+    /// <summary>Перечитать карточки MCP из конфига (после мастера/отзыва).</summary>
+    public void RefreshMcpLists()
+    {
+        _mcpIncoming.Clear();
+        foreach (var c in _config.Mcp.Connections)
+            _mcpIncoming.Add(new McpIncomingRow
+            {
+                Id = c.Id,
+                Name = string.IsNullOrWhiteSpace(c.Name) ? c.ClientKind : c.Name,
+                ScopeSummary = c.Scope,
+                StatusText = c.Suspended ? "Suspended" : (c.LastSeenUtc == null ? "Never seen" : $"Seen {c.LastSeenUtc:yyyy-MM-dd HH:mm} UTC"),
+                RightsText = c.Rights.Count == 0
+                    ? "нет прав"
+                    : string.Join(", ", c.Rights) + (c.MemoryIncluded ? " + память" : ""),
+                ChannelText = McpIncomingPipe == null
+                    ? "канал не запущен"
+                    : $"named pipe {McpIncomingPipe}",
+                TokenText = MaskToken(c.Id),
+                PathsText = McpDataRoot ?? "",
+            });
+        _mcpOutgoing.Clear();
+        foreach (var s in _config.Mcp.OutgoingServers)
+            _mcpOutgoing.Add(new McpOutgoingRow
+            {
+                Id = s.Id, Name = s.Name, Enabled = s.Enabled,
+                StatusText = s.Enabled ? s.Transport : "Disabled",
+            });
+    }
 }
 
 public class LlmLogEntry
@@ -1501,4 +1721,65 @@ public class LlmLogEntry
         var ts = Timestamp.ToString("HH:mm:ss");
         return $"[{ts}] SCENARIO={ScenarioName} AGENT={AgentName} STATUS={(IsError ? "ERR" : "200")} TIME={LatencyMs}ms\nSYSTEM: {SystemPrompt}\nUSER: {UserText}\nRESPONSE: {DisplayText}\n";
     }
+}
+
+/// <summary>
+/// Строка карточки входящего подключения. Статус (текст + вид) меняется
+/// живьём, когда приходит реальный запрос агента, поэтому строка умеет
+/// уведомлять UI (INPC) — карточка обновляется без переоткрытия окна.
+/// </summary>
+public sealed class McpIncomingRow : INotifyPropertyChanged
+{
+    private string _statusText = "";
+    private string _statusKind = "muted";
+
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string ScopeSummary { get; set; } = "";
+
+    /// <summary>Человекочитаемый статус подключения («Подключено · 20.10.2026 19:14»).</summary>
+    public string StatusText
+    {
+        get => _statusText;
+        set { if (_statusText == value) return; _statusText = value; Changed(nameof(StatusText)); }
+    }
+
+    /// <summary>Вид статуса для окраски: muted|ok|warn|error.</summary>
+    public string StatusKind
+    {
+        get => _statusKind;
+        set { if (_statusKind == value) return; _statusKind = value; Changed(nameof(StatusKind)); }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>Права подключения (read, add-fact, change, delete) + память.</summary>
+    public string RightsText { get; set; } = "";
+
+    /// <summary>Канал, по которому агент подключается (named pipe / HTTP).</summary>
+    public string ChannelText { get; set; } = "";
+
+    /// <summary>Токен в маскированном виде + состояние выдачи.</summary>
+    public string TokenText { get; set; } = "";
+
+    /// <summary>Пути данных, доступные подключению.</summary>
+    public string PathsText { get; set; } = "";
+
+    private void Changed(string property) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(property));
+}
+
+public sealed class McpOutgoingRow
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string StatusText { get; set; } = "";
+    public bool Enabled { get; set; }
+}
+
+public sealed class McpJobRow
+{
+    public string Id { get; set; } = "";
+    public string Summary { get; set; } = "";
+    public string StateText { get; set; } = "";
 }

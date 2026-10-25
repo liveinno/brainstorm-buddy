@@ -116,6 +116,16 @@ public sealed class MemoryJobWorker
             return true;
         }
 
+        // «fatal: …» — безусловный провал без ретраев (битый payload, встреча
+        // удалена): повторять бессмысленно, сразу failed.
+        if (error.StartsWith("fatal:", StringComparison.OrdinalIgnoreCase))
+        {
+            var reason = error["fatal:".Length..].TrimStart();
+            _store.FinishJob(job.Id, reason);
+            _log?.Warn($"memory job {job.Id} ({job.Kind}) failed permanently (fatal): {reason}", LogCategory);
+            return true;
+        }
+
         // ClaimJob уже инкрементировал Attempts: 1..MaxAttempts.
         if (job.Attempts >= MaxAttempts)
         {
@@ -129,9 +139,12 @@ public sealed class MemoryJobWorker
             // Persistence: InMemoryMemoryStore персистит мутации по ссылке;
             // SqliteMemoryStore — identity-map, поля сливаются write-back'ом
             // на следующих ClaimJob/ListJobs/RequeueStale (подтверждено M2).
+            var delay = RetryBase * job.Attempts;
             job.Status = "pending";
             job.Error = error;
-            job.RunAfterUtc = DateTime.UtcNow + RetryBase * job.Attempts;
+            job.RunAfterUtc = DateTime.UtcNow + delay;
+            _log?.Info($"memory job {job.Id} ({job.Kind}): попытка {job.Attempts}/{MaxAttempts} не удалась, " +
+                $"повтор через {delay.TotalSeconds:0}s — {error}", LogCategory);
         }
         return true;
     }

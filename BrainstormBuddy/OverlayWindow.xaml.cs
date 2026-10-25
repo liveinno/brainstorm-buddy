@@ -10,11 +10,15 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using BrainstormBuddy.Config;
 using BrainstormBuddy.Native;
+using BrainstormBuddy.Transcription;
 using Key = System.Windows.Input.Key;
 
 namespace BrainstormBuddy;
 
 public enum TimelineState { Idle, Recording, Sending, Received, ChunkSent }
+
+/// <summary>Вид стекового тоста оверлея: определяет акцентный цвет и время автозакрытия.</summary>
+public enum ToastKind { Info, Progress, Success, Error }
 
 public partial class OverlayWindow : Window
 {
@@ -25,7 +29,58 @@ public partial class OverlayWindow : Window
     private DispatcherTimer _blinkTimer;
     private bool _blinkOn;
     private bool _llmBlink;
-    private QaPair? _sendingItem;
+
+    // Геометрия окна (позиция/размер): дебаунс-сохранение после ресайза и
+    // восстановление сохранённого прямоугольника в ApplyUiConfig/Initialize.
+    private DispatcherTimer? _geometrySaveTimer;
+    private bool _geometryReady;
+    private bool _restoringGeometry;
+    private Rect? _restoredGeometry;
+    private double _lastNormalWidth;
+    private double _lastNormalHeight;
+
+    // Активные LLM-запросы по id — замена единственного _sendingItem:
+    // параллельные ask'и больше не сражаются за одну ссылку на пузырь.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, PendingRequest> _pendingRequests = new();
+    private int _lastRequestId;
+
+    /// <summary>Зарегистрированный запрос к LLM: конкретный пузырь + отмена + признак ручного ввода.</summary>
+    public sealed class PendingRequest
+    {
+        public PendingRequest(int requestId, QaPair pair, CancellationTokenSource cts, bool isManual, string question)
+        {
+            RequestId = requestId;
+            Pair = pair;
+            Cts = cts;
+            IsManual = isManual;
+            Question = question;
+        }
+        public int RequestId { get; }
+        public QaPair Pair { get; }
+        public CancellationTokenSource Cts { get; }
+        public bool IsManual { get; }
+        public string Question { get; }
+    }
+
+    /// <summary>Активные запросы (статус «Думаю над…» деривируется отсюда у lead).</summary>
+    public IReadOnlyCollection<PendingRequest> PendingRequests =>
+        (IReadOnlyCollection<PendingRequest>)_pendingRequests.Values;
+
+    /// <summary>Привязать пузырь к новому запросу: RequestId (Interlocked), CTS отмены,
+    /// IsManual + исходный вопрос для «Повторить». Потокобезопасно.</summary>
+    public PendingRequest BeginRequest(QaPair pair, bool isManual)
+    {
+        var id = System.Threading.Interlocked.Increment(ref _lastRequestId);
+        var req = new PendingRequest(id, pair, new CancellationTokenSource(), isManual, pair.Question);
+        pair.RequestId = id;
+        pair.IsManual = isManual;
+        pair.RequestQuestion = pair.Question;
+        _pendingRequests[id] = req;
+        return req;
+    }
+
+    /// <summary>Снять запрос из активных (идемпотентно: false, если уже снят).</summary>
+    public bool EndRequest(PendingRequest req) => _pendingRequests.TryRemove(req.RequestId, out _);
 
     // Timeline (2 min, 500ms per sample = 240 samples).
     // Рендер — эквалайзер как в design/main frame: бар 3px + промежуток 1px,
@@ -67,6 +122,10 @@ public partial class OverlayWindow : Window
     {
         InitializeComponent();
 
+        _geometrySaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(650) };
+        _geometrySaveTimer.Tick += OnGeometrySaveTick;
+        SizeChanged += OnGeometrySizeChanged;
+
         // Дизайнерские pressed-иконки BuddyV2: зажатая кнопка показывает Icon*Pressed-арт.
         PressedIconSwap.Wire(AutoScrollButton, "IconAutoScroll");
         PressedIconSwap.Wire(SettingsButton, "IconSettings");
@@ -75,6 +134,7 @@ public partial class OverlayWindow : Window
         PressedIconSwap.Wire(HideButton, "IconClose");
         PressedIconSwap.Wire(ExportTransBtn, "IconExport");
         PressedIconSwap.Wire(ExportSummaryBtn, "IconAiProtocol");
+        PressedIconSwap.Wire(AttachFilesButton, "BuddyAttachment.Icon.Default");
         PressedIconSwap.Wire(ScreenShotButton, "IconScreenshot");
         PressedIconSwap.Wire(CloakButton, "IconCloak");
         PressedIconSwap.Wire(EraseButton, "IconErase");
@@ -82,6 +142,7 @@ public partial class OverlayWindow : Window
         PressedIconSwap.Wire(LlmOffButton, "IconLlm");
         PressedIconSwap.Wire(SpeakerMuteButton, "IconSpeaker");
         PressedIconSwap.Wire(MemoryButton, "IconMemory");
+        PressedIconSwap.Wire(AttachFilesButton, "BuddyAttachment.Icon.Default");
         PressedIconSwap.Wire(LiveSendBtn, "IconSendNow");
         PressedIconSwap.Wire(SlowSpeechBtn, "BuddyExtra.Icon.SpeechSlow.Default");
         PressedIconSwap.Wire(ResetSpeedBtn, "BuddyExtra.Icon.SpeechReset.Default");
@@ -105,7 +166,32 @@ public partial class OverlayWindow : Window
             DrawTimelineRuler();
             ApplyTimelineCollapsed(App.Current.Config.Ui.TimelineCollapsed);
         };
+
+        // Ctrl+V по изображению в черновик — перехват до текстовой вставки (ТЗ §3).
+        System.Windows.DataObject.AddPastingHandler(ChatInputBox, OnChatInputPaste);
+        // WPF-TextBox: Paste.CanExecute = false для image-only буфера (нет
+        // AcceptsRichContent) → DataObject.Pasting не поднимается и OnChatInputPaste
+        // недостижим даже реальным Ctrl+V / пунктом «Вставить» (disabled).
+        // Свой CommandBinding объявляет команду выполнимой, когда в буфере
+        // есть картинки — текстовая вставка идёт дефолтным путём.
+        ChatInputBox.CommandBindings.Add(new System.Windows.Input.CommandBinding(
+            System.Windows.Input.ApplicationCommands.Paste,
+            (_, _) =>
+            {
+                AttachImageFlow();
+                App.Current.ChatImages?.RequestAddDraftFromClipboard();
+            },
+            (s, e) =>
+            {
+                if (ChatImageCodec.GetClipboardImages().Count > 0)
+                {
+                    e.CanExecute = true;
+                    e.Handled = true; // картинка — наша команда, дефолт не зовём
+                }
+            }));
+        Loaded += (_, _) => AttachImageFlow();
     }
+
 
     // Фиолетовая отсечка «чанк ушёл в STT» (инженерная фича): MainLoop дёргает PulseChunkMarker
     // с фонового потока, ближайший тик таймлайна рисует один столбик на всю высоту. Удобно на
@@ -474,6 +560,7 @@ public partial class OverlayWindow : Window
         _uiConfig = ui;
         Opacity = 1.0;                       // окно всегда 100% — прозрачность только у фон-слоя
         BgLayer.Opacity = ui.WindowOpacity;
+        RestoreSavedGeometry(ui);
         ApplyPosition(ui.WindowPosition);
         UpdateBorder();
         UpdateFontSize();
@@ -501,6 +588,79 @@ public partial class OverlayWindow : Window
             ApplySilenceDisplay(App.Current.Config.Audio);
             RefreshAutoScrollButton();
         };
+
+        // Чипы вложений: ItemsSource вручную (ItemsControl переименован — коллекция и так публичная),
+        // счётчик «Ещё N» после каждого layout-прохода.
+        AttachmentChipsList.ItemsSource = AttachmentChips;
+        AttachmentChipsList.LayoutUpdated += (_, _) => UpdateMoreAttachmentsButton();
+
+        // P0/§4 аудита: якорь читаемого места при выкл. автоскролле. Recapture —
+        // ТОЛЬКО на пользовательскую прокрутку (OverlayScrollClassifier: VerticalChange≠0
+        // + свежий вводный маркер, либо немаркированный сдвиг без изменения extent).
+        // Layout/programmatic ScrollChanged якорь не трогают — стабилизация через
+        // RestoreAnchorIfNeeded (LayoutUpdated возвращает якорь, допуск ≤0.5 DIP).
+        HistoryScroll.ScrollChanged += (_, e) =>
+        {
+            if (_autoScroll)
+            {
+                // Контент вырос — стриминг ответа или перерисовка markdown: держим низ
+                // списка. ScrollToEnd() вызывается до пересчёта высоты и попадает в
+                // устаревшую высоту, поэтому подпираем его по факту изменения extent:
+                // событие приходит уже после пересчёта.
+                if (e.ExtentHeightChange > 0) ProgrammaticScrollToEnd();
+                return;
+            }
+            int now = Environment.TickCount;
+            bool userMarked = OverlayScrollClassifier.IsMarkFresh(_lastUserScrollTick, now);
+            bool programmatic = _suppressAnchorRecapture
+                || OverlayScrollClassifier.IsMarkFresh(_lastProgrammaticScrollTick, now);
+            if (OverlayScrollClassifier.IsUserScroll(
+                    userMarked, programmatic, e.VerticalChange, e.ExtentHeightChange, e.ViewportHeightChange))
+                CaptureScrollAnchor();
+        };
+        // Маркеры пользовательского ввода: колесо, перетаскивание бегунка/стрелки/
+        // дорожка ScrollBar (ScrollBar.ScrollEvent — routed, всплывает из шаблона),
+        // клавиши прокрутки, touch-панорамирование. Только эти события дают право
+        // переснять якорь — программные ScrollTo* и layout-индуцированные сдвиги нет.
+        HistoryScroll.PreviewMouseWheel += (_, _) => MarkUserScroll();
+        HistoryScroll.AddHandler(System.Windows.Controls.Primitives.ScrollBar.ScrollEvent, (System.Windows.Controls.Primitives.ScrollEventHandler)((_, _) => MarkUserScroll()));
+        HistoryScroll.PreviewKeyDown += (_, e) =>
+        {
+            switch (e.Key)
+            {
+                case Key.PageUp: case Key.PageDown:
+                case Key.Up: case Key.Down:
+                case Key.Home: case Key.End:
+                case Key.Space:
+                    MarkUserScroll();
+                    break;
+            }
+        };
+        HistoryScroll.PreviewTouchMove += (_, _) => MarkUserScroll();
+        HistoryScroll.LayoutUpdated += (_, _) =>
+        {
+            if (_autoScroll)
+            {
+                // Контент изменился (стриминг ответа, перерисовка markdown) — держим низ
+                // списка. Перерисовка меняет высоту пузыря уже после того, как ScrollChanged
+                // увидел старый размер, поэтому сверяемся с фактическим extent на каждом
+                // проходе layout: это последняя точка, где высота уже пересчитана.
+                double extent = HistoryScroll.ExtentHeight;
+                if (Math.Abs(extent - _lastAutoScrollExtent) > 0.5)
+                {
+                    _lastAutoScrollExtent = extent;
+                    ProgrammaticScrollToEnd();
+                }
+                return;
+            }
+            if (!RestoreAnchorIfNeeded() && ShouldRecaptureAnchor())
+                CaptureScrollAnchor();
+        };
+        HistoryScroll.SizeChanged += (_, _) => { if (_autoScroll) ProgrammaticScrollToEnd(); };
+
+        _geometryReady = true;
+        _lastNormalWidth = Width;
+        _lastNormalHeight = Height;
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -523,8 +683,9 @@ public partial class OverlayWindow : Window
     {
         if (msg != WM_NCHITTEST) return IntPtr.Zero;
 
-        // В сквозном режиме окно полностью прозрачно для кликов
-        if (_clickThroughApplied)
+        // В сквозном режиме окно полностью прозрачно для кликов.
+        // Исключение — карточка подтверждения: её кнопки должны принимать клик.
+        if (_clickThroughApplied && !_approvalInteractive)
         {
             handled = true;
             return (IntPtr)HTTRANSPARENT;
@@ -581,7 +742,10 @@ public partial class OverlayWindow : Window
                 el is System.Windows.Controls.ComboBox ||
                 el is System.Windows.Controls.Primitives.TextBoxBase ||
                 el is System.Windows.Controls.Slider ||
-                el is System.Windows.Controls.Primitives.Thumb)
+                el is System.Windows.Controls.Primitives.Thumb ||
+                // MarkdownView (ответ LLM с разметкой): его RichTextBox и так ловится
+                // как TextBoxBase, но сам компонент тоже интерактивен (выделение/копирование).
+                el is BrainstormBuddy.Controls.MarkdownView)
                 return true;
             el = System.Windows.Media.VisualTreeHelper.GetParent(el);
         }
@@ -604,12 +768,22 @@ public partial class OverlayWindow : Window
         {
             if (wasCloaked) WindowHelper.ApplyClickThrough(this);
         }
-        if (Left != _uiConfig.WindowPositionX || Top != _uiConfig.WindowPositionY)
+        if (!_uiConfig.RememberWindowGeometry)
         {
-            _uiConfig.WindowPositionX = Left;
-            _uiConfig.WindowPositionY = Top;
-            App.Current.Logger.Info($"Overlay dragged to ({Left:F0},{Top:F0})", "UI");
+            if (Left != _uiConfig.WindowPositionX || Top != _uiConfig.WindowPositionY)
+            {
+                _uiConfig.WindowPositionX = Left;
+                _uiConfig.WindowPositionY = Top;
+                App.Current.Logger.Info($"Overlay dragged to ({Left:F0},{Top:F0})", "UI");
+            }
+            return;
         }
+        // Перетаскивание — явный пользовательский выбор позиции: переключаем
+        // пресет на Custom и сразу фиксируем валидный прямоугольник.
+        _uiConfig.WindowPosition = "Custom";
+        App.Current.Logger.Info($"Overlay dragged to ({Left:F0},{Top:F0})", "UI");
+        SaveGeometryNow();
+        App.Current.SettingsVm?.NotifyWindowPositionChanged();
     }
 
     private void OnMicMuteClick(object sender, RoutedEventArgs e)
@@ -666,7 +840,9 @@ public partial class OverlayWindow : Window
         }
         if (on)
         {
-            WindowHelper.ApplyClickThrough(this);
+            // Пока открыта карточка подтверждения — клик-проскок не возвращаем:
+            // вернём его после закрытия карточки.
+            if (!_approvalInteractive) WindowHelper.ApplyClickThrough(this);
             _clickThroughApplied = true;
         }
         else
@@ -774,6 +950,16 @@ public partial class OverlayWindow : Window
         App.Current.OpenSettingsAndHighlight("overlay");
     }
 
+    // §7: ссылка-источник под ответом — открывает окно истории на встрече
+    // и подсвечивает найденную строку (ShowMeetingHistory(hit)).
+    private void OnPastMeetingSourceClick(object sender, RoutedEventArgs e)
+    {
+        var hit = (sender as FrameworkContentElement)?.DataContext as MeetingSearchHit;
+        if (hit == null) return;
+        try { App.Current.ShowMeetingHistory(hit); }
+        catch (Exception ex) { App.Current.Logger?.Warn($"Open meeting source failed: {ex.Message}", "UI"); }
+    }
+
     // Лимит длины ответа LLM (Ui.MaxAnswerChars, 0 = без обрезки): обрезка с «…»
     // + флаг IsAnswerTruncated (под пузырём показывается строка-ссылка в настройки).
     // Применяется только к финальному тексту ответа; во время стриминга дельты
@@ -855,6 +1041,148 @@ public partial class OverlayWindow : Window
         MemoryToast.Visibility = Visibility.Collapsed;
     }
 
+    // ===== Стек общих тостов (PushToast): несколько одновременно, максимум 4.
+    // Новый — сверху (Items[0]); при переполнении вытесняется самый старый
+    // Info/Progress, а если все — Success/Error, то самый старый вообще.
+    // Автоскрытие: Info/Success 3.5c, Error 5c; Progress живёт до Update/Dismiss.
+    // Все цвета — через ресурсы темы (Accent/Success/Error), без литералов.
+    private const int MaxStackToasts = 4;
+    private static readonly TimeSpan StackToastShort = TimeSpan.FromSeconds(3.5);
+    private static readonly TimeSpan StackToastError = TimeSpan.FromSeconds(5);
+    private int _lastStackToastId;
+
+    /// <summary>Вью-модель одного тоста стека: Body перезаписывается UpdateToast.</summary>
+    public sealed class OverlayToastItem : INotifyPropertyChanged
+    {
+        private string _body = "";
+        public required int Id { get; init; }
+        public required ToastKind Kind { get; init; }
+        public required string Title { get; init; }
+        public required Brush Accent { get; init; }
+        public string Body
+        {
+            get => _body;
+            set
+            {
+                if (value == _body) return;
+                _body = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Body)));
+            }
+        }
+        /// <summary>Таймер автозакрытия (null для Progress — живёт до DismissToast).</summary>
+        public DispatcherTimer? AutoHide;
+        /// <summary>Действие при ручном закрытии крестиком (например, очистка очереди).</summary>
+        public Action? OnClose;
+        /// <summary>Действие по кнопке действия (например, «Отправить очередь»).</summary>
+        public Action? OnAction;
+        /// <summary>Подпись кнопки действия; null/пусто → кнопки нет.</summary>
+        public string? ActionText { get; init; }
+        /// <summary>Кнопка действия видима только если есть и текст, и обработчик.</summary>
+        public bool HasAction => !string.IsNullOrEmpty(ActionText) && OnAction != null;
+        public event PropertyChangedEventHandler? PropertyChanged;
+    }
+
+    /// <summary>Добавить тост в стек. Возвращает id для UpdateToast/DismissToast.
+    /// Вызывать только в UI-потоке оверлея (App.PushOverlayToast сам маршалит).
+    /// onClose срабатывает только при ручном закрытии крестиком.</summary>
+    public int PushToast(string title, string body, ToastKind kind,
+        Action? onClose = null, string? actionText = null, Action? onAction = null)
+    {
+        var item = new OverlayToastItem
+        {
+            Id = ++_lastStackToastId,
+            Kind = kind,
+            Title = title,
+            Accent = ToastAccentFor(kind),
+            Body = body,
+            OnClose = onClose,
+            ActionText = actionText,
+            OnAction = onAction,
+        };
+        if (kind != ToastKind.Progress)
+        {
+            var timer = new DispatcherTimer { Interval = kind == ToastKind.Error ? StackToastError : StackToastShort };
+            int id = item.Id;
+            timer.Tick += (_, _) => { timer.Stop(); RemoveStackToast(id); };
+            item.AutoHide = timer;
+        }
+        ToastStack.Items.Insert(0, item);
+        item.AutoHide?.Start();
+        if (ToastStack.Items.Count > MaxStackToasts)
+        {
+            var victim = OldestEvictableToast();
+            if (victim != null) RemoveStackToast(victim.Id);
+        }
+        return item.Id;
+    }
+
+    /// <summary>Обновить тело живого тоста (прогресс-строки). Нет такого id — no-op.</summary>
+    public void UpdateToast(int toastId, string body)
+    {
+        if (FindStackToast(toastId) is { } item) item.Body = body;
+    }
+
+    /// <summary>Снять тост по id. Несуществующий id — no-op.</summary>
+    public void DismissToast(int toastId) => RemoveStackToast(toastId);
+
+    private void OnStackToastClose(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button { Tag: int id }) return;
+        // Крестик — ручное закрытие: выполняем onClose (если задан), потом снимаем тост.
+        FindStackToast(id)?.OnClose?.Invoke();
+        RemoveStackToast(id);
+    }
+    private void OnStackToastAction(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button { Tag: int id }) return;
+        // Кнопка действия тоста (например, «Отправить очередь»). Тост НЕ закрываем —
+        // обработчик сам решит (обновит тело или снимет через DismissToast).
+        FindStackToast(id)?.OnAction?.Invoke();
+    }
+
+
+    private OverlayToastItem? FindStackToast(int toastId)
+    {
+        foreach (var o in ToastStack.Items)
+            if (o is OverlayToastItem t && t.Id == toastId) return t;
+        return null;
+    }
+
+    private void RemoveStackToast(int toastId)
+    {
+        var item = FindStackToast(toastId);
+        if (item == null) return;
+        item.AutoHide?.Stop();
+        ToastStack.Items.Remove(item);
+    }
+
+    /// <summary>Жертва вытеснения: старейший Info/Progress, иначе просто самый старый.</summary>
+    private OverlayToastItem? OldestEvictableToast()
+    {
+        OverlayToastItem? oldest = null;
+        for (int i = ToastStack.Items.Count - 1; i >= 0; i--)
+        {
+            if (ToastStack.Items[i] is not OverlayToastItem t) continue;
+            oldest ??= t; // конец коллекции — самые старые, первый попавшийся и есть oldest
+            if (t.Kind is ToastKind.Info or ToastKind.Progress) return t;
+        }
+        return oldest;
+    }
+
+    private Brush ToastAccentFor(ToastKind kind)
+    {
+        var key = kind switch
+        {
+            ToastKind.Success => "SuccessBrush",
+            ToastKind.Error => "ErrorBrush",
+            _ => "AccentBrush",
+        };
+        return TryFindResource(key) as Brush
+               ?? TryFindResource("AccentBrush") as Brush
+               ?? TryFindResource("TextMutedBrush") as Brush
+               ?? Brushes.Transparent; // ресурс отсутствует — не красим, цвета не выдумываем
+    }
+
     private void OnMinimizeClick(object sender, RoutedEventArgs e)
     {
         // У безрамочного прозрачного окна WindowState.Minimized даёт «огрызок» в углу,
@@ -891,7 +1219,7 @@ public partial class OverlayWindow : Window
         else
         {
             WindowHelper.ApplyExcludeFromCapture(this);
-            if (_clickThroughApplied) WindowHelper.ApplyClickThrough(this);
+            if (_clickThroughApplied && !_approvalInteractive) WindowHelper.ApplyClickThrough(this);
             ScreenShotButton.Opacity = 1.0;
             SetStateRing(ScreenShotButton, null); // вернуть штатный вид
             ScreenShotButton.ToolTip = _localizer("L_Ovl_ScreenshotOn");
@@ -902,6 +1230,9 @@ public partial class OverlayWindow : Window
     private void OnAutoScrollClick(object sender, RoutedEventArgs e)
     {
         _autoScroll = !_autoScroll;
+        // Повторное включение автоскролла — прыжок к самому новому элементу
+        // (раньше список оставался на старом месте до следующего сообщения).
+        if (_autoScroll) { _scrollAnchorItem = null; ProgrammaticScrollToEnd(); }
         RefreshAutoScrollButton();
         App.Current.Logger.Info($"Overlay: auto-scroll {(_autoScroll ? "ON" : "OFF")}", "UI");
     }
@@ -983,9 +1314,249 @@ public partial class OverlayWindow : Window
     private async void OnChatSend(object sender, RoutedEventArgs e)
     {
         var text = ChatInputBox.Text?.Trim();
-        if (string.IsNullOrWhiteSpace(text)) return;
-        ChatInputBox.Text = "";
-        await App.Current.SendSecretMessage(text);
+        var flow = App.Current.ChatImages;
+        // Картинка без текста отправляется (ТЗ §1): пустое поле + черновик — тоже отправка.
+        if (string.IsNullOrWhiteSpace(text) && flow?.HasDraft != true) return;
+        if (flow != null)
+        {
+            // Поле НЕ очищаем: flow оставляет черновик при LlmOff/Unsupported и при
+            // паузе; App.SendChatWithImagesAsync сам очистит поле через ClearChatInput,
+            // когда отправка реально ушла (решение координатора).
+            await flow.SendChatAsync(text ?? "");
+        }
+        else
+        {
+            ChatInputBox.Text = "";
+            await App.Current.SendSecretMessage(text!);
+        }
+    }
+
+    /// <summary>Очистить поле ввода (вызывает App только когда отправка реально ушла).</summary>
+    public void ClearChatInput() => ChatInputBox.Text = "";
+
+    // ---- Черновик изображений (feature-chat-images, ТЗ §3) ----
+    // Подписка на App.ChatImages ленивая: фасад поднимается позже стора. Дергаем
+    // AttachImageFlow из Loaded/вставки/отправки — первый живой контакт подпишется.
+
+    private ChatImageFlow? _imageFlow;
+
+    /// <summary>Подписаться на фасад картинок (идемпотентно); без фасада строки скрыты.</summary>
+    private void AttachImageFlow()
+    {
+        var flow = App.Current.ChatImages;
+        if (ReferenceEquals(flow, _imageFlow)) return;
+        if (_imageFlow != null) _imageFlow.DraftChanged -= OnImageDraftChanged;
+        _imageFlow = flow;
+        if (_imageFlow != null) _imageFlow.DraftChanged += OnImageDraftChanged;
+        RefreshImageDrafts();
+    }
+
+    private void OnImageDraftChanged()
+    {
+        if (Dispatcher.CheckAccess()) RefreshImageDrafts();
+        else Dispatcher.BeginInvoke(new Action(RefreshImageDrafts));
+    }
+
+    /// <summary>Перечитать полосу черновика и строку-уведомление (DraftNotice).</summary>
+    private void RefreshImageDrafts()
+    {
+        var flow = _imageFlow ?? App.Current.ChatImages;
+        var tiles = flow?.DraftTiles;
+        // ItemsSource надо давать НОВЫЙ список: переприсвоение той же ссылки List<>
+        // WPF игнорирует (второй+ тайл черновика не появлялся бы в UI — баг i2).
+        ImageDraftList.ItemsSource = tiles is { Count: > 0 } ? tiles.ToList() : null;
+        ImageDraftRow.Visibility = tiles is { Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
+        var notice = flow?.DraftNotice;
+        ImageDraftNotice.Text = notice ?? "";
+        ImageDraftNotice.Visibility = string.IsNullOrEmpty(notice)
+            ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>Ctrl+V в поле ввода: буфер с изображением — тайл в черновик,
+    /// текстовая вставка не выполняется (иначе двойная вставка, ТЗ §3.1).</summary>
+    private void OnChatInputPaste(object sender, DataObjectPastingEventArgs e)
+    {
+        AttachImageFlow();
+        var flow = App.Current.ChatImages;
+        if (flow == null) return; // нет стора — обычная текстовая вставка
+        var imgs = ChatImageCodec.GetClipboardImages();
+        if (imgs.Count == 0) return;
+        flow.RequestAddDraftFromClipboard();
+        e.CancelCommand();
+    }
+
+    /// <summary>Список тайлов, к которому принадлежит элемент тайла (черновик/пузырь).</summary>
+    private IReadOnlyList<ChatImageTileVm> TilesAround(DependencyObject? element, ChatImageTileVm tile)
+    {
+        var ic = FindAncestor<ItemsControl>(element);
+        if (ic?.ItemsSource is IReadOnlyList<ChatImageTileVm> list && list.Contains(tile))
+            return list;
+        // Фолбэк: элемент без ItemsSource-списка — черновик фасада.
+        var draft = App.Current.ChatImages?.DraftTiles;
+        return draft != null && draft.Contains(tile) ? draft : new List<ChatImageTileVm> { tile };
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? d) where T : DependencyObject
+    {
+        while (d != null && d is not T) d = VisualTreeHelper.GetParent(d);
+        return d as T;
+    }
+
+    private void OpenImageViewer(DependencyObject? anchor, ChatImageTileVm tile)
+    {
+        var tiles = TilesAround(anchor, tile);
+        var idx = 0;
+        for (var i = 0; i < tiles.Count; i++)
+            if (ReferenceEquals(tiles[i], tile)) { idx = i; break; }
+        var owner = anchor != null ? Window.GetWindow(anchor) : this;
+        ImageViewerWindow.Show(owner ?? this, tiles, idx, App.Current.ChatImages);
+    }
+
+    /// <summary>Клик по тайлу (черновик или пузырь) — просмотрщик.</summary>
+    private void OnImageTileClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.Tag is not ChatImageTileVm tile) return;
+        if (tile.State == ChatImageTileState.Error) return; // ошибочные не открываем (ТЗ §3.8)
+        OpenImageViewer(fe, tile);
+        e.Handled = true;
+    }
+
+    private static ChatImageTileVm? TileFrom(object sender)
+        => (sender as FrameworkElement)?.Tag as ChatImageTileVm;
+
+    private void OnImageDraftRemoveClick(object sender, RoutedEventArgs e)
+    {
+        var tile = TileFrom(sender);
+        if (tile == null) return;
+        App.Current.ChatImages?.RemoveDraft(tile.ImageId);
+        e.Handled = true;
+    }
+
+    private void OnImageMenuOpen(object sender, RoutedEventArgs e)
+    {
+        var tile = TileFrom(sender);
+        if (tile == null) return;
+        var anchor = (sender as MenuItem)?.Parent is ContextMenu cm ? cm.PlacementTarget : null;
+        OpenImageViewer(anchor, tile);
+    }
+
+    private void OnImageMenuRemoveDraft(object sender, RoutedEventArgs e)
+    {
+        var tile = TileFrom(sender);
+        if (tile != null) App.Current.ChatImages?.RemoveDraft(tile.ImageId);
+    }
+
+    private void OnImageMenuAddToMsg(object sender, RoutedEventArgs e)
+    {
+        var tile = TileFrom(sender);
+        if (tile != null) App.Current.ChatImages?.AddDraftFromStored(tile.ImageId);
+    }
+
+    /// <summary>«Копировать изображение» — PNG+bitmap в буфер + тост L_ImgCopied (ТЗ §5).</summary>
+    private async void OnImageMenuCopy(object sender, RoutedEventArgs e)
+    {
+        var tile = TileFrom(sender);
+        var flow = App.Current.ChatImages;
+        if (tile == null || flow == null) return;
+        try
+        {
+            var bytes = await flow.LoadOriginalBytesAsync(tile.ImageId);
+            if (bytes is not { Length: > 0 }) return;
+            var decoded = ChatImageCodec.TryDecode(bytes, tile.FileName);
+            if (decoded == null) return;
+            var png = tile.Mime == "image/png" ? bytes : ChatImageCodec.ToPngBytes(decoded.Bitmap);
+            ChatImageCodec.PutImageToClipboard(png, decoded.Bitmap);
+            App.Current.PushOverlayToast(ToastKind.Info,
+                App.TT("L_ImgCopied", "Изображение скопировано"), tile.FileName);
+        }
+        catch { /* буфер занят/файл ушёл — тихо, статус уже показывался flow'ом */ }
+    }
+
+    /// <summary>«Сохранить как…» — байты оригинала побайтово, имя/расширение оригинала.</summary>
+    private async void OnImageMenuSaveAs(object sender, RoutedEventArgs e)
+    {
+        var tile = TileFrom(sender);
+        var flow = App.Current.ChatImages;
+        if (tile == null || flow == null) return;
+        byte[]? bytes;
+        try { bytes = await flow.LoadOriginalBytesAsync(tile.ImageId); }
+        catch { return; }
+        if (bytes is not { Length: > 0 }) return;
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = App.TT("L_ImgSaveTitle", "Сохранить изображение"),
+            FileName = tile.FileName,
+            Filter = "Image|*" + System.IO.Path.GetExtension(tile.FileName) + "|All files|*.*",
+        };
+        if (dlg.ShowDialog(this) != true) return; // отмена — тихо
+        try { System.IO.File.WriteAllBytes(dlg.FileName, bytes); }
+        catch (Exception ex) { App.Current.Logger.Error("ImageViewer: save failed", ex, "UI"); }
+    }
+
+    // ---- Прикреплённые документы (чипы над полем ввода) ----
+    // Наполнение — App.RefreshAttachmentChips: он читает AttachmentStore и передаёт
+    // готовые VM; окно магазина не знает. Клик по крестику уходит в App —
+    // там же UnlinkFromMeeting + перерисовка.
+
+    /// <summary>Чипы файлов текущей встречи (ItemsSource строки над полем ввода).</summary>
+    public ObservableCollection<AttachmentChipVm> AttachmentChips { get; } = new();
+
+    /// <summary>True — оверлей исключён из захвата экрана (стелс); модальные окна
+    /// наследуют exclude-from-capture только в этом режиме.</summary>
+    public bool IsHiddenFromCapture => !_screenCaptureVisible;
+
+    /// <summary>Перерисовать строку чипов. Пустой список — строка прячется.</summary>
+    public void SetAttachmentChips(IReadOnlyList<AttachmentChipVm> chips)
+    {
+        AttachmentChips.Clear();
+        foreach (var c in chips) AttachmentChips.Add(c);
+        AttachmentChipsRow.Visibility = chips.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        // Подсчёт скрытых чипов валиден только после генерации контейнеров и меры —
+        // доезжаем по завершении раскладки (иначе TranslatePoint/контейнеры ещё пусты).
+        Dispatcher.BeginInvoke(new Action(UpdateMoreAttachmentsButton),
+            System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    private void OnAttachFilesClick(object sender, RoutedEventArgs e)
+    {
+        // Открытие диалога и вся логика импорта — в App (см. App.OpenAttachmentPicker).
+        _ = App.Current.OpenAttachmentPicker();
+    }
+
+    private async void OnAttachmentRemoveClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button { Tag: string docId })
+            await App.Current.RemoveMeetingAttachmentAsync(docId);
+    }
+
+    /// <summary>Считает чипы, не влезшие в две строки (ScrollViewer с MaxHeight=62),
+    /// и показывает кнопку «Ещё N».</summary>
+    private void UpdateMoreAttachmentsButton()
+    {
+        var ic = AttachmentChipsList;
+        if (ic == null || ic.Items.Count == 0)
+        {
+            MoreAttachmentsBtn.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var hidden = 0;
+        for (var i = 0; i < ic.Items.Count; i++)
+        {
+            if (ic.ItemContainerGenerator.ContainerFromIndex(i) is not FrameworkElement c) continue;
+            // Низ чипа в координатах клипующего ScrollViewer за пределами 62 — он под обрезом.
+            if (c.TranslatePoint(new System.Windows.Point(0, c.ActualHeight), AttachmentChipsScroll).Y
+                > AttachmentChipsScroll.MaxHeight + 0.5)
+                hidden++;
+        }
+        if (hidden > 0)
+        {
+            MoreAttachmentsBtn.Content = string.Format(_localizer("L_Att_MoreFmt"), hidden);
+            MoreAttachmentsBtn.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            MoreAttachmentsBtn.Visibility = Visibility.Collapsed;
+        }
     }
 
     private async void OnExpandAnswerClick(object sender, RoutedEventArgs e)
@@ -1054,7 +1625,7 @@ public partial class OverlayWindow : Window
     {
         var sb = new System.Text.StringBuilder();
         foreach (var p in History)
-            sb.AppendLine(p.Question).AppendLine("---").AppendLine(p.Answer).AppendLine();
+            sb.AppendLine(p.Question).AppendLine("---").AppendLine(ToVisibleText(p.Answer)).AppendLine();
         CopyToClipboard(sb.ToString().TrimEnd());
     }
 
@@ -1065,13 +1636,28 @@ public partial class OverlayWindow : Window
         lock (_fullHistory)
         {
             foreach (var p in _fullHistory)
-                sb.AppendLine(p.Question).AppendLine("---").AppendLine(p.Answer).AppendLine();
+                sb.AppendLine(p.Question).AppendLine("---").AppendLine(ToVisibleText(p.Answer)).AppendLine();
         }
         CopyToClipboard(sb.ToString().TrimEnd());
     }
 
     // Пары за ВСЮ сессию (ссылки на те же QaPair — ответы дозаполняются сами). Не тримится.
     private readonly List<QaPair> _fullHistory = new();
+
+    // Ссылка в тексте ответа: открываем по явному клику юзера. Схему (http/https/mailto)
+    // проверяет сам компонент и в событие отдаёт уже безопасный Url — здесь только запуск.
+    // Подписка — из Loaded шаблона: тип аргумента события компонента не нужен, лямбда
+    // выводит его сама (ConditionalWeakTable защищает от повторной подписки при
+    // переподключении элемента к визуальному дереву).
+    private readonly ConditionalWeakTable<BrainstormBuddy.Controls.MarkdownView, object> _markdownLinkSubscribed = new();
+
+    private void OnMarkdownViewLoaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not BrainstormBuddy.Controls.MarkdownView mv) return;
+        if (_markdownLinkSubscribed.TryGetValue(mv, out _)) return;
+        _markdownLinkSubscribed.Add(mv, new object());
+        mv.LinkClicked += (s, args) => MarkdownLinkOpener.Open(args.Url);
+    }
 
     private void OnCopyQuestionClick(object sender, RoutedEventArgs e)
     {
@@ -1082,7 +1668,26 @@ public partial class OverlayWindow : Window
     private void OnCopyAnswerClick(object sender, RoutedEventArgs e)
     {
         if (sender is MenuItem mi && mi.Tag is QaPair pair)
-            CopyToClipboard(pair.Answer);
+            CopyToClipboard(ToVisibleText(pair.Answer));
+    }
+
+    // Копирование ответа — ВИДИМЫЙ текст без служебной разметки. Исходник ответа
+    // (QaPair.Answer) хранится с markdown как есть, а в буфер обмена попадает ровно то,
+    // что видит юзер на экране.
+    private static string ToVisibleText(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        try
+        {
+            return BrainstormBuddy.Markdown.MarkdownSupport.ToPlainText(
+                BrainstormBuddy.Markdown.MarkdownSupport.Parse(raw));
+        }
+        catch (Exception ex)
+        {
+            // Разбор не должен падать, но копирование — действие юзера: отдаём исходник.
+            App.Current?.Logger?.Warn($"ToVisibleText failed: {ex.Message}", "UI");
+            return raw;
+        }
     }
 
     private static void CopyToClipboard(string text)
@@ -1254,14 +1859,144 @@ public partial class OverlayWindow : Window
         QaPair? item = null;
         Dispatcher.Invoke(() =>
         {
-            item = new QaPair { Question = question, Status = QaStatus.Answered };
+            item = new QaPair { Question = question, Status = QaStatus.Answered, ShowMeetingSources = _uiConfig.ShowMeetingSources };
             ApplyAnswerCharLimit(item, answer);
             History.Add(item);
             lock (_fullHistory) _fullHistory.Add(item);
-            while (History.Count > 30) History.RemoveAt(0);
-            if (_autoScroll) HistoryScroll.ScrollToEnd();
+            TrimHistory();
+            if (_autoScroll) ProgrammaticScrollToEnd();
         });
         return item!;
+    }
+
+    // === Якорь читаемого места при выключенном автоскролле ===
+    // Якорь = сообщение (QaPair-референс — устойчивый идентификатор элемента) +
+    // offset его верха от верха вьюпорта. Переснимается ТОЛЬКО на пользовательскую
+    // прокрутку (классификация — OverlayScrollClassifier). На любые изменения
+    // содержимого (новые пузыри, стрим-дельты, картинки, resize, трим) LayoutUpdated
+    // через RestoreAnchorIfNeeded возвращает якорь на место — читаемая строка
+    // не «уплывает» (допуск ≤0.5 DIP).
+    private QaPair? _scrollAnchorItem;
+    private double _scrollAnchorOffset;
+    private bool _suppressAnchorRecapture;   // синхронный приоритетный маркер программного ScrollTo*
+    private int _lastUserScrollTick = int.MinValue;        // последний ввод над скроллом
+    private int _lastProgrammaticScrollTick = int.MinValue; // последний программный ScrollTo*
+    private bool _scrollToEndScheduled;                      // уже стоит отложенный догоняющий скролл
+    private double _lastAutoScrollExtent;                    // extent списка на прошлом проходе layout
+
+    private const int HistoryTargetCap = 30;   // целевой размер списка
+    private const int HistoryHardCap = 120;    // потолок окна без защищённого якоря
+
+    private void CaptureScrollAnchor()
+    {
+        var (item, offset) = FindFirstVisibleItem();
+        _scrollAnchorItem = item;
+        _scrollAnchorOffset = offset;
+    }
+
+    /// <summary>Отметить пользовательский ввод над скроллом: следующий сдвиг
+    /// вьюпорта в окне OverlayScrollClassifier.ScrollMarkWindowMs считается
+    /// пользовательской прокруткой и переснимает якорь читаемого места.</summary>
+    private void MarkUserScroll() => _lastUserScrollTick = Environment.TickCount;
+
+    /// <summary>Программный скролл в конец: помечаем, чтобы отложенный ScrollChanged
+    /// не переснял якорь при выключенном автоскролле.</summary>
+    private void ProgrammaticScrollToEnd()
+    {
+        _lastProgrammaticScrollTick = Environment.TickCount;
+        HistoryScroll.ScrollToEnd();
+        ScheduleScrollToEndAfterLayout();
+    }
+
+    /// <summary>Догоняющий скролл после пересчёта высоты содержимого. Перерисовка
+    /// markdown меняет высоту пузыря ответа уже после того, как текст обновился, поэтому
+    /// мгновенный ScrollToEnd() попадает в устаревшую высоту и низ списка «уезжает».
+    /// Повторяем скролл после прохода layout: приоритет Background ниже Render/Loaded —
+    /// значит, отложенный скролл выполняется после пересчёта и после возможного
+    /// восстановления смещения самим компонентом. Запросы сливаются: на поток дельт —
+    /// не больше одного отложенного скролла.</summary>
+    private void ScheduleScrollToEndAfterLayout()
+    {
+        if (_scrollToEndScheduled) return;
+        _scrollToEndScheduled = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            _scrollToEndScheduled = false;
+            if (!_autoScroll || !IsLoaded) return;
+            _lastProgrammaticScrollTick = Environment.TickCount;
+            HistoryScroll.ScrollToEnd();
+        }));
+    }
+
+    /// <summary>Переснимать ли якорь из LayoutUpdated: только когда якоря нет
+    /// вовсе или он легально ушёл из списка. Если элемент в списке есть, но
+    /// контейнер временно не реализован — якорь сохраняем (вернёмся на следующем
+    /// проходе layout), иначе переснятие зафиксировало бы сдвинутую позицию.</summary>
+    private bool ShouldRecaptureAnchor() =>
+        _scrollAnchorItem == null || !History.Contains(_scrollAnchorItem);
+
+    // Контейнер первого элемента, пересекающего верх вьюпорта. StackPanel не виртуализируется —
+    // ContainerFromItem надёлен. Возвращает offset контейнера от верха вьюпорта (может быть <0).
+    private (QaPair? item, double offset) FindFirstVisibleItem()
+    {
+        try
+        {
+            foreach (var it in History)
+            {
+                if (HistoryList.ItemContainerGenerator.ContainerFromItem(it) is not FrameworkElement c)
+                    continue; // контейнер ещё не создан (только что добавлен) — пропускаем
+                var top = c.TransformToVisual(HistoryScroll).Transform(new System.Windows.Point(0, 0)).Y;
+                if (top + c.ActualHeight > 0)
+                    return (it, top);
+            }
+        }
+        catch (Exception ex) { App.Current?.Logger?.Debug($"FindFirstVisibleItem: {ex.Message}", "UI"); }
+        return (null, 0);
+    }
+
+    // Вернёт true, если якорь был и позиция исправлена/подтверждена. Ложь — якоря нет
+    // или он не реализован; вызывающий решает через ShouldRecaptureAnchor, переснимать ли.
+    private bool RestoreAnchorIfNeeded()
+    {
+        var anchor = _scrollAnchorItem;
+        if (anchor == null) return false;
+        if (!History.Contains(anchor) ||
+            HistoryList.ItemContainerGenerator.ContainerFromItem(anchor) is not FrameworkElement c)
+            return false;
+        var top = c.TransformToVisual(HistoryScroll).Transform(new System.Windows.Point(0, 0)).Y;
+        var delta = top - _scrollAnchorOffset;
+        if (Math.Abs(delta) <= 0.5) return true;
+        // ScrollToVerticalOffset → ScrollChanged приходит отложенно, после
+        // measure/arrange — try/finally его может не покрыть. Отдельно метим
+        // tick, чтобы отложенное событие тоже классифицировалось программным.
+        _suppressAnchorRecapture = true;
+        _lastProgrammaticScrollTick = Environment.TickCount;
+        try { HistoryScroll.ScrollToVerticalOffset(HistoryScroll.VerticalOffset + delta); }
+        finally { _suppressAnchorRecapture = false; }
+        return true;
+    }
+
+    // Трим History до целевого размера: при выкл. автоскролле якорь и все элементы
+    // ниже него защищены БЕЗ ограничения потолком — читаемый элемент не удаляется
+    // никогда (§4: раньше hardCap мог срезать якорь и сдвинуть читаемое место).
+    private void TrimHistory()
+    {
+        int firstProtected = History.Count; // по умолчанию защищённых нет
+        if (!_autoScroll)
+        {
+            if (_scrollAnchorItem is { } a && History.IndexOf(a) is int ai && ai >= 0)
+                firstProtected = ai;
+            else
+            {
+                var (vis, _) = FindFirstVisibleItem();
+                if (vis != null && History.IndexOf(vis) is int vi && vi >= 0)
+                    firstProtected = vi;
+            }
+        }
+        int remove = OverlayHistoryTrim.ComputeHeadRemoveCount(
+            History.Count, HistoryTargetCap, HistoryHardCap, firstProtected);
+        if (remove <= 0) return;
+        for (int i = 0; i < remove; i++) History.RemoveAt(0);
     }
 
     // transcriptOnly («LLM выкл»): пузырь чистого транскрибатора — без строки «ожидание»,
@@ -1271,7 +2006,8 @@ public partial class OverlayWindow : Window
     // а STT-времена должны приходить null (STT в этом потоке не участвовал).
     public QaPair AddSendingItem(string question, double audioSeconds,
         DateTime chunkReadyAt, DateTime? sttSentAt, DateTime? sttReceivedAt, double sttLatencyMs,
-        bool transcriptOnly = false, double ocrLatencyMs = 0, string? speakerId = null)
+        bool transcriptOnly = false, double ocrLatencyMs = 0, string? speakerId = null,
+        IReadOnlyList<ChatImageTileVm>? imageTiles = null)
     {
         QaPair? item = null;
         Dispatcher.Invoke(() =>
@@ -1288,27 +2024,21 @@ public partial class OverlayWindow : Window
                 SttLatencyMs = sttLatencyMs,
                 OcrLatencyMs = ocrLatencyMs,
                 SpeakerId = speakerId,
+                ImageTiles = imageTiles?.ToList() ?? new(),
+                ShowMeetingSources = _uiConfig.ShowMeetingSources,
             };
             // Чипы всех спикеров пузыря: метки «[S<n>]» из текста + доминантный.
             item.SetSpeakers(question, speakerId, App.Current.GetSpeakerAlias);
             item.SpeakerAlias = App.Current.GetSpeakerAlias(speakerId);
             History.Add(item);
             lock (_fullHistory) _fullHistory.Add(item);
-            while (History.Count > 30) History.RemoveAt(0);
-            if (!transcriptOnly)
-            {
-                _sendingItem = item;
-                _llmBlink = true;
-            }
-            if (_autoScroll) HistoryScroll.ScrollToEnd();
+            TrimHistory();
+            if (!transcriptOnly) _llmBlink = true;
+            if (_autoScroll) ProgrammaticScrollToEnd();
         });
         return item!;
     }
 
-    public void MarkLlmSent(DateTime llmSentAt)
-    {
-        if (_sendingItem != null) MarkLlmSent(_sendingItem, llmSentAt);
-    }
 
     // Развязка STT↔LLM: перегрузка, помечающая КОНКРЕТНЫЙ пузырь (несколько могут быть «в полёте»).
     public void MarkLlmSent(QaPair item, DateTime llmSentAt)
@@ -1366,13 +2096,6 @@ public partial class OverlayWindow : Window
         App.Current.Logger.Info("Overlay: reset speed to defaults (silence=1.8s, chunk=60s)", "UI");
     }
 
-    public void ShowMultiAgent(List<BrainstormBuddy.Ai.AgentResponse> responses)
-    {
-        var target = _sendingItem;
-        if (target == null) return;
-        _sendingItem = null;
-        ShowMultiAgent(target, responses);
-    }
 
     // Заполняет КОНКРЕТНЫЙ пузырь результатом мульти-агента (развязка STT↔LLM).
     public void ShowMultiAgent(QaPair item, List<BrainstormBuddy.Ai.AgentResponse> responses)
@@ -1446,13 +2169,6 @@ public partial class OverlayWindow : Window
         });
     }
 
-    public void MarkAnswered(string answer, DateTime llmReceivedAt, double llmLatencyMs)
-    {
-        var item = _sendingItem;
-        if (item == null) return;
-        _sendingItem = null;
-        MarkAnswered(item, answer, llmReceivedAt, llmLatencyMs);
-    }
 
     // Развязка STT↔LLM: подставляет ответ в КОНКРЕТНЫЙ пузырь (заменяет «ожидание»).
     public void MarkAnswered(QaPair item, string answer, DateTime llmReceivedAt, double llmLatencyMs)
@@ -1470,15 +2186,6 @@ public partial class OverlayWindow : Window
         });
     }
 
-    // Стриминг (SSE): перегрузка для контекстов, где QaPair недоступен — тот же таргет,
-    // что у MarkAnswered(string,…): текущий _sendingItem. В отличие от MarkAnswered,
-    // _sendingItem НЕ снимается — поток ещё идёт, финализирует его MarkAnswered/MarkFailed.
-    public void AppendAnswerDelta(string delta)
-    {
-        var item = _sendingItem;
-        if (item == null) return;
-        AppendAnswerDelta(item, delta);
-    }
 
     // Стриминг (SSE): дописывает дельту в ответ КОНКРЕТНОГО пузыря — без пересоздания
     // (INPC на QaPair.Answer). BeginInvoke: дельты идут часто с фонового потока,
@@ -1489,17 +2196,10 @@ public partial class OverlayWindow : Window
         Dispatcher.BeginInvoke(new Action(() =>
         {
             pair.AppendAnswerDelta(delta);
-            if (_autoScroll) HistoryScroll.ScrollToEnd();
+            if (_autoScroll) ProgrammaticScrollToEnd();
         }));
     }
 
-    public void MarkFailed(string error, DateTime llmReceivedAt, double llmLatencyMs)
-    {
-        var item = _sendingItem;
-        if (item == null) return;
-        _sendingItem = null;
-        MarkFailed(item, error, llmReceivedAt, llmLatencyMs);
-    }
 
     public void MarkFailed(QaPair item, string error, DateTime llmReceivedAt, double llmLatencyMs)
     {
@@ -1522,17 +2222,235 @@ public partial class OverlayWindow : Window
         Dispatcher.Invoke(() =>
         {
             History.Clear();
-            _sendingItem = null;
+            // Ссылки на удалённые пузыри в активных запросах держать нельзя — течь.
+            foreach (var kv in _pendingRequests) { try { kv.Value.Cts.Dispose(); } catch { } }
+            _pendingRequests.Clear();
+            _scrollAnchorItem = null;
             _llmBlink = false;
         });
     }
 
-    public void SetTokens(int total, int prompt, int completion)
+    /// <summary>Отменить запрос (кнопка «Остановить»): Cancel по CTS. Пузырь помечает
+    /// worker по исходу (MarkCancelled/MarkFailed) — здесь UI не трогаем.</summary>
+    public void CancelRequest(int requestId)
+    {
+        if (_pendingRequests.TryGetValue(requestId, out var req))
+        {
+            try { req.Cts.Cancel(); } catch (ObjectDisposedException) { }
+        }
+    }
+
+    /// <summary>Запрос отменён: пузырь → Cancelled (приглушённый статус), для ручного
+    /// вопроса открывается «Повторить». Замещает «ожидание» локализованной меткой.</summary>
+    public void MarkCancelled(QaPair item)
     {
         Dispatcher.Invoke(() =>
         {
-            TokenText.Text = string.Format(App.Current.T("L_TokensFmt"), total, prompt, completion);
+            item.Answer = T2("L_WaitingCancelled", "Остановлено");
+            item.IsAnswerTruncated = false;
+            item.Status = QaStatus.Cancelled;
+            item.OnPropertyChanged("LlmReceivedText");
+            item.OnPropertyChanged("TotalLatencyText");
+            item.OnPropertyChanged("LatencyBrush");
+            _llmBlink = History.Any(h => h.Status == QaStatus.Sending);
         });
+    }
+
+    /// <summary>Сменить текст ожидания у Sending-пузыря (смена фазы: «думаю», «сводка…»).</summary>
+    public void SetWaitingText(QaPair item, string text)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (item.Status == QaStatus.Sending) item.Answer = text;
+        });
+    }
+
+    /// <summary>«Повторить»: Failed/Cancelled-пузырь возвращается в Sending —
+    /// App.RetryAnswer шлёт повторный запрос в ТОТ ЖЕ пузырь.</summary>
+    public void ReopenForRetry(QaPair item)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            item.Answer = T2("L_WaitingLlm", "Ожидание ответа…");
+            item.IsAnswerTruncated = false;
+            item.LlmReceivedAt = null;
+            item.LlmLatencyMs = 0;
+            item.Status = QaStatus.Sending;
+            item.OnPropertyChanged("LlmReceivedText");
+            item.OnPropertyChanged("TotalLatencyText");
+            item.OnPropertyChanged("LatencyBrush");
+            _llmBlink = true;
+        });
+    }
+
+    // Кнопки пузыря: «Остановить» у Sending, «Повторить» у ручного Failed/Cancelled.
+    private void OnStopAnswerClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.Tag is QaPair pair && pair.RequestId != 0)
+            App.Current.CancelAnswer(pair.RequestId);
+    }
+
+    private void OnRetryAnswerClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.Tag is QaPair pair)
+            App.Current.RetryAnswer(pair);
+    }
+
+    /// <summary>Старый API счётчика: только встреча. §8.1 — делегирует в
+    /// <see cref="SetTokensDetailed"/> (фоновый счётчик остаётся скрытым).</summary>
+    public void SetTokens(int total, int prompt, int completion)
+        => SetTokensDetailed(false, total, prompt, completion, 0);
+
+    /// <summary>
+    /// §8.1 аудита 15.10: раздельные счётчики футера. «Встреча» — траты
+    /// пользователя на ответы; «Документы и память» — фоновый LLM-расход
+    /// (извлечение фактов, консолидация памяти, сжатие контекста).
+    /// <para><paramref name="usageNa"/> = true: ответы есть, но провайдер не
+    /// сообщил usage — показываем «расход недоступен», а НЕ ложный ноль.</para>
+    /// </summary>
+    public void SetTokensDetailed(bool usageNa, int meetingTokens, int prompt, int completion, int bgTokens)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (usageNa)
+            {
+                TokenText.Text = T2("L_Stats_UsageNA", "Расход: провайдер не сообщил данные");
+                BgTokensText.Text = "";
+                BgTokensText.Visibility = Visibility.Collapsed;
+                return;
+            }
+            TokenText.Text = string.Format(
+                T2("L_Stats_MeetingFmt", "Встреча: {0:N0}  (in {1:N0} / out {2:N0})"),
+                meetingTokens, prompt, completion);
+            if (bgTokens > 0)
+            {
+                BgTokensText.Text = string.Format(T2("L_Stats_BgFmt", "Документы и память: {0:N0}"), bgTokens);
+                BgTokensText.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                BgTokensText.Text = "";
+                BgTokensText.Visibility = Visibility.Collapsed;
+            }
+        });
+    }
+
+    /// <summary>«Контекст: ≈X/Y» рядом с токен-счётчиком (фоновая сводка lead'а).
+    /// summarizing → «Обновляю контекст…»; null/пусто — строка скрыта, layout не дёргается.
+    /// <paramref name="showProvidedText"/> — вызывающий уже передал человеческий
+    /// прогресс (map-reduce документа, MCP tool-loop): показываем его, а не
+    /// общую заглушку «Обновляю контекст…».</summary>
+    public void SetContextInfo(string? text, bool summarizing, bool showProvidedText = false)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (ContextInfoText == null) return;
+            if (summarizing)
+            {
+                ContextInfoText.Text = showProvidedText && !string.IsNullOrEmpty(text)
+                    ? text
+                    : T2("L_ContextSummarizing", "Обновляю контекст…");
+                ContextInfoText.Visibility = Visibility.Visible;
+            }
+            else if (!string.IsNullOrEmpty(text))
+            {
+                // Вызывающая сторона передаёт ГОТОВУЮ строку (уже локализованную
+                // и отформатированную) — повторный Format добавлял второй
+                // префикс «Контекст: ≈» (баг 2.29.2).
+                ContextInfoText.Text = text;
+                // Строка могла стартовать скрытой (первый план без сводки):
+                // без этого текст записывался в Collapsed-элемент и не был виден.
+                ContextInfoText.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                ContextInfoText.Visibility = Visibility.Collapsed;
+            }
+        });
+    }
+
+    // Локализация с RU-fallback: ключ может ещё не существовать в Strings (добавит lead),
+    // тогда показываем русский дефолт вместо самого ключа.
+    private static string T2(string key, string fallback) =>
+        System.Windows.Application.Current.TryFindResource(key) as string ?? fallback;
+
+    // ── MCP-аппрувал (спека §491: карточка в оверлее, не модалка) ─────────────
+    // TCS живёт, пока tool-loop ждёт решения. Второй запрос поверх нерешённого
+    // снимает первый отказом — два одновременных аппрувала в одном окне невозможны.
+    private TaskCompletionSource<bool>? _mcpApproval;
+    // Пока карточка подтверждения видна, клик-проскок приостановлен: иначе
+    // кнопки «Разрешить/Отклонить» недоступны (окно не получает клик).
+    private bool _approvalInteractive;
+
+    /// <summary>Показать карточку подтверждения опасного MCP-вызова и дождаться
+    /// нажатия «Разрешить»/«Запретить». Потокобезопасно: вызывается с фонового
+    /// потока tool-loop. null overlay → вызывающая сторона сама делает fallback.</summary>
+    public Task<bool> RequestMcpApproval(string summary, string argsTruncated)
+    {
+        return Dispatcher.InvokeAsync(() =>
+        {
+            // Нерешённый предыдущий запрос отклоняем: показать сразу две карточки нельзя.
+            if (_mcpApproval is { Task.IsCompleted: false } prev)
+                prev.TrySetResult(false);
+
+            McpApprovalText.Text = summary;
+            McpApprovalArgs.Text = argsTruncated;
+            McpApprovalArgs.Visibility = string.IsNullOrWhiteSpace(argsTruncated)
+                ? Visibility.Collapsed : Visibility.Visible;
+            McpApprovalCard.Visibility = Visibility.Visible;
+            // Карточка кликабельна — снимаем клик-проскок до её закрытия.
+            SuspendClickThroughForApproval();
+
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _mcpApproval = tcs;
+            return tcs.Task;
+        }).Task.Unwrap();
+    }
+
+    /// <summary>Если карточка открыта — отклонить (окно прячется/закрывается).</summary>
+    public void CancelMcpApproval()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (_mcpApproval is { Task.IsCompleted: false } p)
+                p.TrySetResult(false);
+            _mcpApproval = null;
+            McpApprovalCard.Visibility = Visibility.Collapsed;
+            ResumeClickThroughAfterApproval();
+        });
+    }
+
+    private void OnMcpApproveAllow(object sender, RoutedEventArgs e) => ResolveMcpApproval(true);
+    private void OnMcpApproveDeny(object sender, RoutedEventArgs e) => ResolveMcpApproval(false);
+
+    private void ResolveMcpApproval(bool allow)
+    {
+        var p = _mcpApproval;
+        _mcpApproval = null;
+        McpApprovalCard.Visibility = Visibility.Collapsed;
+        ResumeClickThroughAfterApproval();
+        p?.TrySetResult(allow);
+        App.Current.Logger.Info($"MCP approval {(allow ? "ALLOWED" : "DENIED")} via overlay card", "Mcp");
+    }
+
+    /// <summary>
+    /// На время карточки подтверждения окно принимает клики: нативный
+    /// click-through снимается, WndProc перестаёт отдавать HTTRANSPARENT.
+    /// Пользовательский режим плаща не меняется — он вернётся после карточки.
+    /// </summary>
+    private void SuspendClickThroughForApproval()
+    {
+        if (!_clickThroughApplied || _approvalInteractive) return;
+        WindowHelper.RemoveClickThrough(this);
+        _approvalInteractive = true;
+    }
+
+    /// <summary>Карточка закрыта — клик-проскок возвращается (если был включён).</summary>
+    private void ResumeClickThroughAfterApproval()
+    {
+        if (!_approvalInteractive) return;
+        _approvalInteractive = false;
+        if (_clickThroughApplied) WindowHelper.ApplyClickThrough(this);
     }
 
     private static readonly SolidColorBrush _brushRecText = FreezeBrush(new SolidColorBrush(Color.FromRgb(0xFF, 0x97, 0xA2))); // REC текст #ff97a2 (макет)
@@ -1648,10 +2566,20 @@ public partial class OverlayWindow : Window
         _uiConfig = ui;
         Opacity = 1.0;
         BgLayer.Opacity = ui.WindowOpacity;
+        // Строка источников под ответом: общий тумблер Ui.ShowMeetingSources —
+        // применяем к уже отрисованным пузырям сразу, без рестарта. Новые пузыри
+        // получают флаг в конструкторе (AddHistoryItem/AddSendingItem).
+        foreach (var pair in History) pair.ShowMeetingSources = ui.ShowMeetingSources;
+        RestoreSavedGeometry(ui);
         ApplyPosition(ui.WindowPosition);
+        _lastNormalWidth = Width;
+        _lastNormalHeight = Height;
         UpdateBorder();
         UpdateFontSize();
         UpdateBubblePadding();
+        // Футер-статистика «Токены/Контекст/часы» — отключаемая настройкой
+        // Ui.ShowSessionStats (2.29.3): выкл = чистая нижняя панель.
+        SessionStatsRow.Visibility = ui.ShowSessionStats ? Visibility.Visible : Visibility.Collapsed;
         ApplyEngineerMode();
         // Синк click-through с конфигом: снятие галки «Сквозной режим» в настройках
         // (Save → ApplyLiveConfigChanges → сюда) должно снимать плащ без рестарта,
@@ -1703,6 +2631,83 @@ public partial class OverlayWindow : Window
         App.Current.Resources["OverlayBubblePadding"] = new Thickness(p * 1.25, p, p * 1.25, p);
     }
 
+    /// <summary>
+    /// Восстановить Width/Height и (для Custom) Left/Top из сохранённой геометрии.
+    /// Старый конфиг без WindowGeometry/RememberWindowGeometry оставляет XAML-размер
+    /// и прежний пресет позиции. Невалидные/уехавшие данные отбрасываются helper'ом.
+    /// </summary>
+    private void RestoreSavedGeometry(UiConfig ui)
+    {
+        _restoredGeometry = null;
+        if (!ui.RememberWindowGeometry) return;
+        if (!WindowGeometryHelper.TryGetRestoreRect(
+                ui.WindowGeometry, MinWidth, MinHeight, out var rect)) return;
+        _restoringGeometry = true;
+        try
+        {
+            Width = rect.Width;
+            Height = rect.Height;
+        }
+        finally
+        {
+            _restoringGeometry = false;
+        }
+        _restoredGeometry = rect;
+    }
+
+    /// <summary>Ресайз пользователем (не Minimize/Maximize и не восстановление конфига).</summary>
+    private void OnGeometrySizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (!_geometryReady || _restoringGeometry || WindowState != WindowState.Normal)
+            return;
+        // Первый layout-проход до Initialize: PreviousSize пустой — не трогаем конфиг.
+        if (e.PreviousSize.Width <= 0 || e.PreviousSize.Height <= 0) return;
+        if (!_uiConfig.RememberWindowGeometry) return;
+        if (Math.Abs(Width - _lastNormalWidth) < 0.5 &&
+            Math.Abs(Height - _lastNormalHeight) < 0.5) return;
+
+        _lastNormalWidth = Width;
+        _lastNormalHeight = Height;
+        // Новый размер при прежнем пресете уехал бы после рестарта: фиксируем
+        // реальную геометрию как Custom.
+        _uiConfig.WindowPosition = "Custom";
+        App.Current.SettingsVm?.NotifyWindowPositionChanged();
+        QueueGeometrySave();
+    }
+
+    private void QueueGeometrySave()
+    {
+        if (!_geometryReady || _restoringGeometry || !_uiConfig.RememberWindowGeometry)
+            return;
+        if (_geometrySaveTimer == null) return;
+        _geometrySaveTimer.Stop();
+        _geometrySaveTimer.Start();
+    }
+
+    private void OnGeometrySaveTick(object? sender, EventArgs e)
+    {
+        _geometrySaveTimer?.Stop();
+        SaveGeometryNow();
+    }
+
+    /// <summary>
+    /// Снять текущую валидную геометрию в конфиг и записать его существующим
+    /// SaveConfigSafe. Свёрнутое/невалидное окно игнорируется.
+    /// </summary>
+    private void SaveGeometryNow()
+    {
+        _geometrySaveTimer?.Stop();
+        if (!_geometryReady || !_uiConfig.RememberWindowGeometry) return;
+        _uiConfig.WindowGeometry ??= new WindowGeometryConfig();
+        if (!WindowGeometryHelper.TryCapture(
+                this, _uiConfig.WindowGeometry, MinWidth, MinHeight)) return;
+        _uiConfig.WindowPositionX = Left;
+        _uiConfig.WindowPositionY = Top;
+        _lastNormalWidth = Width;
+        _lastNormalHeight = Height;
+        App.Current.SaveConfigSafe();
+    }
+
     private void ApplyPosition(string position)
     {
         var workArea = SystemParameters.WorkArea;
@@ -1720,8 +2725,19 @@ public partial class OverlayWindow : Window
             case "Center":
                 Left = (workArea.Width - Width) / 2; Top = (workArea.Height - Height) / 2; break;
             case "Custom":
-                Left = _uiConfig.WindowPositionX > 0 ? _uiConfig.WindowPositionX : workArea.Right - Width - margin;
-                Top = _uiConfig.WindowPositionY > 0 ? _uiConfig.WindowPositionY : workArea.Top + margin;
+                // Новая сохранённая геометрия (валидирована и подтянута в экран)
+                // приоритетнее старых WindowPositionX/Y; старый конфиг без неё
+                // продолжает работать по-прежнему.
+                if (_restoredGeometry is { } saved)
+                {
+                    Left = saved.Left;
+                    Top = saved.Top;
+                }
+                else
+                {
+                    Left = _uiConfig.WindowPositionX > 0 ? _uiConfig.WindowPositionX : workArea.Right - Width - margin;
+                    Top = _uiConfig.WindowPositionY > 0 ? _uiConfig.WindowPositionY : workArea.Top + margin;
+                }
                 break;
             default:
                 Left = workArea.Right - Width - margin; Top = workArea.Top + margin; break;
@@ -1746,11 +2762,30 @@ public partial class OverlayWindow : Window
     protected override void OnLocationChanged(EventArgs e)
     {
         base.OnLocationChanged(e);
-        if (WindowState == WindowState.Normal)
+        if (WindowState != WindowState.Normal || !_geometryReady || _restoringGeometry)
+            return;
+        _uiConfig.WindowPositionX = Left;
+        _uiConfig.WindowPositionY = Top;
+        // DragMove двигает окно десятками событий — пишем конфиг один раз
+        // дебаунсом; финальную точку сохраняет OnDragHandleMouseDown.
+        if (string.Equals(_uiConfig.WindowPosition, "Custom", StringComparison.OrdinalIgnoreCase))
+            QueueGeometrySave();
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        // Последняя валидная геометрия: OnClosing ещё видит IsLoaded=true.
+        // Без SaveConfigSafe — App.OnExit запишет конфиг сам; здесь только
+        // обновляем поля, чтобы не потерять окно при закрытии сразу после
+        // перетаскивания/ресайза (до тика дебаунса).
+        _uiConfig.WindowGeometry ??= new WindowGeometryConfig();
+        if (_uiConfig.RememberWindowGeometry &&
+            WindowGeometryHelper.TryCapture(this, _uiConfig.WindowGeometry, MinWidth, MinHeight))
         {
             _uiConfig.WindowPositionX = Left;
             _uiConfig.WindowPositionY = Top;
         }
+        base.OnClosing(e);
     }
 
     protected override void OnClosed(EventArgs e)
@@ -1763,11 +2798,21 @@ public partial class OverlayWindow : Window
         _blinkTimer.Tick -= OnBlinkTick;
         _timelineTimer.Stop();
         _timelineTimer.Tick -= OnTimelineTick;
+        if (_geometrySaveTimer != null)
+        {
+            _geometrySaveTimer.Stop();
+            _geometrySaveTimer.Tick -= OnGeometrySaveTick;
+        }
+        // Висящий MCP-аппрувал: окно умирает → tool-loop не должен ждать вечно.
+        if (_mcpApproval is { Task.IsCompleted: false } p) p.TrySetResult(false);
+        _mcpApproval = null;
         base.OnClosed(e);
     }
 }
+// OverlayHistoryTrim вынесен в OverlayHistoryTrim.cs — чистая логика линкуется в Tests.
 
-public enum QaStatus { Pending, Sending, Answered, Failed }
+
+public enum QaStatus { Pending, Sending, Answered, Failed, Cancelled }
 
 public class QaPair : INotifyPropertyChanged
 {
@@ -1801,24 +2846,25 @@ public class QaPair : INotifyPropertyChanged
     }
 
     public string Question { get => _question; set { _question = value; OnPropertyChanged(); } }
-    // Ответ нормализуем: схлопываем 2+ пустых строк в один перенос — иначе модель шлёт
-    // \n\n между абзацами и в оверлее зияют большие вертикальные разрывы.
+    // Ответ хранится КАК ЕСТЬ, вместе с markdown-разметкой: форматирование применяется
+    // только при отрисовке (MarkdownView). Схлопывание пустых строк делает компонент
+    // отображения — в обычном тексте оно даёт тот же вид, что и раньше (\n{2,} -> \n),
+    // а в разметке пустые строки несут смысл (абзацы, разделители) и теряться не должны.
     public string Answer
     {
         get => _answer;
         set
         {
             _answerStreaming = false;
-            _answer = value == null ? string.Empty
-                : System.Text.RegularExpressions.Regex.Replace(value.Replace("\r\n", "\n"), "\n{2,}", "\n").Trim();
+            _answer = value == null ? string.Empty : value.Replace("\r\n", "\n").Trim();
             OnPropertyChanged();
             OnPropertyChanged(nameof(AnswerSectionVisibility));
         }
     }
 
     // Стриминг (SSE): дельта дописывается в _answer БЕЗ нормализации сеттера —
-    // иначе Trim/схлопывание \n\n на каждом тике съедало бы пробелы и переносы
-    // на границах дельт. Финальную нормализацию делает MarkAnswered (Answer=...).
+    // иначе Trim на каждом тике съедал бы пробелы и переносы на границах дельт.
+    // Финальную нормализацию (Trim + \r\n -> \n) делает MarkAnswered (Answer=...).
     // Первая дельта заменяет плейсхолдер «ожидание» (статус ещё Sending).
     public void AppendAnswerDelta(string delta)
     {
@@ -1834,7 +2880,15 @@ public class QaPair : INotifyPropertyChanged
     public QaStatus Status
     {
         get => _status;
-        set { _status = value; OnPropertyChanged(); OnPropertyChanged(nameof(StatusBrush)); OnPropertyChanged(nameof(AnswerSectionVisibility)); }
+        set
+        {
+            _status = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(StatusBrush));
+            OnPropertyChanged(nameof(AnswerSectionVisibility));
+            OnPropertyChanged(nameof(StopButtonVisibility));
+            OnPropertyChanged(nameof(RetryButtonVisibility));
+        }
     }
 
     // Пузырь «чистого транскрибатора» (режим «LLM выкл»): ответа нет и не будет — блок «ОТВЕТ»
@@ -1882,6 +2936,95 @@ public class QaPair : INotifyPropertyChanged
         }
     }
     private string? _speakerAlias;
+
+    // === Привязка к LLM-запросу (гонка _sendingItem убрана: каждый пузырь знает свой запрос) ===
+    /// <summary>Id запроса из OverlayWindow.BeginRequest; 0 = запрос не привязан.</summary>
+    public int RequestId { get; set; }
+    /// <summary>Ручной вопрос (поле ввода) — после Failed/Cancelled доступен «Повторить».</summary>
+    public bool IsManual
+    {
+        get => _isManual;
+        set { _isManual = value; OnPropertyChanged(); OnPropertyChanged(nameof(RetryButtonVisibility)); }
+    }
+    private bool _isManual;
+    /// <summary>Исходный текст вопроса для «Повторить» (без меток канала).</summary>
+    public string? RequestQuestion { get; set; }
+
+    /// <summary>Кнопка «Остановить» видна только у ожидающего ответа пузыря.</summary>
+    public Visibility StopButtonVisibility =>
+        _status == QaStatus.Sending ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>«Повторить» — только для ручного вопроса после сбоя/остановки.</summary>
+    public Visibility RetryButtonVisibility =>
+        IsManual && (_status == QaStatus.Failed || _status == QaStatus.Cancelled)
+            ? Visibility.Visible : Visibility.Collapsed;
+
+    // === §7: ссылки-источники по прошлым встречам ===
+    /// <summary>Хиты поиска по журналам прошлых встреч, подмешанные в промпт этого
+    /// ответа (§7). Назначает App после ответа LLM; строка «Источник: …» под пузырём
+    /// открывает MeetingHistoryWindow на встрече с подсветкой строки.</summary>
+    public IReadOnlyList<MeetingSearchHit> PastMeetingHits
+    {
+        get => _pastMeetingHits;
+        set
+        {
+            _pastMeetingHits = value ?? Array.Empty<MeetingSearchHit>();
+            // Сеттер PastMeetingSources сам поднимает PastMeetingSources +
+            // PastMeetingsVisibility — видимость пересчитывается после каждого назначения.
+            PastMeetingSources = _pastMeetingHits
+                .GroupBy(h => h.MeetingId)
+                .Select(g => g.OrderByDescending(h => h.Score).First())
+                .Take(3)
+                .ToList();
+            OnPropertyChanged();
+        }
+    }
+    private IReadOnlyList<MeetingSearchHit> _pastMeetingHits = Array.Empty<MeetingSearchHit>();
+
+    /// <summary>Топ-хит каждой встречи (≤3) для строки источников.</summary>
+    public IReadOnlyList<MeetingSearchHit> PastMeetingSources
+    {
+        get => _pastMeetingSources;
+        private set
+        {
+            _pastMeetingSources = value ?? Array.Empty<MeetingSearchHit>();
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(PastMeetingsVisibility));
+        }
+    }
+    private IReadOnlyList<MeetingSearchHit> _pastMeetingSources = Array.Empty<MeetingSearchHit>();
+
+    // Глобальный тумблер Ui.ShowMeetingSources: строка источников скрывается и при
+    // наличии хитов. Применяется к живым пузырям из OverlayWindow.ApplyUiConfig.
+    private bool _showMeetingSources = true;
+    public bool ShowMeetingSources
+    {
+        get => _showMeetingSources;
+        set
+        {
+            if (_showMeetingSources == value) return;
+            _showMeetingSources = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(PastMeetingsVisibility));
+        }
+    }
+
+    public Visibility PastMeetingsVisibility =>
+        _showMeetingSources && PastMeetingSources.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    // === Картинки вопроса (feature-chat-images, ТЗ §4) ===
+    /// <summary>Тайлы изображений, отправленных с вопросом; заполняет App при отправке.</summary>
+    public List<ChatImageTileVm> ImageTiles { get; set; } = new();
+
+    /// <summary>Пустой Question не рисует пустую строку в пузыре (вопрос только из картинок).</summary>
+    public Visibility QuestionVisibility =>
+        string.IsNullOrEmpty(_question) ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility ImageTilesVisibility =>
+        ImageTiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>1 картинка — 1 колонка; ≥2 — 2 колонки (ячейки ≤156×120 заданы в шаблоне).</summary>
+    public int ImageGridColumns => ImageTiles.Count > 1 ? 2 : 1;
 
     /// <summary>Применить алиас ко всем чипам пузыря с этим id (доминантному и вторичным).</summary>
     public void ApplySpeakerAlias(string speakerId, string? alias)
@@ -1954,7 +3097,7 @@ public class QaPair : INotifyPropertyChanged
         QaStatus.Sending => new SolidColorBrush(Color.FromRgb(0x3B, 0x82, 0xF6)),
         QaStatus.Answered => new SolidColorBrush(Color.FromRgb(0x4A, 0xDE, 0x80)),
         QaStatus.Failed => new SolidColorBrush(Color.FromRgb(0xEF, 0x44, 0x44)),
-        _ => new SolidColorBrush(Color.FromRgb(0x6B, 0x6B, 0x6B)),
+        _ => new SolidColorBrush(Color.FromRgb(0x6B, 0x6B, 0x6B)), // Pending + Cancelled — приглушённый
     };
 
     // === Computed для UI ===
@@ -1971,31 +3114,34 @@ public class QaPair : INotifyPropertyChanged
 
     public string OcrLatencyText => OcrLatencyMs > 0 ? $"OCR {OcrLatencyMs/1000:F1}s" : "";
 
-    public string TotalLatencyText
-    {
-        get
-        {
-            if (SttReceivedAt.HasValue && LlmReceivedAt.HasValue)
-            {
-                var total = (LlmReceivedAt.Value - SttReceivedAt.Value).TotalMilliseconds;
-                if (total < 0) total = 0;
-                return $"Σ {total/1000:F1}s";
-            }
-            return "";
-        }
-    }
+    // Manual and OCR questions have no STT timestamp; start at the LLM request.
+    private double? TotalLatencyMs =>
+        LlmReceivedAt is { } end && (SttReceivedAt ?? LlmSentAt) is { } start
+            ? Math.Max(0, (end - start).TotalMilliseconds)
+            : null;
+
+    public string TotalLatencyText => TotalLatencyMs is { } total ? $"Σ {total/1000:F1}s" : "";
 
     public Brush LatencyBrush
     {
         get
         {
-            if (!LlmReceivedAt.HasValue || !SttReceivedAt.HasValue) return new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
-            var total = (LlmReceivedAt.Value - SttReceivedAt.Value).TotalMilliseconds;
-            if (total < 0) total = 0;
-            if (total < 1500) return new SolidColorBrush(Color.FromRgb(0x4A, 0xDE, 0x80)); // green
-            if (total < 3500) return new SolidColorBrush(Color.FromRgb(0xFB, 0xBF, 0x24)); // yellow
-            return new SolidColorBrush(Color.FromRgb(0xEF, 0x44, 0x44));                    // red
+            if (TotalLatencyMs is not { } total) return Brushes.Gray;
+            if (total < 1500) return FastLatencyBrush;
+            if (total < 3500) return MediumLatencyBrush;
+            return SlowLatencyBrush;
         }
+    }
+
+    private static readonly Brush FastLatencyBrush = CreateLatencyBrush(0x4A, 0xDE, 0x80);
+    private static readonly Brush MediumLatencyBrush = CreateLatencyBrush(0xFB, 0xBF, 0x24);
+    private static readonly Brush SlowLatencyBrush = CreateLatencyBrush(0xEF, 0x44, 0x44);
+
+    private static Brush CreateLatencyBrush(byte red, byte green, byte blue)
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(red, green, blue));
+        brush.Freeze();
+        return brush;
     }
 
     // === ExpandAnswer (gold block) ===
@@ -2069,4 +3215,19 @@ public class SpeakerChipVm : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnPropertyChanged([CallerMemberName] string? name = null)
         => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name ?? string.Empty));
+}
+
+/// <summary>
+/// Чип прикреплённого документа в строке над полем ввода: имя файла, текст статуса
+/// («В обработке» / «Готов» / «Не удалось прочитать» / «Факты: …»), ид документа
+/// для удаления из встречи. Наполняет App.RefreshAttachmentChips.
+/// </summary>
+public sealed class AttachmentChipVm
+{
+    public required string DocumentId { get; init; }
+    public required string DisplayName { get; init; }
+    public string StatusText { get; init; } = "";
+    public string ToolTip { get; init; } = "";
+    /// <summary>Импорт ещё идёт и связи с встречей нет — крестик на таком чипе скрыт.</summary>
+    public bool Pending { get; init; }
 }

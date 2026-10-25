@@ -27,6 +27,7 @@ public partial class SettingsWindow : Window
 {
     private readonly SettingsViewModel _vm;
     private readonly DispatcherTimer _rmsTimer;
+    private DispatcherTimer? _mcpPendingTimer;
     private bool _apiKeyVisible;
     // Счётчик версий статусов «Сохранено»: таймер прячет только СВОЁ сообщение
     // (свежая ошибка/успех не должна пропадать по чужому таймеру).
@@ -115,6 +116,7 @@ public partial class SettingsWindow : Window
         catch { }
 
         InitLocalSttTab();
+        InitDiscoveryPanel();
         LanguageCombo.SelectedValue = App.Current.Config.Ui.Language;
 
         // Статический текст при открытии окна на EN-конфиге (SelectedValue выше не отстрелит
@@ -122,6 +124,10 @@ public partial class SettingsWindow : Window
         ApplyStaticStrings(App.Current.Config.Ui.Language);
         // Подсказка-плейсхолдер: в пустом поле промпта саммари показываем дефолт в тултипе.
         SummaryPromptBox.ToolTip = FileTranscriptionWindow.DefaultSummaryPrompt;
+
+        // Закрытие окна = Hide(): отменяем идущую backup-операцию, чтобы
+        // staging/частичный архив не оставался работать в фоне незаметно.
+        IsVisibleChanged += (s, e2) => { if (IsVisible == false) _backupCts?.Cancel(); };
 
         // Движок STT: пусто → встроенный GigaAM; старое значение "remote" при включённом
         var savedEng = App.Current.Config.Audio.SttEngine?.ToLowerInvariant();
@@ -168,11 +174,57 @@ public partial class SettingsWindow : Window
         // Pressed-арт дизайн-набора BuddySettings: своп иконки по Button.IsPressed.
         WireSettingsIcons();
 
+        // MCP: карточки подключений из конфига + статус облачного доступа.
+        // Пустые состояния и локализация технических id — на CollectionChanged,
+        // чтобы срабатывать после КАЖДОГО RefreshMcpLists(), не только здесь.
+        _vm.McpIncomingConnections.CollectionChanged += (_, _) => UpdateMcpTabState();
+        _vm.McpOutgoingServers.CollectionChanged += (_, _) => UpdateMcpTabState();
+        _vm.McpPendingJobs.CollectionChanged += (_, _) => UpdateMcpEmptyStates();
+        _vm.RefreshMcpLists();
+        PopulateMcpJobs();
+        UpdateMcpTabState();
+
+        // Живой статус карточки: реальный запрос агента приходит в App
+        // (McpRequestObserved) — обновляем строку статуса без переоткрытия окна.
+        App.Current.McpRequestObserved += OnMcpRequestObserved;
+        Closed += (_, _) => App.Current.McpRequestObserved -= OnMcpRequestObserved;
+
+        // Pending OAuth-клиенты облачного доступа: опрос ~2.5с, пока открыта
+        // MCP-вкладка. События у фасада нет — DispatcherTimer (§security-fix).
+        _mcpPendingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.5) };
+        _mcpPendingTimer.Tick += (_, _) => RefreshMcpPendingClients();
+        // TabItem не имеет Selected/Unselected — слушаем SelectionChanged родителя.
+        SettingsTabs.SelectionChanged += (_, _) =>
+        {
+            if (McpTab.IsSelected) { RefreshMcpPendingClients(); _mcpPendingTimer.Start(); }
+            else _mcpPendingTimer.Stop();
+        };
+        McpConnectAgentBtn.Click += (s, e) => OpenMcpWizard();
+        McpAddToolBtn.Click += (s, e) => OpenMcpOutgoingWizard();
+        McpJournalBtn.Click += (s, e) =>
+        {
+            try { System.Diagnostics.Process.Start("explorer.exe",
+                System.IO.Path.Combine(App.Current.AppDataDir, "mcp")); } catch { }
+        };
+        McpCloudSetupBtn.Click += (s, e) => OpenMcpWizard(cloud: true);
+        UpdateMcpCloudStatus();
+
+        // Статус поддержки изображений: кэш без сети + обновление при смене
+        // модели/endpoint/ключа (биндинг обновляет VM раньше, чем сработает событие).
+        _vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(SettingsViewModel.ChatModel)
+                or nameof(SettingsViewModel.BaseUrl)
+                or nameof(SettingsViewModel.ApiKey)
+                or nameof(SettingsViewModel.ProviderId))
+                RefreshImageSupportStatus();
+        };
+
         // Ключ скрыт по умолчанию (волна 06): PasswordBox поверх TextBox,
         // секрет передаётся между полями без потерь.
         SetApiKeyVisible(false);
 
-        App.Current.Logger.Info($"SettingsWindow opened (ApiKey present: {!string.IsNullOrEmpty(vm.ApiKey)}, devices: {vm.AudioDevices.Count})", "UI");
+        App.Current.Logger.Info($"SettingsWindow constructed (ApiKey present: {!string.IsNullOrEmpty(vm.ApiKey)}, devices: {vm.AudioDevices.Count})", "UI");
     }
 
     /// <summary>
@@ -280,6 +332,9 @@ public partial class SettingsWindow : Window
 
         // Статус локального STT — код-построенная строка, при смене языка переприменяем.
         try { ApplyLocalSttStatus(App.Current.LocalStt.Status); } catch { }
+        // Метки состояния панели обнаружения — тоже код-построенные строки.
+        RefreshDiscoveryRows();
+        RefreshSettingsSearchResults();
     }
 
 
@@ -416,6 +471,19 @@ public partial class SettingsWindow : Window
             ModelsStatusText.Text = string.Format((string)FindResource("L_Set_ModelsCountFmt"), models.Count);
             ModelsStatusText.SetResourceReference(ForegroundProperty, "AccentBrush");
             App.Current.Logger.Info($"Settings: fetched {models.Count} models", "UI");
+            // ТЗ §8: каталог поддержки изображений обновляем вместе со списком
+            // моделей (force) — вердикт Unsupported/Supported попадает в кэш и
+            // гейт отправки видит его без ожидания 24-часового интервала.
+            var caps = App.Current.ImageCapabilities;
+            if (caps != null)
+            {
+                var key = Core.Images.ImageCapabilityService.KeyFor(App.Current.Config.Api);
+                _ = Task.Run(async () =>
+                {
+                    try { await caps.RefreshCatalogAsync(key, force: true, CancellationToken.None); }
+                    catch (Exception ex2) { App.Current.Logger.Warn($"image-capability catalog: {ex2.Message}", "UI"); }
+                });
+            }
         }
         catch (Exception ex)
         {
@@ -424,6 +492,60 @@ public partial class SettingsWindow : Window
             App.Current.Logger.Error("Settings: GetModels failed", ex, "UI");
         }
         finally { FetchModelsBtn.IsEnabled = true; }
+    }
+
+    // ── Поддержка изображений выбранной моделью (image-chat, спека §8) ─────
+
+    /// <summary>Кэшированный статус под выбранной моделью; без обращения к сети.</summary>
+    private void RefreshImageSupportStatus()
+    {
+        var flow = App.Current.ChatImages;
+        if (flow == null)
+        {
+            ImageSupportText.Text = (string)FindResource("L_ImgSupport_Unknown");
+            ProbeImageSupportBtn.IsEnabled = false;
+            return;
+        }
+        ProbeImageSupportBtn.IsEnabled = true;
+        var info = flow.GetSupportInfo();
+        var key = info.State switch
+        {
+            Core.Images.ImageSupportState.Supported => "L_ImgSupport_Supported",
+            Core.Images.ImageSupportState.Unsupported => "L_ImgSupport_Unsupported",
+            _ => "L_ImgSupport_Unknown",
+        };
+        var src = info.Source switch
+        {
+            Core.Images.ImageSupportSource.ProviderCatalog => "L_ImgSupport_Catalog",
+            Core.Images.ImageSupportSource.ExplicitProbe => "L_ImgSupport_Probe",
+            Core.Images.ImageSupportSource.ApiRefusal => "L_ImgSupport_Confirmed",
+            _ => null,
+        };
+        ImageSupportText.Text = src == null
+            ? (string)FindResource(key)
+            : $"{(string)FindResource(key)} ({(string)FindResource(src)})";
+    }
+
+    /// <summary>Ручной probe по кнопке: синтетическая картинка, отдельный запрос.</summary>
+    private async void OnProbeImageSupport(object sender, RoutedEventArgs e)
+    {
+        var flow = App.Current.ChatImages;
+        if (flow == null) return;
+        ProbeImageSupportBtn.IsEnabled = false;
+        ImageSupportText.Text = (string)FindResource("L_ImgProbing");
+        try
+        {
+            await flow.ProbeImageSupportAsync();
+        }
+        catch (Exception ex)
+        {
+            App.Current.Logger.Warn($"Settings: image probe failed: {ex.Message}", "UI");
+        }
+        finally
+        {
+            RefreshImageSupportStatus();
+            ProbeImageSupportBtn.IsEnabled = true;
+        }
     }
 
     // Локальный статус сохранения рядом с кнопкой: «Сохранено» — 3 с и авто-скрытие,
@@ -631,6 +753,7 @@ public partial class SettingsWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _rmsTimer.Stop();
+        _mcpPendingTimer?.Stop();
         StopMicTest();
         App.Current.Logger.Debug("SettingsWindow.OnClosed", "UI");
         base.OnClosed(e);
@@ -847,7 +970,11 @@ public partial class SettingsWindow : Window
     private void FlashElement(FrameworkElement target)
     {
         var layer = AdornerLayer.GetAdornerLayer(target);
-        if (layer == null) return;
+        if (layer == null)
+        {
+            App.Current.Logger?.Warn($"FlashElement: no AdornerLayer for {target.Name}", "UI");
+            return;
+        }
         var adorner = new FlashAdorner(target);
         layer.Add(adorner);
         var blink = new DoubleAnimation
@@ -1050,7 +1177,7 @@ public partial class SettingsWindow : Window
             if (isLocal)
             {
                 if (string.IsNullOrWhiteSpace(m) || m.Contains("/"))
-                    _vm.ChatModel = "qwen2.5vl:7b"; // рабочая модель по умолчанию для Ollama
+                    _vm.ChatModel = "deepseek-v4.1-flash"; // рабочая модель по умолчанию
             }
             else if (!string.IsNullOrWhiteSpace(m) && !m.Contains("/") && !m.Contains(":"))
             {
@@ -1088,6 +1215,10 @@ public partial class SettingsWindow : Window
             ShowProviderEditor(profile, isNew: false);
         else if (profile.IsBuiltIn && !_providerEditIsNew)
             HideProviderEditor();
+
+        // Статус поддержки изображений зависит от (profile, endpoint, model, auth) —
+        // ключ сменился вместе с применённым профилем, перечитываем кэш без сети.
+        RefreshImageSupportStatus();
     }
 
     // Ключ ресурса заметки о приватности для встроенного провайдера; кастом — текст профиля.
@@ -1724,6 +1855,15 @@ public partial class SettingsWindow : Window
         try
         {
             var meetings = MeetingStore.LoadAll();
+            // Бейджи файлов: число вложений по встрече одним проходом (count by meeting).
+            try
+            {
+                var counts = App.Current.Attachments?.CountByMeeting();
+                if (counts != null)
+                    foreach (var m in meetings)
+                        m.AttachmentCount = counts.TryGetValue(m.Id, out var c) ? c : 0;
+            }
+            catch { /* стор вложений мог не подняться — бейджи просто пустые */ }
             MeetingHistoryList.ItemsSource = meetings;
 
             long total = 0;
@@ -2116,4 +2256,369 @@ public partial class SettingsWindow : Window
         >= 1024 => $"{bytes / 1024.0:F1} KB",
         _ => $"{bytes} B"
     };
+
+    // ===== MCP =====
+    private void UpdateMcpCloudStatus()
+    {
+        var t = App.Current.Config.Mcp.TunnelMode;
+        // Булев режим туннеля не доказывает живой туннель — честная формулировка.
+        McpCloudStatusText.Text = t == "off" || string.IsNullOrWhiteSpace(t)
+            ? (string)FindResource("L_Mcp_CloudOff")
+            : string.Format((string)FindResource("L_Mcp_CloudConfigured"), t);
+    }
+
+    /// <summary>Локализация технических id в карточках + переключение пустых состояний.</summary>
+    private void UpdateMcpTabState()
+    {
+        LocalizeMcpRows();
+        UpdateMcpEmptyStates();
+    }
+
+    /// <summary>
+    /// VM (Core) отдаёт технические id: scope «all-projects», статус «Never seen»,
+    /// transport «stdio». Переписываем строки строк через McpStatusLocalizer,
+    /// сверяясь с записями конфига по Id.
+    /// </summary>
+    private void LocalizeMcpRows()
+    {
+        var live = LiveMcpStatuses();
+        foreach (var row in _vm.McpIncomingConnections)
+        {
+            var c = _vm.Config.Mcp.Connections.FirstOrDefault(x => x.Id == row.Id);
+            row.Name = McpStatusLocalizer.ConnectionName(row.Name, c?.ClientKind);
+            row.ScopeSummary = McpStatusLocalizer.Scope(c?.Scope ?? row.ScopeSummary);
+            // Статус берём из живого состояния фасада: он честнее записи
+            // конфига (видит отзыв доступа и реальные обращения клиента).
+            if (live.TryGetValue(row.Id, out var st))
+            {
+                var (text, kind) = McpStatusLocalizer.FormatConnectionStatus(st);
+                row.StatusText = text;
+                row.StatusKind = kind;
+            }
+            else
+            {
+                row.StatusText = c != null
+                    ? McpStatusLocalizer.FormatConnectionStatus(c)
+                    : McpStatusLocalizer.FormatConnectionStatus(false, null).Text;
+                row.StatusKind = c?.Suspended == true ? "error" : "muted";
+            }
+        }
+        foreach (var row in _vm.McpOutgoingServers)
+        {
+            var s = _vm.Config.Mcp.OutgoingServers.FirstOrDefault(x => x.Id == row.Id);
+            var transport = McpStatusLocalizer.Transport(s?.Transport ?? row.StatusText);
+            row.StatusText = row.Enabled
+                ? transport
+                : string.Format(McpStatusLocalizer.T("L_Mcp_Status_DisabledFmt", "Отключён · {0}"), transport);
+        }
+    }
+
+    /// <summary>
+    /// Живые статусы входящих подключений от фасадов (pipe + HTTP).
+    /// Фасада может не быть (MCP выключен) — тогда статус берётся из конфига.
+    /// </summary>
+    private Dictionary<string, Core.Mcp.McpConnectionStatus> LiveMcpStatuses()
+    {
+        var map = new Dictionary<string, Core.Mcp.McpConnectionStatus>(StringComparer.Ordinal);
+        try
+        {
+            var facades = new List<Core.Mcp.IMcpFacade?>();
+            if (App.Current.McpHost?.Facade != null) facades.Add(App.Current.McpHost.Facade);
+            if (App.Current.McpHttp?.Facade != null) facades.Add(App.Current.McpHttp.Facade);
+            foreach (var facade in facades)
+            {
+                if (facade == null) continue;
+                foreach (var st in facade.GetConnectionStatuses())
+                    map[st.Id] = st;
+            }
+        }
+        catch (Exception ex)
+        {
+            App.Current.Logger?.Warn($"MCP live status failed: {ex.Message}", "UI");
+        }
+        return map;
+    }
+
+    /// <summary>Реальный запрос агента → обновить строку статуса карточки.</summary>
+    private void OnMcpRequestObserved(string connectionId, DateTime utc)
+    {
+        try
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (!McpTab.IsSelected) return;
+                var live = LiveMcpStatuses();
+                foreach (var row in _vm.McpIncomingConnections)
+                {
+                    if (!live.TryGetValue(row.Id, out var st)) continue;
+                    var (text, kind) = McpStatusLocalizer.FormatConnectionStatus(st);
+                    row.StatusText = text;
+                    row.StatusKind = kind;
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            App.Current.Logger?.Warn($"MCP status refresh failed: {ex.Message}", "UI");
+        }
+    }
+
+    /// <summary>Пустые списки — компактный текст-статус вместо пустого блока (§7).</summary>
+    private void UpdateMcpEmptyStates()
+    {
+        McpIncomingEmpty.Visibility = _vm.McpIncomingConnections.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        McpOutgoingEmpty.Visibility = _vm.McpOutgoingServers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        McpJobsEmpty.Visibility = _vm.McpPendingJobs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Незавершённые задачи — из jobs.jsonl (тот же файл, что реплеит
+    /// McpJobStore хоста). VM не знает про стор, поэтому читаем отдельным
+    /// экземпляром на том же appData-каталоге.
+    /// </summary>
+    private void PopulateMcpJobs()
+    {
+        _vm.McpPendingJobs.Clear();
+        try
+        {
+            var store = new Core.Mcp.McpJobStore(App.Current.AppDataDir);
+            foreach (var j in store.List().Where(j => !Core.Mcp.McpJobStore.IsTerminal(j.State)))
+            {
+                var progress = j.Done != null && j.Total != null
+                    ? $" · {j.Done}/{j.Total}"
+                    : "";
+                _vm.McpPendingJobs.Add(new McpJobRow
+                {
+                    Id = j.Id,
+                    Summary = string.IsNullOrWhiteSpace(j.Stage)
+                        ? McpStatusLocalizer.JobKind(j.Kind)
+                        : $"{McpStatusLocalizer.JobKind(j.Kind)} · {j.Stage}{progress}",
+                    StateText = McpStatusLocalizer.JobState(j.State),
+                });
+            }
+        }
+        catch (Exception ex) { App.Current.Logger.Warn($"MCP jobs list failed: {ex.Message}", "UI"); }
+    }
+
+    /// <summary>
+    /// Очередь OAuth-клиентов облачного входа, ожидающих решения.
+    /// Контракт фасада: App.Current.McpHttp?.Facade.ListPendingClients()
+    /// → IReadOnlyList&lt;McpPendingClient&gt; (PendingId/ClientId/ClientName?/
+    /// RedirectUri/Scope/RequestedUtc); ResolvePendingClient(id, approve).
+    /// Тип McpPendingClient дописывает агент McpHttp — весь доступ к контракту
+    /// собран в этом методе и OnMcpPendingResolve.
+    /// </summary>
+    private void RefreshMcpPendingClients()
+    {
+        try
+        {
+            var pending = App.Current.McpHttp?.Facade.ListPendingClients();
+            var rows = new List<McpPendingUiRow>();
+            if (pending != null)
+                foreach (var p in pending)
+                    rows.Add(McpPendingUiRow.From(
+                        p.PendingId, p.ClientId, p.ClientName,
+                        p.RedirectUri, p.Scope, p.RequestedUtc));
+
+            McpPendingPanel.Visibility = rows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (rows.Count > 0)
+                McpPendingList.ItemsSource = rows;
+        }
+        catch (Exception ex)
+        {
+            App.Current.Logger.Warn($"MCP pending clients: {ex.Message}", "UI");
+            McpPendingPanel.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void OnMcpPendingAllow(object sender, RoutedEventArgs e)
+        => OnMcpPendingResolve((sender as FrameworkElement)?.Tag as string, approve: true);
+
+    private void OnMcpPendingDeny(object sender, RoutedEventArgs e)
+        => OnMcpPendingResolve((sender as FrameworkElement)?.Tag as string, approve: false);
+
+    private void OnMcpPendingResolve(string? pendingId, bool approve)
+    {
+        if (string.IsNullOrEmpty(pendingId)) return;
+        try
+        {
+            App.Current.McpHttp?.Facade.ResolvePendingClient(pendingId, approve);
+            App.Current.Logger.Info(
+                $"MCP pending client {pendingId}: {(approve ? "approved" : "denied")}", "UI");
+        }
+        catch (Exception ex) { App.Current.Logger.Error("MCP pending resolve failed", ex, "UI"); }
+        RefreshMcpPendingClients();
+        // После approve появляется/обновляется подключение — статус «Ожидаем…»,
+        // не «Подключено»: handshake ещё впереди (§6.1).
+        _vm.RefreshMcpLists();
+        UpdateMcpTabState();
+    }
+
+    /// <summary>Мастер «Подключить AI-агент» (входящее). cloud=true — шаг туннеля.</summary>
+    private void OpenMcpWizard(bool cloud = false)
+    {
+        App.Current.Logger?.Info($"OpenMcpWizard cloud={cloud}", "UI");
+        var w = new McpWizardWindow(App.Current.Config, cloud) { Owner = this };
+        w.ShowDialog();
+        App.Current.Logger?.Info("OpenMcpWizard closed", "UI");
+        // Refresh и при успехе, и при отмене: токен мог быть выпущен
+        // автоконфигурацией ещё до «Подключить».
+        _vm.RefreshMcpLists();
+        PopulateMcpJobs();
+        UpdateMcpCloudStatus();
+    }
+
+    /// <summary>Мастер «Добавить инструменты в чат» (исходящее).</summary>
+    private void OpenMcpOutgoingWizard()
+    {
+        var w = new McpOutgoingWizardWindow(App.Current.Config) { Owner = this };
+        w.ShowDialog();
+        _vm.RefreshMcpLists();
+    }
+
+    /// <summary>
+    /// Изменить исходящее подключение — мастер в режиме правки: URL/транспорт
+    /// и токен. Токен в мастер не подставляется — виден только сам факт,
+    /// что сохранённый токен остаётся в защищённом хранилище.
+    /// </summary>
+    private void OnMcpOutEdit(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not Config.McpOutgoingRow row) return;
+        var srv = _vm.Config.Mcp.OutgoingServers.FirstOrDefault(s => s.Id == row.Id);
+        if (srv == null) return;
+        try
+        {
+            var w = new McpOutgoingWizardWindow(App.Current.Config, srv,
+                resolveSecret: s => App.Current.McpPermissions?.TryRevealSecret(s.SecretRef),
+                onSaved: async s =>
+                {
+                    if (App.Current.McpOutgoing != null)
+                        await App.Current.McpOutgoing.DisconnectAsync(s);
+                })
+            { Owner = this };
+            w.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            App.Current.Logger?.Error("MCP outgoing edit failed", ex, "Mcp");
+            MessageBox.Show(this, ex.Message, "MCP", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        _vm.RefreshMcpLists();
+    }
+
+    /// <summary>Изменить входящее подключение — переоткрываем мастер (перевыпускает токен на Finish).</summary>
+    private void OnMcpConnEdit(object sender, RoutedEventArgs e)
+    {
+        OpenMcpWizard();
+    }
+
+    /// <summary>
+    /// Отозвать токен + удалить запись из конфига (после подтверждения).
+    /// Ресурсы берём только безопасным поиском (TryFindResource): отсутствующий
+    /// ключ раньше ронял приложение по <see cref="ResourceReferenceKeyNotFoundException"/>.
+    /// </summary>
+    private void OnMcpConnRevoke(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not Config.McpIncomingRow row) return;
+        var title = McpStatusLocalizer.T("L_Mcp_RevokeTitle", "MCP: отзыв подключения");
+        var template = McpStatusLocalizer.T("L_Mcp_RevokeConfirm",
+            "Отозвать доступ для «{0}»? Агент перестанет получать данные.");
+        string question;
+        try { question = string.Format(template, row.Name); }
+        catch (FormatException) { question = template; }
+
+        MessageBoxResult ask;
+        try
+        {
+            ask = MessageBox.Show(this, question, title, MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            App.Current.Logger?.Error("MCP revoke: confirmation dialog failed", ex, "Mcp");
+            return;
+        }
+        if (ask != MessageBoxResult.Yes)
+        {
+            App.Current.Logger?.Info($"MCP revoke cancelled for {row.Id}", "Mcp");
+            return;
+        }
+
+        bool revoked = false;
+        try
+        {
+            // Грант и файл токена удаляются здесь: после этого старый токен
+            // больше не даёт доступ, даже если клиент его сохранил у себя.
+            revoked = App.Current.McpPermissions?.Revoke(row.Id) ?? false;
+            _vm.Config.Mcp.Connections.RemoveAll(c => c.Id == row.Id);
+            App.Current.SaveConfigSafe();
+            _vm.RefreshMcpLists();
+            UpdateMcpTabState();
+            var done = McpStatusLocalizer.T("L_Mcp_RevokeDone",
+                "Доступ «{0}» отозван. Токен больше не действует.");
+            McpCheckReport.Text = string.Format(done, row.Name);
+            McpCheckPanel.Visibility = Visibility.Visible;
+            App.Current.Logger?.Info(
+                $"MCP connection revoked: {row.Id} (grant removed: {revoked})", "Mcp");
+        }
+        catch (Exception ex)
+        {
+            App.Current.Logger?.Error("MCP revoke failed", ex, "Mcp");
+            var fail = McpStatusLocalizer.T("L_Mcp_RevokeFail",
+                "Не удалось отозвать доступ «{0}»: {1}");
+            McpCheckReport.Text = string.Format(fail, row.Name, ex.Message);
+            McpCheckPanel.Visibility = Visibility.Visible;
+        }
+    }
+
+    /// <summary>Галка «Включён» на исходящем сервере — пишет в конфиг сразу.</summary>
+    private void OnMcpOutToggled(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not Config.McpOutgoingRow row) return;
+        var srv = _vm.Config.Mcp.OutgoingServers.FirstOrDefault(s => s.Id == row.Id);
+        if (srv != null) srv.Enabled = row.Enabled;
+    }
+
+    private void OnMcpJournalOpen(object sender, RoutedEventArgs e)
+    {
+        try { System.Diagnostics.Process.Start("explorer.exe",
+            System.IO.Path.Combine(App.Current.AppDataDir, "mcp")); } catch { }
+    }
+
+    /// <summary>Скопировать инструкции для ИИ-агента (system prompt) в буфер обмена.</summary>
+    private void OnMcpCopyInstructions(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Clipboard.SetText(Core.Mcp.McpClientInstructions.SystemPrompt);
+            McpCheckReport.Text = (string)(FindResource("L_Mcp_InstructionsCopied")
+                ?? "Instructions copied to clipboard");
+            McpCheckPanel.Visibility = Visibility.Visible;
+            App.Current.Logger?.Info("MCP client instructions copied", "Mcp");
+        }
+        catch (Exception ex)
+        {
+            McpCheckReport.Text = "FAIL | " + ex.Message;
+            McpCheckPanel.Visibility = Visibility.Visible;
+        }
+    }
+
+    /// <summary>«Проверить MCP»: канал, токены, журнал, инструменты, пути — без перезапусков.</summary>
+    private void OnMcpCheck(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var app = App.Current;
+            var report = Core.Mcp.McpDiagnostics.Run(
+                _vm.Config.Mcp, app.McpHost, app.McpPermissions, app.McpJournal, app.AppDataDir);
+            McpCheckReport.Text = report.ToText();
+            McpCheckPanel.Visibility = Visibility.Visible;
+            app.Logger?.Info($"MCP check: {report.Summary}", "Mcp");
+        }
+        catch (Exception ex)
+        {
+            McpCheckReport.Text = "FAIL | Проверка не выполнена — " + ex.Message;
+            McpCheckPanel.Visibility = Visibility.Visible;
+            App.Current.Logger?.Warn($"MCP check failed: {ex.Message}", "Mcp");
+        }
+    }
 }

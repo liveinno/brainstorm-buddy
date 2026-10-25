@@ -7,9 +7,13 @@
 ; ============================================================================
 
 #define MyAppName "BrainstormBuddy"
-#define MyAppVersion "2.28.2"
+#define MyAppVersion "2.39.2"
 #define MyAppPublisher "BrainstormBuddy"
 #define MyAppExeName "BrainstormBuddy.exe"
+; MCP-хост — отдельный stdio-процесс, который запускают внешние ИИ-агенты
+; (Codex/Claude) из подключения к Buddy MCP. Он держит свой .dll и не даёт
+; установщику заменить файлы — см. EnsureProcessesClosed в [Code].
+#define MyAppHostExeName "BrainstormBuddy.McpHost.exe"
 ; Стабильный AppId — НЕ менять между версиями (иначе апгрейд не найдёт прошлую установку).
 #define MyAppId "{{B1F4A6E2-7C3D-4E90-9A21-2D6C8F0B5A44}"
 ; Тот же GUID одинарными скобками — для чтения ключа удаления Inno ({GUID}_is1) в [Code].
@@ -77,8 +81,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 
 ; Закрыть работающий BrainstormBuddy.exe при обновлении (без принудительного ребута).
+; MCP-хост в фильтр добавлен: Restart Manager умеет закрывать только приложения
+; с окнами, а хост — консольный процесс, поэтому его закрываем сами (см. [Code]).
 CloseApplications=yes
-CloseApplicationsFilter=BrainstormBuddy.exe
+CloseApplicationsFilter=BrainstormBuddy.exe;BrainstormBuddy.McpHost.exe
 RestartApplications=no
 
 ; Окно мастера у ~1 ГБ exe появляется через 1-2 мин (антивирус сканирует неподписанный файл
@@ -97,21 +103,21 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
-russian.FullType=Полная установка (офлайн-модель распознавания речи включена, ~1 ГБ)
-english.FullType=Full installation (offline speech model included, ~1 GB)
-russian.CompactType=Компактная установка (модель скачается при первом запуске, ~80 МБ)
-english.CompactType=Compact installation (model downloads on first run, ~80 MB)
+#ifdef IncludeWhisper
+russian.FullType=Полная установка (GigaAM + офлайн-Whisper и e5-эмбеддинги, ~1.7 ГБ)
+english.FullType=Full installation (GigaAM + offline Whisper and e5 embeddings, ~1.7 GB)
+russian.CompactType=Компактная установка (без Whisper/e5 — докачаются из настроек, ~1.2 ГБ)
+english.CompactType=Compact installation (without Whisper/e5 — downloaded from settings, ~1.2 GB)
+russian.ModelComp=Доп. офлайн-модели: Whisper (англ. речь) + e5-эмбеддинги памяти (~1 ГБ)
+english.ModelComp=Additional offline models: Whisper (English speech) + e5 memory embeddings (~1 GB)
+#else
+russian.FullType=Установка BrainstormBuddy (GigaAM v3+v2 включены, ~1.2 ГБ)
+english.FullType=Install BrainstormBuddy (GigaAM v3+v2 included, ~1.2 GB)
+#endif
 russian.CustomType=Выборочная установка
 english.CustomType=Custom installation
-russian.AppComp=Приложение BrainstormBuddy
-english.AppComp=BrainstormBuddy application
-#ifdef IncludeWhisper
-russian.ModelComp=Офлайн-модели распознавания: GigaAM v3+v2 + Whisper (~1.8 ГБ)
-english.ModelComp=Offline speech models: GigaAM v3+v2 + Whisper (~1.8 GB)
-#else
-russian.ModelComp=Офлайн-модели распознавания речи GigaAM v3+v2 (~1.2 ГБ)
-english.ModelComp=Offline speech recognition models GigaAM v3+v2 (~1.2 GB)
-#endif
+russian.AppComp=Приложение BrainstormBuddy (включая модели GigaAM v3+v2)
+english.AppComp=BrainstormBuddy application (including GigaAM v3+v2 models)
 russian.FfmpegComp=ffmpeg — поддержка webm/mkv/opus (иначе докачается в приложении)
 english.FfmpegComp=ffmpeg — webm/mkv/opus support (otherwise downloaded in-app)
 russian.AutostartTask=Запускать BrainstormBuddy при входе в Windows
@@ -126,15 +132,36 @@ russian.ReinstallConfirm=Версия %1 уже установлена. Пере
 english.ReinstallConfirm=Version %1 is already installed. Reinstall (repair files)?
 russian.DowngradeConfirm=Установлена более новая версия %1. Установить более старую %2 поверх?
 english.DowngradeConfirm=A newer version %1 is installed. Install the older %2 over it?
+russian.CloseAppPrompt=BrainstormBuddy сейчас запущен и держит свои файлы — установщик не сможет их заменить. Закрыть приложение и продолжить установку? Текущая встреча будет прервана.
+english.CloseAppPrompt=BrainstormBuddy is running and holds its files, so the installer cannot replace them. Close the application and continue the installation? The current call will be interrupted.
+russian.CloseAppFailed=Не удалось закрыть BrainstormBuddy. Закройте приложение вручную и запустите установщик снова.
+english.CloseAppFailed=Could not close BrainstormBuddy. Close the application manually and run the installer again.
+russian.CloseMcpHostPrompt=ИИ-агент (Codex/Claude) запустил MCP-хост BrainstormBuddy, и тот держит файл BrainstormBuddy.McpHost.dll — установщик не сможет его заменить. Закрыть MCP-хост и продолжить? Если агент активен, закройте и его: агент сразу запустит хост заново.
+english.CloseMcpHostPrompt=An AI agent (Codex/Claude) started the BrainstormBuddy MCP host, which holds BrainstormBuddy.McpHost.dll, so the installer cannot replace it. Close the MCP host and continue? If the agent is still running, close it too: the agent will start a new host right away.
+russian.CloseMcpHostFailed=Не удалось закрыть MCP-хост BrainstormBuddy. Закройте ИИ-агент (Codex/Claude) и запустите установщик снова.
+english.CloseMcpHostFailed=Could not close the BrainstormBuddy MCP host. Close the AI agent (Codex/Claude) and run the installer again.
 
 [Types]
 Name: "full";    Description: "{cm:FullType}"
+#ifdef IncludeWhisper
+; "compact" существует только в Full-сборке: там он выкидывает НЕобязательные
+; Whisper/e5 из компонента model. В Lite (без IncludeWhisper) он был бы бессмысленным
+; дубликатом "full", поэтому скрыт.
 Name: "compact"; Description: "{cm:CompactType}"
+#endif
 Name: "custom";  Description: "{cm:CustomType}"; Flags: iscustom
 
 [Components]
+; "app" — фиксированная база: само приложение + ОБЯЗАТЕЛЬНЫЕ модели GigaAM v3+v2
+; (дефолтный SttEngine=native3; качать их из настроек нельзя). Никакой тип установки
+; не должен отдавать пользователю приложение без них. Тип "compact" объявлен только
+; под IncludeWhisper — в Lite его имя в Types: нельзя упоминать (ISCC ошибка).
+#ifdef IncludeWhisper
 Name: "app";   Description: "{cm:AppComp}";   Types: full compact custom; Flags: fixed
 Name: "model"; Description: "{cm:ModelComp}"; Types: full
+#else
+Name: "app";   Description: "{cm:AppComp}";   Types: full custom; Flags: fixed
+#endif
 #if HaveFfmpeg
 Name: "ffmpeg"; Description: "{cm:FfmpegComp}"; Types: full
 #endif
@@ -144,27 +171,31 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "autostart";   Description: "{cm:AutostartTask}"; GroupDescription: "{cm:AutostartGroup}"; Flags: unchecked
 
 [Files]
-; Приложение — всё, КРОМЕ каталога models (отдельный компонент), dev-конфига и .pdb.
-; config.json НЕ кладём: приложение читает конфиг из %APPDATA%, а dev-версия содержит
-; лишний LAN-адрес и устаревшую схему. Чистый первый запуск сгенерит дефолты сам.
-; Сюда попадает и THIRD-PARTY-NOTICES.txt — build-installer.sh кладёт его в publish\app-inno\
-; (обязательство MIT — приложить копирайты). Отдельная запись Source не использовалась:
-; при относительном пути ISCC молча не паковал файл, поэтому кладём его в общий свип.
+; Приложение — всё, КРОМЕ models\, tessdata\ и nemo-speech\ (отдельные Source ниже),
+; dev-конфига и .pdb. config.json НЕ кладём: приложение читает конфиг из %APPDATA%,
+; а dev-версия содержит лишний LAN-адрес и устаревшую схему. Чистый первый запуск
+; сгенерит дефолты сам. Сюда попадает и THIRD-PARTY-NOTICES.txt — build-installer.sh
+; кладёт его в publish\app-inno\ (обязательство MIT — приложить копирайты). Отдельная
+; запись Source не использовалась: при относительном пути ISCC молча не паковал файл.
 Source: "..\..\publish\app-inno\*"; DestDir: "{app}"; Excludes: "models\*,tessdata\*,nemo-speech\*,config.json,*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: app
-; Офлайн-модель — только если выбран компонент "model" (тип "full").
-Source: "..\..\publish\app-inno\models\v2_ctc.onnx"; DestDir: "{app}\models"; Flags: ignoreversion; Components: model
-Source: "..\..\publish\app-inno\models\labels.json"; DestDir: "{app}\models"; Flags: ignoreversion; Components: model
-; GigaAM v3 (v3_e2e_ctc.int8.onnx + vocab, ~215 МБ) — ДЕФОЛТНЫЙ движок (Audio.SttEngine="native3"),
-; поэтому файлы обязательны в обеих сборках (Lite и Full) в компоненте "model", без
-; skipifsourcedoesntexist: отсутствие должно ронять сборку в build-installer.sh.
-Source: "..\..\publish\app-inno\models\v3_e2e_ctc.int8.onnx"; DestDir: "{app}\models"; Flags: ignoreversion; Components: model
-Source: "..\..\publish\app-inno\models\v3_e2e_ctc_vocab.txt"; DestDir: "{app}\models"; Flags: ignoreversion; Components: model
-; Движок диаризации Nemotron (Sortformer через nemo_speech_asr_c.dll) — опционально:
-; бандл nemo-speech vulkan (покрывает cpu) в {app}\nemo-speech (~56 МБ), GGUF-модель
-; (~82 МБ) в {app}\models. Раскладка — packaging/fetch-nemo.sh → build-installer.sh;
-; при отсутствии источника фича молча отключается (skipifsourcedoesntexist).
-Source: "..\..\publish\app-inno\nemo-speech\*"; DestDir: "{app}\nemo-speech"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Components: app
-Source: "..\..\publish\app-inno\models\Nemotron-3-Diarization.q8_0.gguf"; DestDir: "{app}\models"; Flags: ignoreversion skipifsourcedoesntexist; Components: app
+; Офлайн-модели GigaAM — в ФИКСИРОВАННОМ компоненте "app": ставятся при ЛЮБОМ типе
+; установки (включая compact/custom без "model"). Это обязательные файлы:
+; дефолтный движок — v3 (Audio.SttEngine="native3"), а скачать их из приложения
+; нельзя — без них свежая установка молча уходила бы в remote-STT.
+Source: "..\..\publish\app-inno\models\v2_ctc.onnx"; DestDir: "{app}\models"; Flags: ignoreversion; Components: app
+Source: "..\..\publish\app-inno\models\labels.json"; DestDir: "{app}\models"; Flags: ignoreversion; Components: app
+; GigaAM v3 (v3_e2e_ctc.int8.onnx + vocab, ~215 МБ) — без skipifsourcedoesntexist:
+; отсутствие должно ронять сборку ещё в build-installer.sh.
+Source: "..\..\publish\app-inno\models\v3_e2e_ctc.int8.onnx"; DestDir: "{app}\models"; Flags: ignoreversion; Components: app
+Source: "..\..\publish\app-inno\models\v3_e2e_ctc_vocab.txt"; DestDir: "{app}\models"; Flags: ignoreversion; Components: app
+; Движок диаризации Nemotron (Sortformer через nemo_speech_asr_c.dll) — ОБЯЗАТЕЛЬНЫЙ
+; компонент: бандл nemo-speech vulkan (покрывает cpu) в {app}\nemo-speech (~56 МБ),
+; GGUF-модель (~82 МБ) в {app}\models. Раскладка — packaging/fetch-nemo.sh →
+; build-installer.sh (там жёсткий exit при отсутствии, до ISCC). Без
+; skipifsourcedoesntexist: если файла нет — ISCC падает, а не молча выпускает
+; инсталлятор без диаризации (TASK §175).
+Source: "..\..\publish\app-inno\nemo-speech\*"; DestDir: "{app}\nemo-speech"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: app
+Source: "..\..\publish\app-inno\models\Nemotron-3-Diarization.q8_0.gguf"; DestDir: "{app}\models"; Flags: ignoreversion; Components: app
 ; Модели Tesseract (rus+eng+osd) для вкладки «Экран OCR» — всегда, отдельным каталогом:
 ; TesseractRecognizer ищет их только в {app}\tessdata. Из свипа исключены (см. Excludes),
 ; чтобы зависимость OCR была видна в инсталляторе явно, а не «где-то в свипе».
@@ -212,6 +243,126 @@ var
   UpgradeMode: Boolean;   { True = ставим поверх существующей установки (апгрейд/переустановка) }
   ConfigResetPage: TInputOptionWizardPage;   { выбор: сбросить настройки или оставить }
   OldConfigPath: String;                      { %APPDATA%\BrainstormBuddy\config.json }
+
+{ --- Процессы, удерживающие файлы установки -------------------------------- }
+{ Restart Manager (CloseApplications) умеет закрывать только приложения с окнами.
+  MCP-хост BrainstormBuddy.McpHost.exe запускают внешние ИИ-агенты (Codex/Claude)
+  из подключения к Buddy MCP — это консольный процесс без окон, RM его не трогает,
+  и файл BrainstormBuddy.McpHost.dll остаётся залоченным: установка падает с
+  «DeleteFile ... Отказано в доступе». Поэтому оба процесса ловим сами. }
+
+{ Есть ли процесс с таким именем (точное имя exe). }
+function ProcessRunning(const ExeName: String): Boolean;
+var
+  ResultCode: Integer;
+  ListFile: String;
+  CmdLine: String;
+  ListText: AnsiString;
+  SearchText: String;
+begin
+  Result := False;
+  ListFile := ExpandConstant('{tmp}\bb-tasklist.csv');
+  DeleteFile(ListFile);
+  { tasklist пишет CSV в файл: так вывод читается без перехвата stdout. }
+  CmdLine := '/c tasklist /NH /FO CSV > "' + ListFile + '" 2>nul';
+  if not Exec(ExpandConstant('{cmd}'), CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Exit;
+  if not LoadStringFromFile(ListFile, ListText) then
+    Exit;
+  DeleteFile(ListFile);
+  { Имя образа в CSV заключено в кавычки - так "BrainstormBuddy.exe" не совпадёт
+    с "BrainstormBuddy.McpHost.exe". }
+  SearchText := ListText;
+  Result := Pos('"' + Uppercase(ExeName) + '"', Uppercase(SearchText)) > 0;
+end;
+
+{ Останавливает процесс: сначала мягко (WM_CLOSE), при неудаче — принудительно. }
+procedure StopProcess(const ExeName: String; Force: Boolean);
+var
+  ResultCode: Integer;
+  CmdLine: String;
+begin
+  CmdLine := '/c taskkill /IM "' + ExeName + '"';
+  if Force then
+    CmdLine := CmdLine + ' /F';
+  Exec(ExpandConstant('{cmd}'), CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+{ Ждёт исчезновения процесса (не дольше указанного числа секунд). }
+function WaitProcessExit(const ExeName: String; Seconds: Integer): Boolean;
+var I: Integer;
+begin
+  for I := 1 to Seconds * 2 do
+  begin
+    if not ProcessRunning(ExeName) then
+    begin
+      Result := True;
+      Exit;
+    end;
+    Sleep(500);
+  end;
+  Result := not ProcessRunning(ExeName);
+end;
+
+{ Закрывает приложение BrainstormBuddy: мягко, затем принудительно. }
+procedure CloseAppProcess;
+begin
+  StopProcess('{#MyAppExeName}', False);
+  if not WaitProcessExit('{#MyAppExeName}', 12) then
+  begin
+    StopProcess('{#MyAppExeName}', True);
+    WaitProcessExit('{#MyAppExeName}', 5);
+  end;
+end;
+
+{ Закрывает процессы, удерживающие файлы установки. Ask = True -> спрашиваем
+  пользователя (в тихой установке вопрос не показывается и процессы закрываются
+  молча). False -> установка прерывается, если процесс закрыть не удалось. }
+function EnsureProcessesClosed(Ask: Boolean): Boolean;
+var
+  HadApp, HadHost: Boolean;
+begin
+  Result := True;
+  HadApp := ProcessRunning('{#MyAppExeName}');
+  HadHost := ProcessRunning('{#MyAppHostExeName}');
+  if not (HadApp or HadHost) then Exit;
+
+  if HadApp then
+  begin
+    if Ask and (MsgBox(CustomMessage('CloseAppPrompt'), mbConfirmation, MB_YESNO) = IDNO) then
+    begin
+      Result := False;
+      Exit;
+    end;
+    Log('Закрываю работающий ' + '{#MyAppExeName}');
+    CloseAppProcess;
+    if ProcessRunning('{#MyAppExeName}') then
+    begin
+      MsgBox(CustomMessage('CloseAppFailed'), mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+  end;
+
+  if HadHost then
+  begin
+    if Ask and (MsgBox(CustomMessage('CloseMcpHostPrompt'), mbConfirmation, MB_YESNO) = IDNO) then
+    begin
+      Result := False;
+      Exit;
+    end;
+    { Хост — вспомогательный stdio-процесс клиента: в нём нет состояния, ИИ-агент
+      поднимет новый при следующем обращении. }
+    Log('Закрываю работающий ' + '{#MyAppHostExeName}');
+    StopProcess('{#MyAppHostExeName}', True);
+    WaitProcessExit('{#MyAppHostExeName}', 10);
+    if ProcessRunning('{#MyAppHostExeName}') then
+    begin
+      MsgBox(CustomMessage('CloseMcpHostFailed'), mbError, MB_OK);
+      Result := False;
+    end;
+  end;
+end;
 
 { Отделяет первый числовой компонент версии "1.2.3" (модифицирует S). }
 function VerPart(var S: String): Integer;
@@ -261,6 +412,14 @@ var Cmp: Integer;
 begin
   Result := True;
   UpgradeMode := False;
+  { Процессы, удерживающие файлы установки (приложение и MCP-хост ИИ-агента),
+    закрываем ДО мастера: иначе копирование падает с «Отказано в доступе».
+    В тихой установке спрашивать нечем — закрываем молча. }
+  if not EnsureProcessesClosed(not WizardSilent()) then
+  begin
+    Result := False;
+    Exit;
+  end;
   PrevVersion := GetInstalledVersion();
   if PrevVersion = '' then Exit;   { чистая установка — обычный мастер }
 
@@ -361,6 +520,11 @@ var
 begin
   if CurStep = ssInstall then
   begin
+    { Повторная проверка перед копированием: ИИ-агент мог поднять MCP-хост заново,
+      пока пользователь шёл по мастеру. Молча закрываем — согласие уже получено. }
+    if not EnsureProcessesClosed(False) then
+      Log('ВНИМАНИЕ: не удалось закрыть процесс, удерживающий файлы установки');
+
     try
       RemoveOldVelopack;
     except

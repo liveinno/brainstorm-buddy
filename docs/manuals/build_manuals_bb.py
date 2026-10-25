@@ -31,6 +31,7 @@ SUPPORT = "support@aigens.ru"
 YEAR = "2026"
 BASE = Path(__file__).resolve().parent
 SCREENSHOTS = BASE / "screenshots" / "bb"
+LANG = "ru"
 
 
 def _read_product_version() -> str:
@@ -57,9 +58,13 @@ MONTHS_RU = (
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 )
+MONTHS_EN = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
 
 
-def _edition_date() -> str:
+def _edition_date(lang: str = "ru") -> str:
     """Дата редакции документа: MANUAL_DATE=ГГГГ-ММ-ДД либо сегодняшняя локальная."""
     raw = os.environ.get("MANUAL_DATE", "").strip()
     if raw:
@@ -67,6 +72,8 @@ def _edition_date() -> str:
     else:
         today = date.today()
         year, month, day = today.year, today.month, today.day
+    if lang == "en":
+        return f"{MONTHS_EN[month - 1]} {day}, {year}"
     return f"{day} {MONTHS_RU[month - 1]} {year} г."
 
 
@@ -138,7 +145,8 @@ class Html:
         width = max(1, round(source_width * scale))
         height = max(1, round(source_height * scale))
         self.figure_number += 1
-        numbered_caption = f"Рисунок {self.figure_number} — {caption}"
+        figure_word = "Figure" if LANG == "en" else "Рисунок"
+        numbered_caption = f"{figure_word} {self.figure_number} — {caption}"
         return (
             f'<table class="figure {safe_size}"><tr><td><img src="{path.resolve().as_uri()}" '
             f'width="{width}" height="{height}" alt="{html.escape(numbered_caption, quote=True)}">'
@@ -211,7 +219,7 @@ tbody tr:nth-child(even) td { background: #f7f3f1; }
 .callout-title { font-weight: 700; margin-bottom: 2pt; }
 .figure { margin: 10pt auto 13pt auto; text-align: center; page-break-inside: avoid; }
 .figure td { border: 0; padding: 0; text-align: center; vertical-align: top; }
-.figure img { border: 0.7pt solid #d8d0d7; background: #171318; }
+.figure img { border: 0.7pt solid #d8d0d7; background: #ffffff; }
 .figure.wide img { max-width: 168mm; max-height: 178mm; }
 .figure.medium img { max-width: 118mm; max-height: 142mm; }
 .figure.small img { max-width: 78mm; max-height: 105mm; }
@@ -244,65 +252,117 @@ def load_content(module_name: str):
 
 
 def cover(title: str, subtitle: str) -> str:
+    if LANG == "en":
+        kicker = f"{PUBLISHER} · official documentation"
+        version_label = f"Product version {VERSION}"
+        edition_label = f"Document edition: {EDITION_DATE}"
+    else:
+        kicker = f"{PUBLISHER} · официальная документация"
+        version_label = f"Версия продукта {VERSION}"
+        edition_label = f"Редакция документа: {EDITION_DATE}"
     return f"""
 <div class="cover">
   <div class="cover-rule"></div>
-  <div class="cover-kicker">{html.escape(PUBLISHER)} · официальная документация</div>
+  <div class="cover-kicker">{html.escape(kicker)}</div>
   <h1>{html.escape(title)}</h1>
   <div class="cover-subtitle">{html.escape(subtitle)}</div>
   <div class="cover-meta">
-    <div class="cover-version">Версия продукта {VERSION}</div>
-    <div>Редакция документа: {EDITION_DATE}</div>
+    <div class="cover-version">{html.escape(version_label)}</div>
+    <div>{html.escape(edition_label)}</div>
     <div>© {YEAR} {html.escape(PUBLISHER)}</div>
   </div>
 </div>"""
 
 
 def front_matter(doc_kind: str, audience: str, purpose: str) -> str:
-    rows = [
-        ("Продукт", f"{PRODUCT} {VERSION}"),
-        ("Тип документа", doc_kind),
-        ("Аудитория", audience),
-        ("Сайт", WEBSITE),
-        ("Поддержка", SUPPORT),
-    ]
+    if LANG == "en":
+        rows = [
+            ("Product", f"{PRODUCT} {VERSION}"),
+            ("Document type", doc_kind),
+            ("Audience", audience),
+            ("Website", WEBSITE),
+            ("Support", SUPPORT),
+        ]
+        about = "About this document"
+        purpose_title = "Purpose"
+        source_title = "Source of truth"
+        source_text = (
+            f"This guide describes the actual user and operational capabilities of "
+            f"{PRODUCT} {VERSION}. Appearance may vary slightly with DPI, the Windows "
+            "theme, and the available devices."
+        )
+        legend_title = "Conventions"
+        legend_head = ("Convention", "Meaning")
+        legend_rows = [
+            ("Bold text", "Name of a button, field, window, or menu item."),
+            ("Monospace text", "Command, parameter, path, or configuration value."),
+            ("Warning", "Action with consequences for recording, data, or compatibility."),
+        ]
+        toc_title = "Contents"
+    else:
+        rows = [
+            ("Продукт", f"{PRODUCT} {VERSION}"),
+            ("Тип документа", doc_kind),
+            ("Аудитория", audience),
+            ("Сайт", WEBSITE),
+            ("Поддержка", SUPPORT),
+        ]
+        about = "О документе"
+        purpose_title = "Назначение"
+        source_title = "Источник истины"
+        source_text = (
+            f"Руководство описывает фактические пользовательские и эксплуатационные "
+            f"возможности BrainstormBuddy {VERSION}. Внешний вид может незначительно "
+            "отличаться из-за DPI, темы Windows и состава устройств."
+        )
+        legend_title = "Условные обозначения"
+        legend_head = ("Обозначение", "Смысл")
+        legend_rows = [
+            ("Полужирный текст", "Название кнопки, поля, окна или пункта меню."),
+            ("Моноширинный текст", "Команда, параметр, путь или значение конфигурации."),
+            ("Предупреждение", "Действие с последствиями для записи, данных или совместимости."),
+        ]
+        toc_title = "Оглавление"
     table_rows = "".join(
         f"<tr><td>{html.escape(a)}</td><td>{html.escape(b)}</td></tr>" for a, b in rows
     )
+    legend = "".join(
+        f"<tr><td>{html.escape(a)}</td><td>{html.escape(b)}</td></tr>" for a, b in legend_rows
+    )
     return f"""
 <div class="front">
-  <h1 style="page-break-before: always;">О документе</h1>
+  <h1 style="page-break-before: always;">{html.escape(about)}</h1>
   <table class="doc-grid">{table_rows}</table>
-  <h2>Назначение</h2>
+  <h2>{html.escape(purpose_title)}</h2>
   <p>{html.escape(purpose)}</p>
-  <div class="callout info"><div class="callout-title">Источник истины</div>
-  <div>Руководство описывает фактические пользовательские и эксплуатационные возможности BrainstormBuddy {VERSION}. Внешний вид может незначительно отличаться из-за DPI, темы Windows и состава устройств.</div></div>
-  <h2>Условные обозначения</h2>
-  <table><thead><tr><th>Обозначение</th><th>Смысл</th></tr></thead><tbody>
-  <tr><td>Полужирный текст</td><td>Название кнопки, поля, окна или пункта меню.</td></tr>
-  <tr><td>Моноширинный текст</td><td>Команда, параметр, путь или значение конфигурации.</td></tr>
-  <tr><td>Предупреждение</td><td>Действие с последствиями для записи, данных или совместимости.</td></tr>
+  <div class="callout info"><div class="callout-title">{html.escape(source_title)}</div>
+  <div>{html.escape(source_text)}</div></div>
+  <h2>{html.escape(legend_title)}</h2>
+  <table><thead><tr><th>{html.escape(legend_head[0])}</th><th>{html.escape(legend_head[1])}</th></tr></thead><tbody>
+  {legend}
   </tbody></table>
 </div>
 <div class="front" style="page-break-before: always;">
-  <div class="toc-title">Оглавление</div>
+  <div class="toc-title">{html.escape(toc_title)}</div>
   <p class="toc-marker">[[TOC]]</p>
 </div>"""
 
 
 def render_html(title: str, subtitle: str, kind: str, audience: str, purpose: str, chapters) -> str:
     body = [cover(title, subtitle), front_matter(kind, audience, purpose)]
+    chapter_word = "Chapter" if LANG == "en" else "Глава"
     for index, (chapter_title, chapter_html) in enumerate(chapters):
         page_break = ' style="page-break-before: always;"' if index == 0 else ""
         protected_title = re.sub(
             r"^(\d+)\. ",
-            lambda match: f"Глава&nbsp;{match.group(1)}.&nbsp;",
+            lambda match: f"{chapter_word}&nbsp;{match.group(1)}.&nbsp;",
             html.escape(chapter_title),
             count=1,
         )
         body.append(f'<section class="chapter"><h1{page_break}>{protected_title}</h1>{chapter_html}</section>')
+    html_lang = "en" if LANG == "en" else "ru"
     return (
-        '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+        f'<!doctype html><html lang="{html_lang}"><head><meta charset="utf-8">'
         f'<title>{html.escape(title)}</title><style>{CSS}</style></head><body>'
         + "".join(body)
         + "</body></html>"
@@ -444,7 +504,12 @@ def stamp_docx_metadata(path: Path, title: str) -> None:
         set_text("dc", "subject", f"{PRODUCT} {VERSION}")
         set_text("dc", "creator", PUBLISHER)
         set_text("cp", "lastModifiedBy", PUBLISHER)
-        set_text("cp", "keywords", f"{PRODUCT}; BrainstormBuddy; руководство; {VERSION}")
+        keywords = (
+            f"{PRODUCT}; BrainstormBuddy; documentation; {VERSION}"
+            if LANG == "en"
+            else f"{PRODUCT}; BrainstormBuddy; руководство; {VERSION}"
+        )
+        set_text("cp", "keywords", keywords)
         core_bytes = ElementTree.tostring(core, encoding="utf-8", xml_declaration=True)
         with zipfile.ZipFile(replacement, "w") as target:
             for member in source.infolist():
@@ -456,11 +521,61 @@ def psq(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def build(keep_html: bool = False) -> None:
+def build(keep_html: bool = False, lang: str = "ru") -> None:
+    global LANG, EDITION_DATE
+    LANG = "en" if lang == "en" else "ru"
+    EDITION_DATE = _edition_date(LANG)
     if os.name != "nt":
         raise SystemExit("Microsoft Word COM build is supported only on Windows")
     if not SCREENSHOTS.is_dir():
         raise FileNotFoundError(SCREENSHOTS)
+
+    if LANG == "en":
+        chapters = load_content("user_content_en")
+        if len(chapters) < 10:
+            raise ValueError("Manual content is incomplete: expected at least 10 chapters")
+        user_html = render_html(
+            "BrainstormBuddy User Guide",
+            "Assistant for online meetings: overlay, speech recognition, and LLM answers",
+            "User Guide",
+            "BrainstormBuddy users and support specialists",
+            "Step-by-step guidance for every user-facing mode and control in the current version.",
+            chapters,
+        )
+        stem = f"UserGuide_BrainstormBuddy_{VERSION}_EN"
+        user_docx, user_pdf = BASE / f"{stem}.docx", BASE / f"{stem}.pdf"
+        with tempfile.TemporaryDirectory(prefix="bb-manuals-en-") as tmp_name:
+            tmp = Path(tmp_name)
+            user_source = tmp / "user.html"
+            user_source.write_text(user_html, encoding="utf-8-sig")
+            ps1 = tmp / "convert.ps1"
+            ps1.write_text(
+                powershell_script([(user_source, user_docx, user_pdf, "User Guide")]),
+                encoding="utf-8-sig",
+            )
+            subprocess.run(
+                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
+                check=True,
+                cwd=BASE,
+            )
+            stamp_docx_metadata(user_docx, "BrainstormBuddy User Guide")
+            ps1.write_text(
+                export_powershell_script([(user_docx, user_pdf)]),
+                encoding="utf-8-sig",
+            )
+            subprocess.run(
+                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
+                check=True,
+                cwd=BASE,
+            )
+            if keep_html:
+                (BASE / f"{stem}.html").write_text(user_html, encoding="utf-8-sig")
+        for path in (user_docx, user_pdf):
+            if not path.is_file() or path.stat().st_size < 20_000:
+                raise RuntimeError(f"Build did not produce a valid-looking file: {path}")
+            print(f"{path.name}\t{path.stat().st_size} bytes")
+        return
+
     user_chapters = load_content("user_content_bb")
     admin_chapters = load_content("admin_content_bb")
     if len(user_chapters) < 10 or len(admin_chapters) < 9:
@@ -530,8 +645,9 @@ def build(keep_html: bool = False) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--keep-html", action="store_true", help="keep intermediate HTML beside the manuals")
+    parser.add_argument("--lang", choices=("ru", "en"), default="ru", help="manual language (default: ru)")
     args = parser.parse_args()
-    build(args.keep_html)
+    build(args.keep_html, args.lang)
 
 
 if __name__ == "__main__":

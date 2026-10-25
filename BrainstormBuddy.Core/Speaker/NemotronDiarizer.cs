@@ -59,7 +59,8 @@ public sealed class NemotronDiarizer : IStreamingSpeakerDiarizer
     private int _resyncWarned;        // WARN про авто-ресинк — один раз на эпизод (повторные идут в Info)
     private int _resyncRequested;     // worker должен выполнить авто-ресинк стрима (устойчивое переполнение)
     private readonly OverflowTracker _overflow = new(ChannelCapacity, QueueRecoverLevel, (long)OverflowResyncAfter.TotalMilliseconds);
-    private volatile bool _disposed;
+    private int _disposedInt; // 0/1; читается через _disposed, атомарный CAS в Dispose
+    private bool _disposed => Volatile.Read(ref _disposedInt) != 0;
 
     // Фактический бэкенд последнего живого инстанса — читает VM настроек
     // (Core-VM не видит экземпляр). Доступ только через Volatile/Interlocked.
@@ -122,14 +123,16 @@ public sealed class NemotronDiarizer : IStreamingSpeakerDiarizer
         }
     }
 
-    // Ищем GPU=0 на gpu-бандлах (vulkan/cuda), иначе сразу CPU. Неудача create
-    // на одном индексе -> следующий кандидат (gpu=0 может не иметь устройства).
+    // Ищем GPU=0 на gpu-бандлах. Vulkan-бандл может перейти на CPU (gpu=-1),
+    // если GPU create не удался. CUDA-бандл повторно не инициализируем: его
+    // gpu=-1 использует тот же CUDA runtime и не устраняет native abort.
     private static NemotronDiarizer? CreateModel(string bundleDir, string backend,
         string modelPath, string? preset, LoggingService? logger)
     {
         var cpuOnly = backend?.Trim().Equals("cpu", StringComparison.OrdinalIgnoreCase) == true
                       || bundleDir.Contains("x-cpu", StringComparison.OrdinalIgnoreCase);
-        int[] gpuCandidates = cpuOnly ? new[] { -1 } : new[] { 0, -1 };
+        var cudaBundle = IsCudaBundle(bundleDir);
+        int[] gpuCandidates = cpuOnly ? new[] { -1 } : cudaBundle ? new[] { 0 } : new[] { 0, -1 };
 
         IntPtr modelPtr = IntPtr.Zero;
         var gpuUsed = -1; // индекс gpu, на котором create удался (-1 = cpu-режим)
@@ -157,6 +160,10 @@ public sealed class NemotronDiarizer : IStreamingSpeakerDiarizer
                     break;
                 }
                 logger?.Warn($"Nemotron diar_create(gpu={gpu}) failed: {st} {NemoSpeechNative.LastErrorString()}", LogCategory);
+                if (gpu == 0 && cudaBundle)
+                {
+                    logger?.Warn("Nemotron: CUDA create failed; not retrying gpu=-1 because it would re-initialize the same CUDA runtime in this process.", LogCategory);
+                }
                 modelPtr = IntPtr.Zero;
             }
         }
@@ -205,8 +212,7 @@ public sealed class NemotronDiarizer : IStreamingSpeakerDiarizer
     {
         if (gpuUsed < 0)
             return "cpu";
-        if (File.Exists(Path.Combine(bundleDir, "ggml-cuda.dll"))
-            || bundleDir.Contains("x-cuda", StringComparison.OrdinalIgnoreCase))
+        if (IsCudaBundle(bundleDir))
             return "cuda";
         if (File.Exists(Path.Combine(bundleDir, "ggml-vulkan.dll"))
             || bundleDir.Contains("x-vulkan", StringComparison.OrdinalIgnoreCase))
@@ -214,6 +220,10 @@ public sealed class NemotronDiarizer : IStreamingSpeakerDiarizer
         var req = requested?.Trim().ToLowerInvariant();
         return req is "cpu" or "vulkan" or "cuda" ? req : "gpu";
     }
+
+    private static bool IsCudaBundle(string bundleDir)
+        => File.Exists(Path.Combine(bundleDir, "ggml-cuda.dll"))
+           || bundleDir.Contains("x-cuda", StringComparison.OrdinalIgnoreCase);
 
     // Очередь держится полной дольше этого окна → бэкенд стабильно не успевает,
     // drop-oldest разорвал шкалу индексов → авто-ресинк стрима (worker).
@@ -397,6 +407,10 @@ public sealed class NemotronDiarizer : IStreamingSpeakerDiarizer
             _gate.Wait();
             try
             {
+                // Dispose может выиграть гонку после проверки в начале Reset,
+                // но до входа под gate: не открываем стрим на уничтоженной модели.
+                if (_disposed)
+                    return;
                 CloseStreamLocked();
                 var st = NemoSpeechNative.nemo_speech_diar_stream_open(_model, out _stream);
                 if (st != NemoStatus.Ok || _stream == IntPtr.Zero)
@@ -446,6 +460,10 @@ public sealed class NemotronDiarizer : IStreamingSpeakerDiarizer
             _gate.Wait();
             try
             {
+                // Worker может начать ресинк до CAS-guard Dispose, но получить gate
+                // уже после него: не переоткрываем стрим на уничтоженной модели.
+                if (_disposed)
+                    return;
                 CloseStreamLocked();
                 var st = NemoSpeechNative.nemo_speech_diar_stream_open(_model, out _stream);
                 if (st != NemoStatus.Ok || _stream == IntPtr.Zero)
@@ -482,9 +500,11 @@ public sealed class NemotronDiarizer : IStreamingSpeakerDiarizer
 
     public void Dispose()
     {
-        if (_disposed)
+        // Атомарный CAS вместо check-then-set: параллельный Dispose (worker-стоп
+        // + явный Dispose) иначе дважды пройдёт в stream_close/diar_destroy —
+        // native double-free, падение процесса (audited 2026-10-17, см. RESULT §CUDA).
+        if (Interlocked.CompareExchange(ref _disposedInt, 1, 0) != 0)
             return;
-        _disposed = true;
         // Снимаем публикацию бэкенда только если она наша — более новый инстанс
         // (hot-swap настроек) мог уже записать свой EffectiveBackend.
         Interlocked.CompareExchange(ref _lastActiveBackend, null, EffectiveBackend);

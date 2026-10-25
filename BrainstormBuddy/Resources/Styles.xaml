@@ -21,9 +21,11 @@
          Typography.xaml БЕЗ BasedOn → белые системные редакторы, репорт H01).
          Геометрия: MinHeight 36, padding 12,8 однострочный / 12,10
          многострочный, радиус 8, граница 1.
-         Отступ применяется ОДИН раз — как Padding внутреннего Bd (дефолтный
-         шаблон WPF); Margin={TemplateBinding Padding} на PART_ContentHost
-         дублировал отступ → поле мерилось 48.94 вместо 36 (репорт H03).
+         ⚠ Padding применяется на ScrollViewer PART_ContentHost, НЕ на Bd:
+         паддинг на внешнем Border/маргин на ScrollViewer отрезает TextView от
+         границы вьюпорта → текст рисуется обрезанными точками/невидим
+         (баг 2.29.3 «невидимый текст в полях ввода»). Вариант проверен
+         живым репро: Padding на ScrollViewer рендерит корректно.
          Фокус — внутренняя рамка AccentSoftBrush 2px поверх 1px-бордера:
          контент не сдвигается. AcceptsReturn → ScrollViewer Stretch:
          текст сверху, область прокрутки заполняет высоту. -->
@@ -46,9 +48,10 @@
                         <Border x:Name="Bd" Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                                CornerRadius="8">
                             <ScrollViewer x:Name="PART_ContentHost"
-                                          VerticalAlignment="Center"/>
+                                          VerticalAlignment="Center"
+                                          Padding="{TemplateBinding Padding}"/>
                         </Border>
                         <Border x:Name="FocusRing" BorderBrush="{DynamicResource AccentSoftBrush}"
                                 BorderThickness="2" CornerRadius="8" IsHitTestVisible="False"
@@ -125,9 +128,10 @@
                         <Border x:Name="Bd" Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                                CornerRadius="8">
                             <ScrollViewer x:Name="PART_ContentHost"
-                                          VerticalAlignment="Center"/>
+                                          VerticalAlignment="Center"
+                                          Padding="{TemplateBinding Padding}"/>
                         </Border>
                         <Border x:Name="FocusRing" BorderBrush="{DynamicResource AccentSoftBrush}"
                                 BorderThickness="2" CornerRadius="8" IsHitTestVisible="False"
@@ -547,6 +551,166 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+    </Style>
+
+    <!-- RadioButton (MCP-fix): раньше неявного стиля не было — контент
+         рисовался системным чёрным на тёмной теме (дефект «чёрные подписи
+         в мастере MCP»). Геометрация как у CheckBox: индикатор 18x18,
+         отступ до текста 8, центр на первой строке. -->
+    <Style TargetType="RadioButton">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+        <Setter Property="Margin" Value="0,4"/>
+        <Setter Property="MinHeight" Value="28"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FontFamily" Value="{StaticResource UiFontFamily}"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontWeight" Value="Normal"/>
+        <Setter Property="TextBlock.LineHeight" Value="20"/>
+        <Setter Property="TextBlock.LineStackingStrategy" Value="BlockLineHeight"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Grid Background="Transparent" Cursor="{TemplateBinding Cursor}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid Grid.Column="0" MinHeight="20"
+                              Height="{Binding ActualHeight, ElementName=ContentSite}"
+                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
+                            <Grid Width="18" Height="18" VerticalAlignment="Top"
+                                  Margin="0,1,0,0">
+                                <Ellipse x:Name="Ring" Fill="{DynamicResource PanelBrush}"
+                                         Stroke="{DynamicResource BorderBrush}" StrokeThickness="1"/>
+                                <Ellipse x:Name="Dot" Width="8" Height="8"
+                                         Fill="{DynamicResource AccentTextBrush}"
+                                         Visibility="Collapsed"/>
+                                <Ellipse x:Name="FocusRing" Width="18" Height="18"
+                                         Stroke="{DynamicResource AccentSoftBrush}" StrokeThickness="2"
+                                         IsHitTestVisible="False" Visibility="Collapsed"/>
+                            </Grid>
+                        </Grid>
+                        <ContentPresenter x:Name="ContentSite" Grid.Column="2"
+                                          TextBlock.Foreground="{TemplateBinding Foreground}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
+                            <ContentPresenter.Resources>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                </Style>
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Ring" Property="Fill" Value="{DynamicResource AccentDimBrush}"/>
+                            <Setter TargetName="Ring" Property="Stroke" Value="{DynamicResource AccentDimBrush}"/>
+                            <Setter TargetName="Dot" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Ring" Property="Stroke" Value="{DynamicResource AccentBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Expander (MCP-fix): дефолтный шаблон рисовал системные цвета.
+         Компактная версия: стрелка-символ, поворот при раскрытии,
+         заголовок TextBrush; контент под заголовком. -->
+    <Style TargetType="Expander">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+        <Setter Property="FontFamily" Value="{StaticResource UiFontFamily}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Expander">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <ToggleButton x:Name="HeaderToggle" Grid.Row="0"
+                                      IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                      Content="{TemplateBinding Header}"
+                                      Foreground="{DynamicResource TextBrush}"
+                                      Cursor="Hand" Background="Transparent" Focusable="True">
+                            <ToggleButton.Template>
+                                <ControlTemplate TargetType="ToggleButton">
+                                    <!-- Border с прозрачным фоном: вся строка заголовка
+                                         кликабельна, а не только стрелка с текстом
+                                         (StackPanel без фона не ловит клики по пустому месту). -->
+                                    <Border Background="Transparent" Padding="0,2,0,2">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock x:Name="Arrow" Text="▸" FontSize="12"
+                                                   Foreground="{DynamicResource TextMutedBrush}"
+                                                   VerticalAlignment="Center" Margin="0,0,6,0"
+                                                   RenderTransformOrigin="0.5,0.5">
+                                            <TextBlock.RenderTransform>
+                                                <RotateTransform Angle="0"/>
+                                            </TextBlock.RenderTransform>
+                                        </TextBlock>
+                                        <ContentPresenter TextBlock.Foreground="{DynamicResource TextBrush}"/>
+                                    </StackPanel>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsChecked" Value="True">
+                                            <Setter TargetName="Arrow" Property="RenderTransform">
+                                                <Setter.Value>
+                                                    <RotateTransform Angle="90"/>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Trigger>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="Arrow" Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                                        </Trigger>
+                                        <!-- Клавиатурный фокус виден: подпись и стрелка
+                                             подсвечены, иначе не видно, где стоит Tab. -->
+                                        <Trigger Property="IsKeyboardFocused" Value="True">
+                                            <Setter TargetName="Arrow" Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                                            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </ToggleButton.Template>
+                        </ToggleButton>
+                        <ContentPresenter x:Name="ExpandSite" Grid.Row="1" Margin="18,6,0,0"
+                                          Visibility="Collapsed"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsExpanded" Value="True">
+                            <Setter TargetName="ExpandSite" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Карточка по §7 MCP-спеки: PanelBrush + BorderBrush 1 + radius 10 +
+         padding 16. Для списков подключений, облачного блока, JSON-панелей. -->
+    <Style x:Key="CardBorder" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="10"/>
+        <Setter Property="Padding" Value="16"/>
+        <Setter Property="Margin" Value="0,0,0,8"/>
+    </Style>
+
+    <!-- JSON/конфиг-блок: та же карточка, но padding 12 — контент внутри
+         моноширинный CodeText (JetBrains Mono 12/18). -->
+    <Style x:Key="JsonPanel" TargetType="Border" BasedOn="{StaticResource CardBorder}">
+        <Setter Property="Padding" Value="12"/>
     </Style>
 
     <Style TargetType="TabItem">

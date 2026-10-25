@@ -25,14 +25,16 @@ public sealed class MemoryConsolidator : IMemoryConsolidator
     private readonly IMemoryEmbeddingProvider? _emb;
     private readonly MemoryConfig _cfg;
     private readonly LoggingService? _log;
+    private readonly Action<AskResult>? _onUsage;
 
     public MemoryConsolidator(IApiClient? llm, IMemoryEmbeddingProvider? emb,
-        MemoryConfig cfg, LoggingService? log)
+        MemoryConfig cfg, LoggingService? log, Action<AskResult>? onUsage = null)
     {
         _llm = llm;
         _emb = emb;
         _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
         _log = log;
+        _onUsage = onUsage;
     }
 
     public async Task<ConsolidationPlan> PlanAsync(List<MemoryItem> candidates,
@@ -230,7 +232,10 @@ public sealed class MemoryConsolidator : IMemoryConsolidator
             var prompt = BuildMergePrompt(rest, start, take, existingCtx);
             var resp = await AskSafeAsync(prompt, ct);
             if (resp == null)
+            {
+                _log?.Warn($"Consolidate: merge batch @N{start} ({take} cand) skipped — empty/errored LLM reply, кандидаты уходят в Insert без дедупа", LogCategory);
                 continue; // батч без ответа → его кандидаты просто уходят в Insert
+            }
 
             foreach (var (a, b) in ParsePairs(resp))
             {
@@ -322,15 +327,27 @@ public sealed class MemoryConsolidator : IMemoryConsolidator
     {
         try
         {
+            // Бюджет config-driven (было зашито 1500): reasoning-модель клала
+            // ответ в reasoning_content и исчерпывала 1500 → finish=length,
+            // content пуст → батч молча терял merge. См. MemoryConfig.ConsolidateMaxTokens.
+            var maxTokens = Math.Max(256, _cfg.ConsolidateMaxTokens);
             var r = await _llm!.AskAsync(userText,
                 "Ты — модуль дедупликации памяти встреч. Отвечай строго одним JSON-объектом.",
-                maxTokens: 1500, new List<ChatMessage>(), ct, background: true, requestTimeout: TimeSpan.FromSeconds(120));
+                maxTokens, new List<ChatMessage>(), ct, background: true, requestTimeout: TimeSpan.FromSeconds(120));
+            // §8.1: учёт РОВНО этого реального запроса (в т.ч. проваленного —
+            // токены списаны). Фоновый spend памяти → отдельный счётчик.
+            _onUsage?.Invoke(r);
             if (r.Error != null)
             {
                 _log?.Warn($"Consolidate: merge LLM failed ({r.Error})", LogCategory);
                 return null;
             }
-            return string.IsNullOrWhiteSpace(r.Content) ? null : r.Content;
+            if (string.IsNullOrWhiteSpace(r.Content))
+            {
+                _log?.Warn($"Consolidate: merge LLM empty content (finish={r.FinishReason ?? "null"}, kind={r.EmptyKind}, budget={maxTokens})", LogCategory);
+                return null;
+            }
+            return r.Content;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -27,6 +27,12 @@ internal static class NemotronBundle
     private static string? _error;    // последний провал; валиден только для _errorKey
     private static string? _errorKey; // набор кандидат-каталогов, на котором случился _error
     private static int _resolverInstalled; // 0/1 — SetDllImportResolver ставим один раз
+    // -1 — не проверяли, 0 — CUDA недоступна/несовместима, 1 — probe прошёл.
+    // ggml_cuda_init при неудаче абортит процесс (лог 2026-10-17: сбой
+    // testhost "ggml_cuda_init: failed to initialize CUDA"), поэтому перед
+    // загрузкой cuda-бандла проверяем драйвер безопасными вызовами driver API.
+    private static int _cudaProbe = -1;
+
 
     /// <summary>
     /// backend: "auto" (cuda → vulkan → cpu) | "cpu" | "vulkan" | "cuda".
@@ -54,6 +60,19 @@ internal static class NemotronBundle
             {
                 if (!IsBundleDir(dir))
                     continue;
+
+                // CUDA-бандл грузим только при живом совместимом драйвере:
+                // иначе ggml_cuda_init внутри abort'ит весь процесс.
+                if (dir.Contains("cuda", StringComparison.OrdinalIgnoreCase)
+                    || File.Exists(Path.Combine(dir, "ggml-cuda.dll")))
+                {
+                    if (!CudaUsable(dir, out var cudaWhy))
+                    {
+                        lastError = $"{dir}: CUDA недоступна ({cudaWhy})";
+                        logger?.Warn($"nemo-speech cuda bundle skipped: {lastError}", LogCategory);
+                        continue;
+                    }
+                }
 
                 var path = Path.Combine(dir, LibFile);
                 // AddDllDirectory ставит каталог бандла в user-search-dirs;
@@ -153,6 +172,87 @@ internal static class NemotronBundle
             return _handle; // Zero -> обычный поиск до первого TryLoad
         return IntPtr.Zero;
     }
+
+    /// <summary>
+    /// Безопасная проверка CUDA до загрузки бандла: driver API
+    /// (cuInit/cuDriverGetVersion/cuDeviceGetCount) не абортит процесс, в отличие
+    /// от ggml_cuda_init. Дополнительно сверяем major-версию CUDA-тулкита
+    /// (по имени cublas64_NN.dll) с версией драйвера: toolkit N требует
+    /// драйвер ≥ N (minor-compatibility только в рамках мажора).
+    /// </summary>
+    private static bool CudaUsable(string bundleDir, out string why)
+    {
+        why = "";
+        if (Volatile.Read(ref _cudaProbe) == 0)
+        {
+            why = "driver probe failed ранее";
+            return false;
+        }
+
+        try
+        {
+            var st = cuInit(0);
+            if (st != 0)
+            {
+                Volatile.Write(ref _cudaProbe, 0);
+                why = $"cuInit={st}";
+                return false;
+            }
+            st = cuDeviceGetCount(out var count);
+            if (st != 0 || count < 1)
+            {
+                Volatile.Write(ref _cudaProbe, 0);
+                why = st != 0 ? $"cuDeviceGetCount={st}" : "0 CUDA-устройств";
+                return false;
+            }
+            var driverVer = 0;
+            if (cuDriverGetVersion(ref driverVer) != 0)
+                driverVer = 0;
+            var drvMajor = driverVer / 1000;
+
+            var toolkitMajor = CudaToolkitMajor(bundleDir);
+            if (toolkitMajor > 0 && drvMajor > 0 && drvMajor < toolkitMajor)
+            {
+                Volatile.Write(ref _cudaProbe, 0);
+                why = $"драйвер CUDA {drvMajor} < toolkit {toolkitMajor} (cublas64_{toolkitMajor}.dll)";
+                return false;
+            }
+
+            Volatile.Write(ref _cudaProbe, 1);
+            return true;
+        }
+        catch (Exception ex) // DllNotFound/EntryPointNotFound — nvcuda нет вовсе
+        {
+            Volatile.Write(ref _cudaProbe, 0);
+            why = ex.GetType().Name;
+            return false;
+        }
+    }
+
+    /// <summary>Major CUDA-тулкита по имени cublas64_NN.dll / cudart64_NN.dll в бандле; 0 — не нашли.</summary>
+    private static int CudaToolkitMajor(string bundleDir)
+    {
+        foreach (var pattern in new[] { "cublas64_*.dll", "cudart64_*.dll" })
+        {
+            foreach (var f in Directory.GetFiles(bundleDir, pattern))
+            {
+                var name = Path.GetFileNameWithoutExtension(f);
+                var tail = name[(name.LastIndexOf('_') + 1)..];
+                if (int.TryParse(tail, out var v))
+                    return v;
+            }
+        }
+        return 0;
+    }
+
+    [DllImport("nvcuda", EntryPoint = "cuInit", SetLastError = false)]
+    private static extern int cuInit(uint flags);
+
+    [DllImport("nvcuda", EntryPoint = "cuDeviceGetCount")]
+    private static extern int cuDeviceGetCount(out int count);
+
+    [DllImport("nvcuda", EntryPoint = "cuDriverGetVersion")]
+    private static extern int cuDriverGetVersion(ref int version);
 
     private const uint LOAD_LIBRARY_SEARCH_DEFAULT_DIRS = 0x00001000;
     private const uint LOAD_LIBRARY_SEARCH_USER_DIRECTORIES = 0x00000400;

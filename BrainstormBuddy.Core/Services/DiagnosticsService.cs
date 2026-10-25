@@ -12,7 +12,7 @@ namespace BrainstormBuddy.Services;
 
 /// <summary>
 /// Собирает обезличенный архив для поддержки: логи + настройки без токенов + сведения
-/// о системе + недавние ошибки + краш-артефакты (crash.log, crash-last.txt). НАМЕРЕННО
+/// о системе + недавние ошибки + краш-артефакты (crash.log, crash-last.txt, ui-hang.log). НАМЕРЕННО
 /// НЕ включает историю вопросов/ответов (qa_history.txt), транскрибации и WER-дампы
 /// (*.dmp сотни МБ — в манифесте только перечисляются) — это персональные данные
 /// и тяжёлые файлы, остаются на машине юзера.
@@ -90,7 +90,8 @@ public static class DiagnosticsService
             catch (Exception ex) { manifest.AppendLine($"  • app*.log — ПРОПУЩЕНО ({ex.Message})"); }
 
             // 4) Краш-артефакты: прямой журнал фаталов (пишется в обход логгера из
-            // UnhandledException-хендлеров) и маркер последнего managed-креша.
+            // UnhandledException-хендлеров), маркер последнего managed-креша и
+            // ui-hang.log от UiWatchdog (снимок UI-потока перед FailFast).
             // Best-effort: файла нет — просто не добавляем.
             try
             {
@@ -108,6 +109,18 @@ public static class DiagnosticsService
                     var clean = RedactLogText(SafeRead(crashLastPath));
                     File.WriteAllText(Path.Combine(staging, "crash-last.txt"), clean, Encoding.UTF8);
                     manifest.AppendLine("  • crash-last.txt — маркер последнего managed-креша");
+                }
+
+                // Снимок зависания UI: UiWatchdog пишет сюда ПЕРЕД FailFast, поэтому
+                // это единственное место, где остаётся объяснение «само закрылось».
+                // Файл копится за всю жизнь установки (по строке на промах пинга) —
+                // берём хвост, как у crash.log, и тем же обезличивателем.
+                var uiHangPath = Path.Combine(appDataDir, "logs", "ui-hang.log");
+                if (File.Exists(uiHangPath))
+                {
+                    var clean = RedactLogText(TailLines(SafeRead(uiHangPath), 200));
+                    File.WriteAllText(Path.Combine(staging, "ui-hang.log"), clean, Encoding.UTF8);
+                    manifest.AppendLine("  • ui-hang.log — снимки зависания UI перед аварийным выходом (хвост, до 200 строк)");
                 }
             }
             catch (Exception ex) { manifest.AppendLine($"  • crash-артефакты — ПРОПУЩЕНО ({ex.Message})"); }

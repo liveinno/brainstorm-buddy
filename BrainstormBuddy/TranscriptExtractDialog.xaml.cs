@@ -2,15 +2,17 @@ using System.Collections.ObjectModel;
 using System.Windows;
 using BrainstormBuddy.Ai;
 using BrainstormBuddy.Memory;
+using BrainstormBuddy.Memory.Extraction;
 
 namespace BrainstormBuddy;
 
 /// <summary>
 /// Диалог «Извлечь в память» из окна файловой транскрибации: правила извлечения
-/// (необязательные, запоминаются в Config.Memory.TranscriptExtractRules) →
-/// LLM (TranscriptFactExtractor.BuildPrompt → ApiClient.AskAsync → ParseOutput)
-/// → список директив с чекбоксами → MemoryWriter.ApplyAsync → тост + AppMessageBox.
-/// Память выключена (MemoryStore == null / Config.Memory.Enabled == false) —
+/// (необязательные, запоминаются в Config.Memory.TranscriptExtractRules) ->
+/// TranscriptFactExtractor.ExtractAsync (чанкинг всего транскрипта, прогресс по
+/// частям) -> список директив с чекбоксами -> TranscriptFactSaver.SaveAsync
+/// (идемпотентно, привязка к исходной встрече) -> тост + AppMessageBox.
+/// Память выключена (MemoryStore == null / Config.Memory.Enabled == false) -
 /// показывает заглушку вместо запуска, не падает.
 /// </summary>
 public partial class TranscriptExtractDialog : Window
@@ -24,26 +26,40 @@ public partial class TranscriptExtractDialog : Window
     }
 
     private readonly string _transcript;
+    private readonly long? _meetingId;
     private readonly ObservableCollection<FactRow> _facts = new();
     private CancellationTokenSource? _cts;
+
+    // Чанки и упавшие части последнего прогона - для взвешенного прогресса и «Повторить ошибки».
+    private List<TranscriptChunk> _chunks = new();
+    private readonly HashSet<int> _succeededIdx = new();   // успешно обработанные части (все прогоны)
+    private int _totalChars;                               // сумма символов всех частей
+    private List<int> _failedParts = new();
+    private string? _rules;
+
+    // Таймаут одного запроса к модели (на часть). Общий лимит не ставим: число частей
+    // зависит от длины транскрипта, остановка - через «Остановить»/закрытие окна.
+    private static readonly TimeSpan PartTimeout = TimeSpan.FromSeconds(120);
 
     // Память выключена/ещё инициализируется (MemoryStore публикуется из фонового
     // EnsureMemoryServices) — проверяем ЖИВОЕ состояние, а не снимок конструктора:
     // иначе открытый в момент фоновой инициализации диалог навсегда блокировал
     // «Извлечь» и вводил в заблуждение заглушкой «память выключена» (баг №74).
     private static bool MemoryOff => App.Current.MemoryStore == null || !App.Current.Config.Memory.Enabled;
-    /// <summary>Лимит транскрипта в промпте (символов): длинные файлы режем
-    /// голова 60% + хвост 40%, иначе ответ режется/теряется контекст (бэклог №64).</summary>
-    private const int TranscriptPromptLimit = 24_000;
 
     /// <summary>Локализованная строка из Strings.{lang}.xaml по ключу.</summary>
     private string L(string key) => (string)FindResource(key);
+    /// <summary>Локализованная строка с RU-фолбэком для ключей, ещё не внесённых в словари.</summary>
+    private string T(string key, string ruFallback) => TryFindResource(key) as string ?? ruFallback;
     private bool _busy;
 
     public TranscriptExtractDialog(string transcript)
     {
         InitializeComponent();
         _transcript = transcript;
+        // Факты привязываются к встрече, открытой в момент извлечения, а не к той,
+        // что случайно станет активной к моменту «Сохранить» (спека §6).
+        _meetingId = App.Current.CurrentMeetingId;
         FactsList.ItemsSource = _facts;
         RulesBox.Text = App.Current.Config.Memory.TranscriptExtractRules ?? "";
         UpdateRulesHint();
@@ -65,7 +81,13 @@ public partial class TranscriptExtractDialog : Window
 
     private void OnCancel(object sender, RoutedEventArgs e)
     {
-        _cts?.Cancel();
+        if (_busy)
+        {
+            // «Остановить»: рвём запрос и очередь частей, окно не закрываем -
+            // готовые кандидаты остаются в списке, ошибка/итог - в блоке состояния.
+            try { _cts?.Cancel(); } catch { /* уже disposed */ }
+            return;
+        }
         Close();
     }
 
@@ -74,11 +96,11 @@ public partial class TranscriptExtractDialog : Window
         _busy = busy;
         ExtractBtn.IsEnabled = !busy;
         SaveFactsBtn.IsEnabled = !busy;
-        CancelBtn.IsEnabled = !busy;
         RulesBox.IsEnabled = !busy;
         RememberRulesCheck.IsEnabled = !busy;
-        BusyPanel.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-        if (busy) BusyText.Text = L("L_Extr_Busy");
+        RetryBtn.IsEnabled = !busy;
+        // Во время работы «Отмена» превращается в «Остановить» и остаётся доступной.
+        CancelBtn.Content = busy ? T("L_Extr_StopBtn", "Остановить") : L("L_Extr_CancelBtn");
     }
 
     private void PersistRulesIfAsked()
@@ -92,6 +114,109 @@ public partial class TranscriptExtractDialog : Window
         }
     }
 
+    // Вызов модели для одной части: готовый промпт -> content (null = пусто).
+    // Canceled без внешней отмены = таймаут запроса -> понятная ошибка части.
+    private static async Task<string> CallLlmAsync(string prompt, CancellationToken ct)
+    {
+        var r = await App.Current.ApiClient.AskAsync(
+            "Извлеки факты из транскрибации по инструкциям выше.",
+            prompt, App.Current.Config.Memory.ExtractMaxTokens, new List<ChatMessage>(), ct,
+            background: true, requestTimeout: PartTimeout);
+        if (r.Canceled)
+        {
+            ct.ThrowIfCancellationRequested();
+            throw new TimeoutException("модель не ответила вовремя (таймаут запроса)");
+        }
+        if (!string.IsNullOrWhiteSpace(r.Error))
+            throw new InvalidOperationException(r.Error);
+        return r.Content ?? "";
+    }
+
+    private void ShowCandidates()
+    {
+        var has = _facts.Count > 0;
+        FactsHeader.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
+        FactsList.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
+        SaveFactsBtn.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
+        ExtractBtn.IsDefault = !has;
+        SaveFactsBtn.IsDefault = has;   // Enter после разбора = «Сохранить выбранные»
+    }
+
+    // Взвешенный процент = успешно обработанные символы / все символы транскрипта.
+    // p.DoneChars - символы частей, закрытых в ТЕКУЩЕМ прогоне; _succeededIdx - база прошлых прогонов.
+    private void ShowProgress(ExtractProgress p)
+    {
+        StatePanel.Visibility = Visibility.Visible;
+        StateBar.Visibility = Visibility.Visible;
+        var baseChars = _succeededIdx.Sum(i => _chunks[i].CharCount);
+        StateBar.Value = _totalChars > 0
+            ? Math.Min(100, 100.0 * (baseChars + p.DoneChars) / _totalChars)
+            : 0;
+        StateText.Text = string.Format(T("L_Extr_StRunningFmt",
+            "Обработано частей: {0} из {1} · фактов: {2} · {3}"),
+            p.PartsDone, p.TotalParts, p.CandidatesFound, p.Elapsed.ToString(@"mm\:ss"));
+        RetryBtn.Visibility = Visibility.Collapsed;
+    }
+
+    // Итоговый статус прогона в блоке состояния (не закрывается сам - спека §6).
+    private void ShowOutcome(ExtractionRunResult result)
+    {
+        StatePanel.Visibility = Visibility.Visible;
+        StateBar.Visibility = Visibility.Collapsed;
+        var failed = _failedParts;
+        var doneTotal = _chunks.Count - failed.Count;
+        string? retryLabel = null;
+        string text;
+        switch (result.Outcome)
+        {
+            case ExtractionOutcome.NoFactsFound:
+                text = L("L_Extr_StNoFacts");
+                break;
+            case ExtractionOutcome.Cancelled:
+                text = T("L_Extr_StStoppedFmt",
+                    "Остановлено. Обработано частей: {0} из {1}. Готовые кандидаты сохранены в списке.");
+                text = string.Format(text, doneTotal, _chunks.Count);
+                break;
+            case ExtractionOutcome.EmptyModelResponse:
+            case ExtractionOutcome.MalformedResponse:
+            case ExtractionOutcome.ServiceError:
+                var reason = result.Outcome == ExtractionOutcome.ServiceError
+                    ? L("L_Extr_StLlmUnavailable") + (result.Error ?? "")
+                    : result.Outcome == ExtractionOutcome.EmptyModelResponse
+                        ? T("L_Extr_ErrEmpty", "пустой ответ модели")
+                        : T("L_Extr_ErrMalformed", "непригодный ответ модели (без директив)");
+                text = string.Format(T("L_Extr_StFailedFmt",
+                    "⚠ Не удалось обработать {0} из {1} частей: {2}"),
+                    failed.Count, _chunks.Count, reason);
+                retryLabel = T("L_Extr_RetryBtn", "Повторить ошибки");
+                break;
+            case ExtractionOutcome.Partial:
+                text = string.Format(T("L_Extr_StPartialFmt",
+                    "⚠ Частично: обработано {0} из {1} частей, не удалось {2}."),
+                    doneTotal, _chunks.Count, failed.Count);
+                if (!string.IsNullOrEmpty(result.Error)) text += " " + result.Error;
+                retryLabel = T("L_Extr_RetryBtn", "Повторить ошибки");
+                break;
+            default: // CandidatesFound
+                text = _facts.Count > 0
+                    ? string.Format(T("L_Extr_StFoundFmt", "Найдено {0} фактов. Выберите, что сохранить."), _facts.Count)
+                    : L("L_Extr_StNoFacts");
+                if (failed.Count > 0)
+                {
+                    text += " " + string.Format(T("L_Extr_StPartialTailFmt", "Не обработано частей: {0}."), failed.Count);
+                    retryLabel = T("L_Extr_RetryBtn", "Повторить ошибки");
+                }
+                break;
+        }
+        StateText.Text = text;
+        if (retryLabel != null)
+        {
+            RetryBtn.Content = retryLabel;
+            RetryBtn.Visibility = Visibility.Visible;
+        }
+        else RetryBtn.Visibility = Visibility.Collapsed;
+    }
+
     private async void OnExtract(object sender, RoutedEventArgs e)
     {
         if (_busy) return;
@@ -103,73 +228,91 @@ public partial class TranscriptExtractDialog : Window
             return;
         }
         MemoryOffPanel.Visibility = Visibility.Collapsed;
-        SetBusy(true);
         _facts.Clear();
-        FactsList.Visibility = Visibility.Collapsed;
-        FactsHeader.Visibility = Visibility.Collapsed;
-        SaveFactsBtn.Visibility = Visibility.Collapsed;
-        ExtractBtn.IsDefault = true;
-        SaveFactsBtn.IsDefault = false;
+        ShowCandidates();
         StatusText.Text = "";
-        _cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        _failedParts = new List<int>();
+        PersistRulesIfAsked();
+        _rules = string.IsNullOrWhiteSpace(RulesBox.Text) ? null : RulesBox.Text.Trim();
+        _chunks = TranscriptFactExtractor.ChunkTranscript(_transcript);
+        _totalChars = _chunks.Sum(c => c.CharCount);
+        _succeededIdx.Clear();
+        if (_chunks.Count == 0)
+        {
+            StatePanel.Visibility = Visibility.Visible;
+            StateText.Text = L("L_Extr_StNoFacts");
+            return;
+        }
+        await RunExtractionAsync(partIndices: null);
+    }
+
+    private async void OnRetryFailed(object sender, RoutedEventArgs e)
+    {
+        if (_busy || _failedParts.Count == 0 || _chunks.Count == 0) return;
+        await RunExtractionAsync(_failedParts);
+    }
+
+    // Общий прогон: полный (partIndices=null) или только упавшие части.
+    private async Task RunExtractionAsync(IReadOnlyCollection<int>? partIndices)
+    {
+        SetBusy(true);
+        StatePanel.Visibility = Visibility.Visible;
+        StateBar.Visibility = Visibility.Visible;
+        StateBar.Value = 0;
+        RetryBtn.Visibility = Visibility.Collapsed;
+        var runOrder = partIndices == null
+            ? _chunks.Select(c => c.Index).ToList()
+            : _chunks.Where(c => partIndices.Contains(c.Index)).Select(c => c.Index).ToList();
+        var progress = new Progress<ExtractProgress>(ShowProgress);
+        _cts = new CancellationTokenSource();
         var ct = _cts.Token;
+        // §6.4: интенсивность извлечения из конфига (low/medium/high).
+        var intensity = App.Current?.Config?.Memory?.ExtractionIntensity;
         try
         {
-            PersistRulesIfAsked();
-            var rules = string.IsNullOrWhiteSpace(RulesBox.Text) ? null : RulesBox.Text.Trim();
-            // Длинный транскрипт режем с двух сторон (голова 60% + хвост 40%):
-            // факты чаще всего в начале и в финале встречи (бэклог №64).
-            var transcript = _transcript;
-            if (transcript.Length > TranscriptPromptLimit)
-            {
-                var headLen = TranscriptPromptLimit * 6 / 10;
-                var tailLen = TranscriptPromptLimit - headLen;
-                transcript = transcript[..headLen] +
-                    $"\n\n[…пропущено {transcript.Length - TranscriptPromptLimit} символов середины…]\n\n" +
-                    transcript[^tailLen..];
-                App.Current.Logger?.Warn(
-                    $"TranscriptExtract: transcript truncated {_transcript.Length} → {transcript.Length} chars", "UI");
-            }
-            var prompt = TranscriptFactExtractor.BuildPrompt(transcript, rules);
-            var r = await App.Current.ApiClient.AskAsync(
-                "Извлеки факты из транскрибации по инструкциям выше.",
-                prompt, 3000, new List<ChatMessage>(), ct);
-            ct.ThrowIfCancellationRequested();
+            var result = partIndices == null
+                ? await TranscriptFactExtractor.ExtractAsync(_transcript, _rules, CallLlmAsync,
+                    progress, ct, intensity)
+                : await TranscriptFactExtractor.ExtractPartsAsync(_chunks, _rules, CallLlmAsync,
+                    partIndices, progress, ct, intensity);
 
-            if (!string.IsNullOrWhiteSpace(r.Error))
+            // Новые кандидаты повторного прогона дописываются к готовым, дубли текста отсекаем.
+            var seen = new HashSet<string>(_facts.Select(f => TranscriptFactExtractor.NormalizeFact(f.Directive.Old)),
+                StringComparer.Ordinal);
+            foreach (var c in result.Candidates)
             {
-                StatusText.Text = L("L_Extr_StLlmUnavailable") + r.Error;
-                return;
+                if (!seen.Add(TranscriptFactExtractor.NormalizeFact(c.Text))) continue;
+                _facts.Add(new FactRow { Directive = c.Directive, Text = Describe(c) });
             }
-            var raw = r.Content ?? "";
-            var dirs = TranscriptFactExtractor.ParseOutput(raw);
-            if (dirs.Count == 0)
+            // Отмечаем успешные части прогона (для взвешенной шкалы при повторах):
+            // первые PartsDone+Failed репортов - завершённые; упавшие не засчитываем.
+            var completed = result.PartsDone + result.FailedParts.Count;
+            if (result.Outcome != ExtractionOutcome.Cancelled)
             {
-                // Сырой ответ — в лог: следующий разбор «пусто» идёт по логу, а не вслепую.
-                App.Current.Logger?.Debug(
-                    $"TranscriptExtract: no directives, raw output: {raw[..Math.Min(500, raw.Length)]}", "UI");
-            StatusText.Text = string.IsNullOrWhiteSpace(raw)
-                    ? L("L_Extr_StNoFacts")
-                    : L("L_Extr_StNoDirectives");
-                return;
+                _succeededIdx.UnionWith(runOrder.Take(completed));
+                _succeededIdx.ExceptWith(result.FailedParts);
             }
-            foreach (var d in dirs)
-                _facts.Add(new FactRow { Directive = d, Text = Describe(d) });
-            FactsHeader.Visibility = Visibility.Visible;
-            FactsList.Visibility = Visibility.Visible;
-            SaveFactsBtn.Visibility = Visibility.Visible;
-            ExtractBtn.IsDefault = false;
-            SaveFactsBtn.IsDefault = true; // Enter после разбора = «Сохранить выбранные»
-            StatusText.Text = string.Format(L("L_Extr_StExtractedFmt"), _facts.Count);
+            _failedParts = result.FailedParts.ToList();
+            ShowCandidates();
+            ShowOutcome(result);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            ShowOutcome(new ExtractionRunResult(ExtractionOutcome.Cancelled,
+                Array.Empty<FactCandidate>(), _failedParts, 0, null));
         }
         catch (OperationCanceledException)
         {
-            StatusText.Text = L("L_Extr_StExtractCancelled");
+            // Отмена не от юзера (внутренний таймаут стрима) - показываем как ошибку части.
+            ShowOutcome(new ExtractionRunResult(ExtractionOutcome.ServiceError,
+                Array.Empty<FactCandidate>(), _failedParts, 0,
+                T("L_Extr_ErrTimeout", "модель не ответила вовремя")));
         }
         catch (Exception ex)
         {
-            StatusText.Text = L("L_Extr_StErrorPrefix") + ex.Message;
-            App.Current.Logger?.Warn($"TranscriptExtract: {ex.Message}", "UI");
+            ShowOutcome(new ExtractionRunResult(ExtractionOutcome.ServiceError,
+                Array.Empty<FactCandidate>(), _failedParts, 0, ex.Message));
+            App.Current?.Logger?.Warn($"TranscriptExtract: {ex.Message}", "UI");
         }
         finally
         {
@@ -188,32 +331,39 @@ public partial class TranscriptExtractDialog : Window
         if (store == null) { StatusText.Text = L("L_Extr_MemoryOffSt"); return; }
 
         SetBusy(true);
-        BusyText.Text = L("L_Extr_StSaving");
-        _cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        StatePanel.Visibility = Visibility.Visible;
+        StateBar.Visibility = Visibility.Collapsed;
+        RetryBtn.Visibility = Visibility.Collapsed;
+        StateText.Text = L("L_Extr_StSaving");
+        _cts = new CancellationTokenSource();
         var ct = _cts.Token;
         try
         {
-            var writer = new MemoryWriter(store, App.Current.Logger);
-            IReadOnlyList<string> applied = await writer.ApplyAsync(selected, App.Current.CurrentMeetingId, ct);
-            if (applied.Count > 0)
+            // Идемпотентно: дубли по тексту отсекаются внутри сейвера; встреча - исходная.
+            var result = await TranscriptFactSaver.SaveAsync(store, selected, _meetingId, ct);
+            if (result.Added > 0)
             {
-                App.Current.ShowMemoryAddedToast(applied);
-                AppMessageBox.Show(this, string.Format(L("L_Extr_SavedFmt"), applied.Count), L("L_Extr_MsgTitle"),
-                                MessageBoxButton.OK, MessageBoxImage.Information);
+                App.Current.ShowMemoryAddedToast(new List<string> { string.Format(L("L_Extr_SavedFmt"), result.Added) });
+                StateText.Text = string.Format(L("L_Extr_SavedFmt"), result.Added)
+                    + (result.SkippedDuplicates > 0
+                        ? " " + string.Format(T("L_Extr_StDupsFmt", "Дубликатов пропущено: {0}."), result.SkippedDuplicates)
+                        : "");
+                AppMessageBox.Show(this, StateText.Text, L("L_Extr_MsgTitle"),
+                    MessageBoxButton.OK, MessageBoxImage.Information);
                 DialogResult = true;
             }
             else
             {
-                StatusText.Text = L("L_Extr_StNothingSaved");
+                StateText.Text = L("L_Extr_StNothingSaved");
             }
         }
         catch (OperationCanceledException)
         {
-            StatusText.Text = L("L_Extr_StSaveCancelled");
+            StateText.Text = L("L_Extr_StSaveCancelled");
         }
         catch (Exception ex)
         {
-            StatusText.Text = L("L_Extr_StSaveFailedPrefix") + ex.Message;
+            StateText.Text = L("L_Extr_StSaveFailedPrefix") + ex.Message;
             App.Current.Logger?.Warn($"TranscriptExtract save: {ex.Message}", "UI");
         }
         finally
@@ -224,14 +374,9 @@ public partial class TranscriptExtractDialog : Window
         }
     }
 
-    // Человекочитаемая строка директивы в списке.
-    private string Describe(MemoryDirective d) => d.Kind switch
-    {
-        MemoryDirectiveKind.Add => "＋ " + d.Old,
-        MemoryDirectiveKind.Update => "✎ " + d.Old + "  →  " + d.New,
-        MemoryDirectiveKind.Forget => string.Format(L("L_Extr_ForgetFmt"), d.Old),
-        _ => d.Old
-    };
+    // Человекочитаемая строка кандидата в списке (с таймкодом-якорем части, если есть).
+    private string Describe(FactCandidate c) =>
+        (c.TimeAnchor != null ? $"[≈{c.TimeAnchor}] " : "") + "＋ " + c.Directive.Old;
 
     protected override void OnClosed(EventArgs e)
     {

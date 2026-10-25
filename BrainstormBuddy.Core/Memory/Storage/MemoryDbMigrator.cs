@@ -11,7 +11,7 @@ namespace BrainstormBuddy.Memory.Storage;
 /// </summary>
 public static class MemoryDbMigrator
 {
-    public const int LatestVersion = 2;
+    public const int LatestVersion = 3;
     public const string LogCategory = "Memory";
 
     /// <summary>
@@ -35,6 +35,13 @@ public static class MemoryDbMigrator
             using var tx = db.BeginTransaction();
             ApplyV2(db);
             SetVersion(db, 2);
+            tx.Commit();
+        }
+        if (version < 3)
+        {
+            using var tx = db.BeginTransaction();
+            ApplyV3(db);
+            SetVersion(db, 3);
             tx.Commit();
         }
 
@@ -233,4 +240,16 @@ public static class MemoryDbMigrator
         cmd.CommandText = "ALTER TABLE mem_meeting ADD COLUMN agenda TEXT NOT NULL DEFAULT '';";
         cmd.ExecuteNonQuery();
     }
-}
+
+    /// <summary>v3 (§6.3 аудита 2026-10-15): теги персистятся нормализованным
+    /// ключом (tag, PK — поиск/дедуп регистронезависимы), а отображаемое написание
+    /// живёт в tag_disp. Старые строки получают disp = tag (уже нормализованы).</summary>
+    private static void ApplyV3(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "ALTER TABLE mem_tag ADD COLUMN tag_disp TEXT NULL;";
+        cmd.ExecuteNonQuery();
+        cmd.CommandText = "UPDATE mem_tag SET tag_disp = tag WHERE tag_disp IS NULL;";
+        cmd.ExecuteNonQuery();
+    }
+    }

@@ -17,7 +17,11 @@ USER_FRAGS = [
     "a4_filetranscription.py",
     "a5_overlay_hotkeys_tray.py",
     "a8_memory.py",
+    "a9_mcp.py",
+    "a12_mcp_codex.py",
+    "a10_images.py",
     "a6_summary_agents_diag.py",
+    "a11_backup_search.py",
 ]
 ADMIN_FRAGS = [
     "a7_admin.py",

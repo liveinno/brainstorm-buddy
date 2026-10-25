@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>BrainstormBuddy.McpHost</RootNamespace>
+    <AssemblyName>BrainstormBuddy.McpHost</AssemblyName>
+    <!-- Тихий stdio-сервер: единственный выход — протокол в stdout, логи в stderr. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Version>2.36.5</Version>
+    <Description>Stdio MCP server bridging external MCP clients to BrainstormBuddy over the local named pipe.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BrainstormBuddy.Core\BrainstormBuddy.Core.csproj" />
+  </ItemGroup>
+
+</Project>

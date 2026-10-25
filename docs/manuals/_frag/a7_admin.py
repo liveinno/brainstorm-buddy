@@ -71,6 +71,13 @@ def chapters(h):
             h.p("Работающий экземпляр приложения установщик закроет сам (CloseApplications по фильтру "
                 "BrainstormBuddy.exe); при тихой раскатке добавьте /FORCECLOSEAPPLICATIONS, чтобы не ждать "
                 "реакции трей-приложения."),
+            h.p("Хост ИИ-агента BrainstormBuddy.McpHost.exe (его поднимает Codex/Claude при подключении "
+                "к MCP) — консольный процесс, и Restart Manager его не закрывает: без отдельной обработки "
+                "обновление падало с «Отказано в доступе» к BrainstormBuddy.McpHost.dll. С версии 2.36.5 "
+                "установщик находит такой хост сам и предлагает закрыть его («Закрыть MCP-хост и "
+                "продолжить?»). Если ИИ-агент активен, закрывайте и его — агент сразу поднимет новый хост, "
+                "и установку придётся начать заново. Под /SILENT и /VERYSILENT вопросы не показываются: "
+                "хост закрывается без запроса."),
             h.p("Удаление — стандартный деинсталлятор Inno {app}\\unins000.exe (виден в «Программах и "
                 "компонентах»); те же тихие флаги: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART. Удаление "
                 "снимает файлы {app}, ярлыки, ключ автозапуска и запись в реестре, но оставляет "
@@ -113,9 +120,9 @@ def chapters(h):
             h.p("Пути в таблице — как в JSON (секция.поле). Дефолты — из кода версии 2.18.x."),
             h.table(["Поле", "По умолчанию", "Назначение"], [
                 ["Api.ProviderId", "\"\"", "Провайдер из реестра; \"\" — конфиг до миграции, \"custom\" — ручной BaseUrl"],
-                ["Api.BaseUrl", "http://127.0.0.1:11434/v1", "Эндпоинт LLM (OpenAI-совместимый, дефолт — Ollama)"],
+                ["Api.BaseUrl", "https://opencode.ai/zen/go/v1", "Эндпоинт LLM (OpenAI-совместимый, дефолт — OpenCode Go)"],
                 ["Api.ApiKey", "\"\"", "Ключ LLM-провайдера. Открытым текстом — см. главу про безопасность"],
-                ["Api.ChatModel", "qwen2.5vl:7b", "Модель для ответов"],
+                ["Api.ChatModel", "deepseek-v4.1-flash", "Модель для ответов"],
                 ["Api.SttBaseUrl", "https://api.openai.com/v1", "Эндпоинт внешнего STT (движок remote)"],
                 ["Api.SttModel", "whisper-1", "Модель на внешнем STT-сервере"],
                 ["Api.SttLanguage", "\"\"", "Язык для внешнего STT; пусто — авто"],
@@ -125,7 +132,7 @@ def chapters(h):
                 ["Api.SttTemperature / Api.SttBeamSize / Api.SttVadFilter", "0.0 / 10 / true", "Параметры декодирования для внешнего STT"],
             ]),
             h.table(["Поле", "По умолчанию", "Назначение"], [
-                ["Audio.SttEngine", "native", "Движок: native (GigaAM ONNX) | whisper | docker | remote"],
+                ["Audio.SttEngine", "native3", "Движок: native3 (GigaAM v3, дефолт) | native (v2) | whisper | docker | remote"],
                 ["Audio.SttAccel", "cpu", "Ускорение GigaAM: cpu | directml | auto. DirectML на слабых iGPU может быть медленнее CPU"],
                 ["Audio.SttGpuDevice", "0", "Индекс DXGI-адаптера для DirectML (0 — обычно встройка)"],
                 ["Audio.WhisperAccel / WhisperGpuDevice", "auto / -1", "Whisper: Vulkan-GPU с откатом на CPU; -1 = авто-выбор карты"],
@@ -327,7 +334,8 @@ def chapters(h):
             h.ul([
                 "«Собрать логи для поддержки» — формирует diagnostics_ГГГГММДД_ЧЧММСС.zip в "
                 "Документы\\BrainstormBuddy: сведения о системе, config.redacted.json (ключи заменены на ***), "
-                "обезличенные app*.log и выжимка errors.txt. История вопросов/ответов, транскрибации и "
+                "обезличенные app*.log и выжимка errors.txt. При падениях и зависаниях добавляются "
+                "crash.log, crash-last.txt и ui-hang.log. История вопросов/ответов, транскрибации и "
                 "ключи в архив НЕ попадают — архив можно пересылать.",
                 "«Вести лог-файл» — включает/отключает запись app.log на диск (включено по умолчанию).",
                 "«Подробный лог (verbose)» — поднимает уровень Debug: переходы VAD, тела запросов, RMS.",
@@ -386,7 +394,7 @@ def chapters(h):
                 "оно не требует (исключение — движок docker, который ходит на локальный Docker API и "
                 "порт 8765 внутри машины)."),
             h.table(["Назначение", "Куда по умолчанию", "Протокол"], [
-                ["Запросы к LLM", "Api.BaseUrl — http://127.0.0.1:11434/v1 (Ollama)", "HTTPS/HTTP, "
+                ["Запросы к LLM", "Api.BaseUrl — https://opencode.ai/zen/go/v1 (OpenCode Go)", "HTTPS/HTTP, "
                  "POST /chat/completions, GET /models"],
                 ["Внешний STT", "Api.SttBaseUrl — https://api.openai.com/v1", "HTTPS, "
                  "POST /audio/transcriptions (multipart WAV)"],
