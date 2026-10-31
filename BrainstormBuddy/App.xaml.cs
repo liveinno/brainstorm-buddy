@@ -2291,10 +2291,41 @@ public partial class App : Application
         return qw.Any(w => t.Contains(w));
     }
 
-    // Транскрибатор файла по выбору движка ("whisper" | "gigaam"/иначе).
+    // Транскрибатор файла по выбору движка ("whisper" | "gigaam" | "cloud").
     public BrainstormBuddy.Stt.IFileTranscriber? ResolveFileTranscriber(string engineChoice, out string? error)
     {
         error = null;
+        // Облачный файл использует тот же OpenAiClient, что и приложение: новый
+        // независимый HTTP-клиент здесь не создаётся, а живой STT не меняется.
+        if (string.Equals(engineChoice, "cloud", StringComparison.OrdinalIgnoreCase))
+        {
+            var sttUrl = string.IsNullOrWhiteSpace(Config.Api.SttBaseUrl)
+                ? Config.Api.BaseUrl
+                : Config.Api.SttBaseUrl;
+            sttUrl = (sttUrl ?? "").Trim().TrimEnd('/');
+            bool validUrl = Uri.TryCreate(sttUrl, UriKind.Absolute, out var uri)
+                            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+            var model = (Config.Api.SttModel ?? "").Trim();
+            if (!validUrl)
+            {
+                error = UiText.Tr("Не задан URL внешнего STT. Откройте Настройки → Распознавание речи (STT).", "External STT URL is not configured. Open Settings → Speech Recognition (STT).");
+                return null;
+            }
+            if (model.Length == 0)
+            {
+                error = UiText.Tr("Не задана модель внешнего STT. Откройте Настройки → Распознавание речи (STT).", "External STT model is not configured. Open Settings → Speech Recognition (STT).");
+                return null;
+            }
+            if (ApiClient is not BrainstormBuddy.Ai.IDetailedSttEngine detailed)
+            {
+                error = UiText.Tr("Клиент внешнего STT недоступен. Откройте настройки и повторите запуск.", "The external STT client is unavailable. Open Settings and try again.");
+                return null;
+            }
+
+            Logger.Info($"File STT: cloud → {sttUrl}, model={model}, compat={BrainstormBuddy.Config.SttCompatModes.Normalize(Config.Api.SttCompatMode)}", "Ai");
+            return new BrainstormBuddy.Stt.CloudFileTranscriber(detailed, $"Cloud STT · {model}");
+        }
+
         // Оборудование файловой транскрибации: явный выбор юзера в окне ("cpu"/"gpu") перекрывает
         // глобальные настройки; "auto" — прежнее поведение (кэш/переиспользование живого движка).
         // При явном выборе создаём СОБСТВЕННЫЙ движок на время задачи (окно его Dispose-ит):
@@ -4972,7 +5003,9 @@ public partial class App : Application
         "[[MEMORY_ADD]]краткий факт[[/MEMORY_ADD]], для правки: " +
         "[[MEMORY_UPDATE]]старый факт→новый факт[[/MEMORY_UPDATE]], для забывания: " +
         "[[MEMORY_FORGET]]факт[[/MEMORY_FORGET]].\n" +
-        "- Максимум 2 директивы за ответ, каждая — ОДИН факт. НИКОГДА не повторяй директиву в следующих ответах — " +
+        "- Каждая директива — ОДИН факт. По умолчанию не более 2 директив за ответ; если пользователь " +
+        "ЯВНО просит запомнить несколько фактов сразу — выдай директиву на КАЖДЫЙ из них (до 20 за ответ), " +
+        "ничего не теряя и не прося повторить. НИКОГДА не повторяй директиву в следующих ответах — " +
         "один раз выдал, дальше хранилище само.\n" +
         "- В блоке <memory_context> уже подгружены известные факты: если факт (или та же мысль другими словами) " +
         "уже там — директиву НЕ выдавай вообще.\n" +

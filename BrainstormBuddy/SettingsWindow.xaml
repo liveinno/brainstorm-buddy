@@ -559,7 +559,7 @@
                                                                    Foreground="{DynamicResource TextMutedBrush}" Margin="0,2,0,0"/>
                                                         <TextBlock Text="{Binding Detail}" TextWrapping="Wrap" FontSize="11"
                                                                    Foreground="{DynamicResource TextDimBrush}" Margin="0,2,0,0"/>
-                                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                                                        <WrapPanel Margin="0,6,0,0"
                                                                     Visibility="{Binding ModelsVisibility}">
                                                             <ComboBox Width="260" ItemsSource="{Binding Models}"
                                                                       SelectedItem="{Binding SelectedModel}"
@@ -567,7 +567,7 @@
                                                             <Button Margin="8,0,0,0" Style="{StaticResource CompactButton}"
                                                                     Content="{DynamicResource L_SetApi_DiscoverApplyModel}"
                                                                     Click="OnDiscoveryApplyModel"/>
-                                                        </StackPanel>
+                                                        </WrapPanel>
                                                         <TextBlock Text="{Binding ModelsStatus}" FontSize="11" Margin="0,4,0,0"
                                                                    TextWrapping="Wrap"
                                                                    Visibility="{Binding ModelsStatusVisibility}">
@@ -583,7 +583,7 @@
                                                             </TextBlock.Style>
                                                         </TextBlock>
                                                     </StackPanel>
-                                                    <StackPanel Grid.Column="1" VerticalAlignment="Top" Orientation="Horizontal">
+                                                    <WrapPanel Grid.Column="1" VerticalAlignment="Top" Orientation="Vertical">
                                                         <Button MinWidth="120" Style="{StaticResource CompactButton}"
                                                         Content="{DynamicResource L_SetApi_DiscoverConnect}"
                                                         Click="OnDiscoveryConnect"
@@ -596,7 +596,7 @@
                                                                 Content="{DynamicResource L_SetApi_DiscoverModelsBtn}"
                                                                 Click="OnDiscoveryLoadModels"
                                                                 Visibility="{Binding ModelsButtonVisibility}"/>
-                                                    </StackPanel>
+                                                    </WrapPanel>
                                                 </Grid>
                                             </Border>
                                         </DataTemplate>
@@ -1081,7 +1081,8 @@
                                 <WrapPanel VerticalAlignment="Center">
                                     <Button x:Name="SttSpeedTestBtn" Content="{DynamicResource L_SetStt_SpeedTestBtn}" Click="OnSttSpeedTest" Margin="0,0,8,0"/>
                                     <TextBlock x:Name="SttSpeedResult" Text="—" VerticalAlignment="Center" Margin="0,0,8,0"
-                                               FontFamily="{DynamicResource MonoFont}" FontSize="12"/>
+                                               FontFamily="{DynamicResource MonoFont}" FontSize="12"
+                                               TextWrapping="Wrap" MaxWidth="780"/>
                                 </WrapPanel>
                                 <TextBlock Text="{DynamicResource L_SetStt_SpeedTestHint}"
                                            Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" TextWrapping="Wrap" Margin="0,8,0,0"/>
@@ -1146,10 +1147,40 @@
                             <TextBox Text="{Binding SttBaseUrl, UpdateSourceTrigger=PropertyChanged, TargetNullValue=''}" Margin="0,8,0,12"
                                      ToolTip="{DynamicResource L_SetStt_RemoteUrlHint}"/>
                             <TextBlock Text="{DynamicResource L_SetStt_RemoteModelLabel}" Style="{StaticResource Label}"/>
-                            <TextBox Text="{Binding SttModel, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,8"
+                            <TextBox Text="{Binding SttModel, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,12"
                                      ToolTip="{DynamicResource L_SetStt_RemoteModelHint}"/>
+                            <TextBlock Text="{DynamicResource L_SetStt_RemoteKeyLabel}" Style="{StaticResource Label}"/>
+                            <Grid Margin="0,8,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="SttApiKeyBox" Grid.Column="0" Text="{Binding SttApiKey, UpdateSourceTrigger=PropertyChanged, TargetNullValue=''}"
+                                         ToolTip="{DynamicResource L_SetStt_RemoteKeyHint}"/>
+                                <PasswordBox x:Name="SttApiKeyPwdBox" Grid.Column="0" PasswordChanged="OnSttApiKeyPwdChanged" Visibility="Collapsed"/>
+                                <Button x:Name="SttApiKeyVisibilityBtn" Grid.Column="1" Style="{StaticResource SettingsIconButton}"
+                                        Margin="8,0,0,0"
+                                        Click="OnToggleSttApiKeyVisibility" ToolTip="{DynamicResource L_TT_ShowKey}"
+                                        AutomationProperties.Name="{DynamicResource L_TT_ShowKey}">
+                                    <Image Source="{DynamicResource BuddySettings.Icon.Visibility.Default}" Width="20" Height="20"/>
+                                </Button>
+                            </Grid>
                             <TextBlock TextWrapping="Wrap" Style="{StaticResource HelperText}" Foreground="{DynamicResource TextMutedBrush}"
                                        Text="{DynamicResource L_SetStt_RemoteNote}"/>
+                        </StackPanel>
+
+                        <!-- Совместимость STT-запроса — общая настройка внешних движков (docker/remote) -->
+                        <StackPanel x:Name="SttCompatPanel" Visibility="Collapsed">
+                            <TextBlock Text="{DynamicResource L_SetStt_CompatTitle}" Style="{StaticResource SectionTitleText}"
+                                       Foreground="{DynamicResource TextDimBrush}" Margin="0,28,0,12"/>
+                            <TextBlock Text="{DynamicResource L_SetStt_CompatLabel}" Style="{StaticResource Label}"/>
+                            <ComboBox x:Name="SttCompatCombo" SelectedValuePath="Tag" Margin="0,8,0,0"
+                                      SelectionChanged="OnSttCompatChanged">
+                                <ComboBoxItem Content="{DynamicResource L_SetStt_CompatStandard}" Tag="standard"/>
+                                <ComboBoxItem Content="{DynamicResource L_SetStt_CompatFaster}" Tag="faster-whisper"/>
+                            </ComboBox>
+                            <TextBlock Text="{DynamicResource L_SetStt_CompatHint}"
+                                       Foreground="{DynamicResource TextMutedBrush}" Style="{StaticResource HelperText}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                         </StackPanel>
 
                         <!-- Спикеры (диаризация) — отдельная группа внизу вкладки STT -->
@@ -2091,7 +2122,101 @@
 
             <!-- ====================== История ====================== -->
             <TabItem x:Name="HistoryTab" Header="{DynamicResource L_Tab_History}">
-                <Grid Margin="20">
+                <TabItem.Resources>
+                    <!-- Локальный ScrollBar вкладки: область 12, трек и бегунок 10
+                         (у глобального — 6) — оба бегунка заметны и попадаются
+                         курсором без обрезки у краёв. Hover/Dragging меняют только
+                         прозрачность, геометрия не прыгает. -->
+                    <Style TargetType="ScrollBar">
+                        <Setter Property="Background" Value="Transparent"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ScrollBar">
+                                    <Grid Width="12">
+                                        <Border Background="{DynamicResource BgMediumBrush}"
+                                                CornerRadius="5" Width="10" HorizontalAlignment="Center"/>
+                                        <Track x:Name="PART_Track" IsDirectionReversed="True" Width="12">
+                                            <Track.DecreaseRepeatButton>
+                                                <RepeatButton Style="{x:Null}" Visibility="Collapsed"/>
+                                            </Track.DecreaseRepeatButton>
+                                            <Track.IncreaseRepeatButton>
+                                                <RepeatButton Style="{x:Null}" Visibility="Collapsed"/>
+                                            </Track.IncreaseRepeatButton>
+                                            <Track.Thumb>
+                                                <Thumb Width="12" MinHeight="24">
+                                                    <Thumb.Template>
+                                                        <ControlTemplate TargetType="Thumb">
+                                                            <Border x:Name="ThumbBorder" Background="{DynamicResource TextDimBrush}"
+                                                                    Opacity="0.65" CornerRadius="5" Width="10"
+                                                                    HorizontalAlignment="Center"/>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="ThumbBorder" Property="Opacity" Value="0.9"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsDragging" Value="True">
+                                                                    <Setter TargetName="ThumbBorder" Property="Opacity" Value="1.0"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Thumb.Template>
+                                                </Thumb>
+                                            </Track.Thumb>
+                                        </Track>
+                                    </Grid>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                        <Style.Triggers>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ScrollBar">
+                                            <Grid Height="12">
+                                                <Border Background="{DynamicResource BgMediumBrush}"
+                                                        CornerRadius="5" Height="10" VerticalAlignment="Center"/>
+                                                <Track x:Name="PART_Track" Height="12">
+                                                    <Track.DecreaseRepeatButton>
+                                                        <RepeatButton Style="{x:Null}" Visibility="Collapsed"/>
+                                                    </Track.DecreaseRepeatButton>
+                                                    <Track.IncreaseRepeatButton>
+                                                        <RepeatButton Style="{x:Null}" Visibility="Collapsed"/>
+                                                    </Track.IncreaseRepeatButton>
+                                                    <Track.Thumb>
+                                                        <Thumb Height="12" MinWidth="24">
+                                                            <Thumb.Template>
+                                                                <ControlTemplate TargetType="Thumb">
+                                                                    <Border x:Name="ThumbBorder" Background="{DynamicResource TextDimBrush}"
+                                                                            Opacity="0.65" CornerRadius="5" Height="10"
+                                                                            VerticalAlignment="Center"/>
+                                                                    <ControlTemplate.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter TargetName="ThumbBorder" Property="Opacity" Value="0.9"/>
+                                                                        </Trigger>
+                                                                        <Trigger Property="IsDragging" Value="True">
+                                                                            <Setter TargetName="ThumbBorder" Property="Opacity" Value="1.0"/>
+                                                                        </Trigger>
+                                                                    </ControlTemplate.Triggers>
+                                                                </ControlTemplate>
+                                                            </Thumb.Template>
+                                                        </Thumb>
+                                                    </Track.Thumb>
+                                                </Track>
+                                            </Grid>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </TabItem.Resources>
+                <!-- Внешний ScrollViewer: при малом окне низ вкладки не обрезается —
+                     страница прокручивается. MinHeight=ViewportHeight держит Grid
+                     в росте вьюпорта: *-строка списка растягивается как раньше,
+                     лишний контент уходит в прокрутку (паттерн ProfileScroll). -->
+                <ScrollViewer x:Name="HistoryScroll" VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                <Grid Margin="20" MinHeight="{Binding ViewportHeight, ElementName=HistoryScroll}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
@@ -2117,9 +2242,73 @@
                                      MinHeight="220"
                                      SelectionMode="Extended"
                                      SelectionChanged="OnHistoryMeetingSelect" MouseDoubleClick="OnOpenMeetingHistory">
+                                <!-- Шаблон списка (конвенция MeetingHistoryWindow): ItemsPresenter
+                                     под ScrollViewer — содержимое и подсветка строк не вылезают
+                                     за границу панели. -->
+                                <ListBox.Template>
+                                    <ControlTemplate TargetType="ListBox">
+                                        <Border Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+                                            <ScrollViewer Focusable="False" Padding="{TemplateBinding Padding}"
+                                                          HorizontalScrollBarVisibility="Disabled"
+                                                          VerticalScrollBarVisibility="Auto">
+                                                <ItemsPresenter/>
+                                            </ScrollViewer>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ListBox.Template>
+                                <!-- Строка истории: прозрачная заливка (без чёрной плашки BgBrush
+                                     из общего стиля окна), скругление r6, тонкая рамка 1.
+                                     Состояния: normal прозрачный; hover HoverBrush + BorderBrush;
+                                     selected SelectedRowBrush + полоса Accent 3 слева;
+                                     focused рамка AccentSoftBrush. -->
                                 <ListBox.ItemContainerStyle>
                                     <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+                                        <Setter Property="Padding" Value="12,10"/>
+                                        <Setter Property="Margin" Value="0,1"/>
+                                        <Setter Property="BorderThickness" Value="1"/>
+                                        <Setter Property="BorderBrush" Value="Transparent"/>
                                         <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Grid>
+                                                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                                                            <ContentPresenter TextBlock.Foreground="{TemplateBinding Foreground}"
+                                                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                                                        </Border>
+                                                        <Border x:Name="SelBar" Width="3" HorizontalAlignment="Left"
+                                                                Margin="3,7,0,7" CornerRadius="1.5"
+                                                                Background="{DynamicResource AccentBrush}"
+                                                                IsHitTestVisible="False" Visibility="Collapsed"/>
+                                                    </Grid>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsSelected" Value="True">
+                                                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SelectedRowBrush}"/>
+                                                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+                                                            <Setter TargetName="SelBar" Property="Visibility" Value="Visible"/>
+                                                            <Setter Property="Foreground" Value="{DynamicResource TextBrightBrush}"/>
+                                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsFocused" Value="True">
+                                                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentSoftBrush}"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
                                     </Style>
                                 </ListBox.ItemContainerStyle>
                                 <ListBox.ItemTemplate>
@@ -2224,6 +2413,7 @@
                         </Button>
                     </WrapPanel>
                 </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <!-- ====================== Память (Buddy Memory) ====================== -->

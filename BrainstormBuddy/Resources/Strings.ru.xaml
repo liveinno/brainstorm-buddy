@@ -796,6 +796,11 @@
     <sys:String x:Key="L_SetStt_AccelDml">GPU · DirectML (выберите видеокарту ниже)</sys:String>
     <sys:String x:Key="L_SetStt_AccelLabel">Ускорение GigaAM:</sys:String>
     <sys:String x:Key="L_SetStt_BuildLogTitle">Лог сборки / запуска</sys:String>
+    <sys:String x:Key="L_SetStt_CompatTitle">Совместимость STT-запроса</sys:String>
+    <sys:String x:Key="L_SetStt_CompatLabel">Режим запроса к STT-серверу:</sys:String>
+    <sys:String x:Key="L_SetStt_CompatStandard">Строгий OpenAI (Groq, OpenAI)</sys:String>
+    <sys:String x:Key="L_SetStt_CompatFaster">faster-whisper (+ beam_size, vad_filter)</sys:String>
+    <sys:String x:Key="L_SetStt_CompatHint">Строгий режим отправляет только поля file/model/response_format/language/temperature — Groq и OpenAI отклоняют beam_size и vad_filter. Режим faster-whisper добавляет эти поля (серверы faster-whisper).</sys:String>
     <sys:String x:Key="L_SetStt_DeleteModel">Удалить модель</sys:String>
     <sys:String x:Key="L_SetStt_DlDoneApply">✅ готово — применится после перезапуска</sys:String>
     <sys:String x:Key="L_SetStt_DlDoneRestart">✅ готово — перезапустите приложение</sys:String>
@@ -841,16 +846,24 @@
     <sys:String x:Key="L_LocalStt_Title">Локальный STT</sys:String>
     <sys:String x:Key="L_LocalStt_NoReply">нет ответа</sys:String>
     <sys:String x:Key="L_SetStt_RemoteFail">🔴 сервер распознавания не отвечает — проверьте Docker/STT-сервер или URL ниже</sys:String>
+    <sys:String x:Key="L_SetStt_RemoteKeyHint">Ключ только для STT-сервера (Bearer/x-api-key), независим от ключа LLM. Пусто — запросы без авторизации.</sys:String>
+    <sys:String x:Key="L_SetStt_RemoteKeyLabel">API-ключ сервера (необязательно):</sys:String>
     <sys:String x:Key="L_SetStt_RemoteModelHint">Модель, которую ждёт сервер (напр. gigaam-v2, whisper-1).</sys:String>
     <sys:String x:Key="L_SetStt_RemoteModelLabel">Имя модели на сервере:</sys:String>
-    <sys:String x:Key="L_SetStt_RemoteNote">Распознавание идёт на вашем сервере в сети. Встроенные GigaAM/Whisper и локальный Docker работают без этого адреса.</sys:String>
+    <sys:String x:Key="L_SetStt_RemoteNote">Распознавание идёт на вашем сервере в сети. Встроенные GigaAM/Whisper и локальный Docker работают без этого адреса. Ключ выше задаётся отдельно от ключа LLM.</sys:String>
     <sys:String x:Key="L_SetStt_RemoteTitle">Внешний STT-сервер</sys:String>
     <sys:String x:Key="L_SetStt_RemoteUrlHint">Напр. http://192.168.1.50:8000/v1 или адрес вашего сервера. Пусто = адрес LLM.</sys:String>
     <sys:String x:Key="L_SetStt_RemoteUrlLabel">Адрес сервера (OpenAI-совместимый, .../audio/transcriptions):</sys:String>
     <sys:String x:Key="L_SetStt_RemoveBtn">Удалить</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedFailFmt">{0}: замер не удался — {1}</sys:String>
     <sys:String x:Key="L_SetStt_SpeedResultFmt">{0}: {1} мс · RTF={2} · {3}</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedSampleMissing">Образец речи не найден: {0}</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedStatusCanceled">отменено</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedStatusFailed">ошибка STT</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedStatusNoSpeech">речь не распознана (пустой ответ)</sys:String>
     <sys:String x:Key="L_SetStt_SpeedTestBtn">Замерить скорость</sys:String>
-    <sys:String x:Key="L_SetStt_SpeedTestHint">Прогоняет 3-сек эталон через активный движок → показывает мс и RTF (доля реального времени; меньше = быстрее).</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedTestHint">Сначала прогрев движка, затем один замерный прогон эталона (~2.7 с) → мс и RTF (доля реального времени; меньше = быстрее) показываются только при успешном распознавании.</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedTextFmt">распознано: «{0}»</sys:String>
     <sys:String x:Key="L_SetStt_StartBtn">Запустить</sys:String>
     <sys:String x:Key="L_SetStt_StatusStopped">Остановлен</sys:String>
     <sys:String x:Key="L_SetStt_StopBtn">Остановить</sys:String>
@@ -1010,13 +1023,24 @@
     <!-- Окно транскрибации файлов (FileTranscriptionWindow) -->
     <sys:String x:Key="L_FileTr_Title">Транскрибация файлов</sys:String>
     <sys:String x:Key="L_FileTr_Header">Транскрибация файлов</sys:String>
-    <sys:String x:Key="L_FileTr_Subtitle">Локальное распознавание аудио/видео — без интернета.</sys:String>
+    <sys:String x:Key="L_FileTr_Subtitle">Локальное и облачное распознавание аудио/видео — облако использует выбранный внешний STT.</sys:String>
     <sys:String x:Key="L_FileTr_HistoryHeader">ИСТОРИЯ</sys:String>
     <sys:String x:Key="L_FileTr_DeleteFromHistory">Удалить из истории</sys:String>
     <sys:String x:Key="L_FileTr_EngineLabel">Движок распознавания:</sys:String>
     <sys:String x:Key="L_FileTr_GigaamItem">GigaAM · быстрый (русский)</sys:String>
     <sys:String x:Key="L_FileTr_GigaamItemFmt">GigaAM {0} · быстрый (русский)</sys:String>
     <sys:String x:Key="L_FileTr_WhisperItem">Whisper turbo · качество, пунктуация</sys:String>
+    <sys:String x:Key="L_FileTr_CloudItem">Внешний STT · облачный сервер</sys:String>
+    <sys:String x:Key="L_FileTr_CloudReadyFmt">Внешний STT готов · модель: {0}</sys:String>
+    <sys:String x:Key="L_FileTr_CloudNotConfigured">⚠ внешний STT не настроен</sys:String>
+    <sys:String x:Key="L_FileTr_CloudEndpointFmt">Сервер: {0}</sys:String>
+    <sys:String x:Key="L_FileTr_CloudNoUrl">Сервер: URL не задан</sys:String>
+    <sys:String x:Key="L_FileTr_CloudBadUrl">Сервер: неверный URL «{0}»</sys:String>
+    <sys:String x:Key="L_FileTr_CloudModelFmt">Модель: {0}</sys:String>
+    <sys:String x:Key="L_FileTr_CloudNoModel">Модель: не задана</sys:String>
+    <sys:String x:Key="L_FileTr_CloudWarn">Файл отправляется только на внешний STT; локального fallback нет.</sys:String>
+    <sys:String x:Key="L_FileTr_CloudSettingsBtn">Открыть настройки STT</sys:String>
+    <sys:String x:Key="L_FileTr_CloudSettingsToolTip">Настроить URL, модель и режим запроса внешнего STT</sys:String>
     <sys:String x:Key="L_FileTr_HardwareLabel">Оборудование:</sys:String>
     <sys:String x:Key="L_FileTr_HardwareToolTip">На чём распознавать файл. GPU обычно быстрее на длинных записях; живое распознавание эта настройка не затрагивает.</sys:String>
     <sys:String x:Key="L_FileTr_HwAuto">Авто (как в настройках)</sys:String>
@@ -1076,6 +1100,8 @@
     <sys:String x:Key="L_FileTr_NoSpeech">(речь не распознана)</sys:String>
     <sys:String x:Key="L_FileTr_DoneFmt">Готово · сегментов: {0} · {1}</sys:String>
     <sys:String x:Key="L_FileTr_Stopped">Остановлено — файл остался в очереди</sys:String>
+    <sys:String x:Key="L_FileTr_PartialStoppedFmt">Остановлено после частичного результата: {0}</sys:String>
+    <sys:String x:Key="L_FileTr_PartialErrorFmt">Ошибка после частичного результата: {0}</sys:String>
     <sys:String x:Key="L_FileTr_QueueStoppedFmt">Очередь остановлена: готово {0}, ошибок {1}, осталось {2}.</sys:String>
     <sys:String x:Key="L_FileTr_QueueDoneFmt">Готово: {0} из {1}</sys:String>
     <sys:String x:Key="L_FileTr_ErrorsSuffixFmt"> · ошибок: {0}</sys:String>

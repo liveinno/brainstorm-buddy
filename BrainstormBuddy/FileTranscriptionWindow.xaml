@@ -183,6 +183,9 @@
                     <ComboBox x:Name="EngineCombo" SelectedValuePath="Tag" SelectionChanged="OnEngineChanged">
                         <ComboBoxItem x:Name="GigaamItem" Content="{DynamicResource L_FileTr_GigaamItem}" Tag="gigaam"/>
                         <ComboBoxItem Content="{DynamicResource L_FileTr_WhisperItem}" Tag="whisper"/>
+                        <!-- Внешний (облачный) STT — выбор ТОЛЬКО для этого окна: живой
+                             Audio.SttEngine не меняется, настройки не сохраняются. -->
+                        <ComboBoxItem x:Name="CloudItem" Content="{DynamicResource L_FileTr_CloudItem}" Tag="cloud"/>
                     </ComboBox>
                     <!-- Оборудование именно ФАЙЛОВОЙ транскрибации (живой STT не трогает):
                          Авто / CPU / конкретный GPU. Заполняется из GpuEnumerator в code-behind. -->
@@ -191,6 +194,25 @@
                               ToolTip="{DynamicResource L_FileTr_HardwareToolTip}"/>
                     <TextBlock x:Name="EngineText" Style="{StaticResource MetaText}" Foreground="{DynamicResource TextMutedBrush}"
                                Margin="0,3,0,0" TextWrapping="Wrap" Text=""/>
+                    <!-- Внешний сервер: адрес/модель ДО старта, предупреждение об отправке
+                         аудио и переход в настройки STT, если конфигурация неполная. -->
+                    <StackPanel x:Name="CloudInfoPanel" Visibility="Collapsed" Margin="0,10,0,0">
+                        <Border Background="{DynamicResource BgDarkerBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="8" Padding="10,8">
+                            <StackPanel>
+                                <TextBlock x:Name="CloudEndpointText" Style="{StaticResource MetaText}"
+                                           Foreground="{DynamicResource TextBrightBrush}" TextWrapping="Wrap" Text=""/>
+                                <TextBlock x:Name="CloudModelText" Style="{StaticResource MetaText}"
+                                           Foreground="{DynamicResource TextBrightBrush}" TextWrapping="Wrap" Margin="0,2,0,0" Text=""/>
+                                <TextBlock Text="{DynamicResource L_FileTr_CloudWarn}" Style="{StaticResource MetaText}"
+                                           Foreground="{DynamicResource WarnBrush}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                            </StackPanel>
+                        </Border>
+                        <Button x:Name="CloudSettingsBtn" Content="{DynamicResource L_FileTr_CloudSettingsBtn}"
+                                Style="{StaticResource CompactButton}" Click="OnOpenSttSettings"
+                                HorizontalAlignment="Left" Margin="0,8,0,0"
+                                ToolTip="{DynamicResource L_FileTr_CloudSettingsToolTip}"/>
+                    </StackPanel>
                 </StackPanel>
             </Grid>
 
@@ -358,6 +380,11 @@
                                                     <Setter Property="Visibility" Value="Collapsed"/>
                                                     <Style.Triggers>
                                                         <DataTrigger Binding="{Binding Status}" Value="{x:Static local:QueueFileStatus.Done}">
+                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                        </DataTrigger>
+                                                        <!-- Частичный результат (сбой/отмена внешнего STT): текст
+                                                             и действия показываем, хотя статус не Done. -->
+                                                        <DataTrigger Binding="{Binding HasTranscript}" Value="True">
                                                             <Setter Property="Visibility" Value="Visible"/>
                                                         </DataTrigger>
                                                     </Style.Triggers>

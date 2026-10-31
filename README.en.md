@@ -195,4 +195,4 @@ MIT: free use, modification and distribution (including commercial) provided the
 
 ## Stack
 
-C# 12 · .NET 8 · WPF · NAudio · ONNX Runtime (GigaAM, multilingual-e5) · whisper.cpp · Nemotron (diarization) · WinRT/Tesseract OCR · OpenAI-compatible HTTP.
+C# 12 · .NET 10 · WPF · NAudio · ONNX Runtime (GigaAM, multilingual-e5) · whisper.cpp · Nemotron (diarization) · WinRT/Tesseract OCR · OpenAI-compatible HTTP.

@@ -12,7 +12,6 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Navigation;
 using NAudio.Wave;
-using NAudio.Utils;
 using BrainstormBuddy.Ai;
 using BrainstormBuddy.Config;
 using BrainstormBuddy.Core.Ocr;
@@ -28,6 +27,7 @@ public partial class SettingsWindow : Window
     private readonly SettingsViewModel _vm;
     private readonly DispatcherTimer _rmsTimer;
     private DispatcherTimer? _mcpPendingTimer;
+    private bool _sttApiKeyVisible;
     private bool _apiKeyVisible;
     // Счётчик версий статусов «Сохранено»: таймер прячет только СВОЁ сообщение
     // (свежая ошибка/успех не должна пропадать по чужому таймеру).
@@ -134,6 +134,7 @@ public partial class SettingsWindow : Window
         if (string.IsNullOrWhiteSpace(savedEng)) savedEng = "native3";
         if (savedEng == "remote" && App.Current.Config.LocalStt.Enabled) savedEng = "docker";
         SttEngineCombo.SelectedValue = savedEng;
+        SttCompatCombo.SelectedValue = SttCompatModes.Normalize(App.Current.Config.Api.SttCompatMode);
         SttAccelCombo.SelectedValue = string.IsNullOrWhiteSpace(App.Current.Config.Audio.SttAccel)
             ? "cpu" : App.Current.Config.Audio.SttAccel.ToLowerInvariant();
         WhisperAccelCombo.SelectedValue = string.IsNullOrWhiteSpace(App.Current.Config.Audio.WhisperAccel)
@@ -222,6 +223,7 @@ public partial class SettingsWindow : Window
 
         // Ключ скрыт по умолчанию (волна 06): PasswordBox поверх TextBox,
         // секрет передаётся между полями без потерь.
+        SetSttApiKeyVisible(false);
         SetApiKeyVisible(false);
 
         App.Current.Logger.Info($"SettingsWindow constructed (ApiKey present: {!string.IsNullOrEmpty(vm.ApiKey)}, devices: {vm.AudioDevices.Count})", "UI");
@@ -393,6 +395,55 @@ public partial class SettingsWindow : Window
     // зеркало привязки ApiKeyBox.Text.
     private void OnApiKeyPwdChanged(object sender, RoutedEventArgs e)
         => _vm.ApiKey = ApiKeyPwdBox.Password;
+    private void OnToggleSttApiKeyVisibility(object sender, RoutedEventArgs e)
+        => SetSttApiKeyVisible(!_sttApiKeyVisible);
+
+    // Зеркало пары LLM выше: оба поля в одной ячейке Grid, переключение без
+    // потери символов; закрытый ключ хранится в PasswordBox (биндинга нет —
+    // пушим в VM вручную), открытый — в TextBox с биндингом SttApiKey.
+    private void SetSttApiKeyVisible(bool visible)
+    {
+        var secret = _sttApiKeyVisible ? SttApiKeyBox.Text : SttApiKeyPwdBox.Password;
+        if (visible)
+        {
+            SttApiKeyBox.Text = secret;
+            SttApiKeyPwdBox.Visibility = Visibility.Collapsed;
+            SttApiKeyBox.Visibility = Visibility.Visible;
+            App.Current.Logger.Debug("Settings: SttApiKey shown (TextBox)", "UI");
+        }
+        else
+        {
+            // При первом вызове из конструктора биндинг TextBox ещё не успел
+            // вычислиться → берём секрет из VM, чтобы не затереть ключ.
+            if (secret.Length == 0 && _vm.SttApiKey.Length > 0)
+                secret = _vm.SttApiKey;
+            SttApiKeyPwdBox.Password = secret;
+            SttApiKeyBox.Visibility = Visibility.Collapsed;
+            SttApiKeyPwdBox.Visibility = Visibility.Visible;
+            App.Current.Logger.Debug("Settings: SttApiKey hidden (PasswordBox shown)", "UI");
+        }
+        _sttApiKeyVisible = visible;
+
+        PressedIconSwap.UpdateKey(SttApiKeyVisibilityBtn,
+            visible ? "BuddySettings.Icon.VisibilityOff.Default" : "BuddySettings.Icon.Visibility.Default");
+        var tipKey = visible ? "L_TT_HideKey" : "L_TT_ShowKey";
+        if (TryFindResource(tipKey) is string tip)
+        {
+            SttApiKeyVisibilityBtn.SetResourceReference(ToolTipProperty, tipKey);
+            SttApiKeyVisibilityBtn.SetResourceReference(System.Windows.Automation.AutomationProperties.NameProperty, tipKey);
+        }
+        else
+        {
+            SttApiKeyVisibilityBtn.ToolTip = visible ? "Скрыть ключ" : "Показать ключ";
+            System.Windows.Automation.AutomationProperties.SetName(
+                SttApiKeyVisibilityBtn, (string)SttApiKeyVisibilityBtn.ToolTip);
+        }
+    }
+
+    // PasswordBox не биндится — пушим введённое в VM вручную.
+    private void OnSttApiKeyPwdChanged(object sender, RoutedEventArgs e)
+        => _vm.SttApiKey = SttApiKeyPwdBox.Password;
+
 
     private async void OnCheckConnection(object sender, RoutedEventArgs e)
     {
@@ -880,13 +931,15 @@ public partial class SettingsWindow : Window
     /// </summary>
     private void UpdateEnginePanels()
     {
-        if (WhisperSettingsPanel == null || GigaamSettingsPanel == null || DockerSettingsPanel == null || RemoteUrlPanel == null) return;
+        if (WhisperSettingsPanel == null || GigaamSettingsPanel == null || DockerSettingsPanel == null || RemoteUrlPanel == null || SttCompatPanel == null) return;
         var eng = (SttEngineCombo.SelectedValue as string) ?? "native3";
 
         GigaamSettingsPanel.Visibility  = eng is "native" or "native3" ? Visibility.Visible : Visibility.Collapsed;
         WhisperSettingsPanel.Visibility = eng == "whisper" ? Visibility.Visible : Visibility.Collapsed;
         DockerSettingsPanel.Visibility  = eng == "docker"  ? Visibility.Visible : Visibility.Collapsed;
         RemoteUrlPanel.Visibility       = eng == "remote"  ? Visibility.Visible : Visibility.Collapsed;
+        // Режим совместимости запроса относится ко всем внешним движкам (docker/remote) сразу.
+        SttCompatPanel.Visibility       = eng is "docker" or "remote" ? Visibility.Visible : Visibility.Collapsed;
 
         if (eng is "native" or "native3")
         {
@@ -1081,6 +1134,12 @@ public partial class SettingsWindow : Window
     {
         if (SttAccelCombo.SelectedValue is string v && IsLoaded) App.Current.Config.Audio.SttAccel = v;
         UpdateGpuPanelVisibility();
+    }
+
+    // Режим совместимости STT-запроса: standard (строгий OpenAI) | faster-whisper (+beam_size/vad_filter).
+    private void OnSttCompatChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsLoaded) _vm.SttCompatMode = SttCompatCombo.SelectedValue as string ?? SttCompatModes.Standard;
     }
 
     // Пикер видеокарты нужен только для GPU-режимов (directml/auto); при CPU — прячем.
@@ -1456,6 +1515,7 @@ public partial class SettingsWindow : Window
         // Ключ скрыт по умолчанию → глиф «показать» (глаз); точное состояние
         // выставляет SetApiKeyVisible(false) в конструкторе.
         PressedIconSwap.Wire(ApiKeyVisibilityBtn, "BuddySettings.Icon.Visibility.Default");
+        PressedIconSwap.Wire(SttApiKeyVisibilityBtn, "BuddySettings.Icon.Visibility.Default");
 
         // Текстовые кнопки с иконкой BuddySettings (иконка + подпись в StackPanel).
         PressedIconSwap.Wire(AddHeaderBtn, "BuddySettings.Icon.Add.Default");
@@ -1483,55 +1543,91 @@ public partial class SettingsWindow : Window
         PressedIconSwap.Wire(OpenConfigFolderBtn, "BuddySettings.Icon.BrowseFolder.Default");
     }
 
-    // Прогон 3-сек эталона через активный движок → мс + RTF + вердикт.
+    // Прогрев движка + честный замер: один прогон эталона → мс + RTF + вердикт + что распознано;
+    // при неуспехе — только имя движка и причина (RTF у неуспешного замера не существует).
     private async void OnSttSpeedTest(object sender, RoutedEventArgs e)
     {
+        // Новый запуск сначала чистит прежний вердикт — не оставляем старый «успешный» текст.
+        SttSpeedResult.Text = "";
+        SttSpeedResult.Foreground = (Brush)FindResource("TextMutedBrush");
         SttSpeedTestBtn.IsEnabled = false;
-        SttSpeedResult.Text = (string)FindResource("L_Set_Measuring");
         try
         {
-            const double secs = 3.0;
-            var wav = MakeSineWav(secs, MelFrontendSampleRate);
             var engine = App.Current.SttEngine;
-            bool isRemote = string.Equals(engine.Name, "remote", System.StringComparison.OrdinalIgnoreCase);
-
-            // Каждый вызов ограничиваем таймаутом: недоступный внешний сервер иначе висит
-            // ~15с (3 ретрая) и рисует фиктивный RTF. Встроенным движкам даём запас на прогрев.
-            int perCallTimeout = isRemote ? 6 : 60;
-            async Task<long> TimedTranscribe()
+            var sample = BrainstormBuddy.Stt.SttSampleAudio.TryLoad();
+            if (sample == null)
             {
-                using var cts = new CancellationTokenSource(System.TimeSpan.FromSeconds(perCallTimeout));
-                var sw = Stopwatch.StartNew();
-                await engine.TranscribeAsync(wav, cts.Token);
-                sw.Stop();
-                return sw.ElapsedMilliseconds;
-            }
-
-            // Прогрев (загрузка сессии/графа). Если внешний сервер молчит — честный вердикт сразу.
-            try { await TimedTranscribe(); }
-            catch (Exception ex) when (isRemote)
-            {
-                SttSpeedResult.Text = (string)FindResource("L_SetStt_RemoteFail");
-                App.Current.Logger.Warn($"STT speed test [remote] недоступен: {ex.Message}", "Ai");
+                var expected = Path.Combine(AppContext.BaseDirectory, "Assets", BrainstormBuddy.Stt.SttSampleAudio.SampleFileName);
+                SttSpeedResult.Foreground = (Brush)FindResource("WarnBrush");
+                SttSpeedResult.Text = string.Format((string)FindResource("L_SetStt_SpeedSampleMissing"), expected);
+                App.Current.Logger.Warn($"STT speed test: образец речи не найден ({expected})", "Ai");
                 return;
             }
 
-            var times = new List<long>();
-            for (int i = 0; i < 3; i++) times.Add(await TimedTranscribe());
-            times.Sort();
-            long ms = times[times.Count / 2];
-            double rtf = ms / (secs * 1000.0);
-            string verdict = rtf < 0.3 ? (string)FindResource("L_SetStt_VerdictFast") : rtf < 0.7 ? (string)FindResource("L_SetStt_VerdictOk") : (string)FindResource("L_SetStt_VerdictSlow");
+            SttSpeedResult.Text = (string)FindResource("L_Set_Measuring");
+            // Общий бюджет на прогрев + измерение: первая загрузка локальной модели может быть долгой,
+            // поэтому внешний таймаут не должен обрезать фазы раньше их внутренних лимитов (120 с + 60 с).
+            using var cts = new CancellationTokenSource(System.TimeSpan.FromSeconds(180));
+            var m = await BrainstormBuddy.Stt.SttSpeedProbe.MeasureAsync(
+                engine, sample.Wav, sample.DurationSeconds, cts.Token,
+                System.TimeSpan.FromSeconds(120), System.TimeSpan.FromSeconds(60));
 
             // Движок выбирается при старте. Если в списке выбран другой — предупреждаем про перезапуск.
             string selected = (SttEngineCombo.SelectedValue as string) ?? engine.Name;
-            string pending = !string.Equals(selected, engine.Name, System.StringComparison.OrdinalIgnoreCase)
+            string pending = !string.Equals(selected, engine.Name, StringComparison.OrdinalIgnoreCase)
                 ? string.Format((string)FindResource("L_SetStt_PendingEngineFmt"), selected) : "";
-            SttSpeedResult.Text = string.Format((string)FindResource("L_SetStt_SpeedResultFmt"), engine.Name, ms, rtf.ToString("F2"), verdict + pending);
-            App.Current.Logger.Info($"STT speed test [{engine.Name}]: {ms}ms RTF={rtf:F2}", "Ai");
+
+            if (m.Success)
+            {
+                // Успех: прежний вид — мс, RTF с двумя знаками, вердикт и что распознано.
+                double rtf = m.Rtf;
+                string verdict = rtf <= 0.5 ? (string)FindResource("L_SetStt_VerdictFast")
+                    : rtf <= 1.5 ? (string)FindResource("L_SetStt_VerdictOk")
+                    : (string)FindResource("L_SetStt_VerdictSlow");
+                var text = (m.Text ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
+                if (text.Length > 60) text = text[..60] + "…"; // длинный ответ не должен разрывать строку статуса
+                string status = string.Format((string)FindResource("L_SetStt_SpeedTextFmt"), text);
+                SttSpeedResult.Foreground = (Brush)FindResource("SuccessBrush");
+                SttSpeedResult.Text = string.Format((string)FindResource("L_SetStt_SpeedResultFmt"),
+                    m.EngineName, m.ElapsedMs.ToString("F0"), rtf.ToString("F2"), verdict + " " + status + pending);
+                App.Current.Logger.Info($"STT speed test [{m.EngineName}]: {m.ElapsedMs:F0}ms RTF={rtf:F2}", "Ai");
+            }
+            else
+            {
+                // Неуспех: у такого замера RTF не существует (NaN) — не показываем ни RTF, ни вердикт,
+                // ни распознанный текст, только имя движка и причину.
+                string reason = m.Status switch
+                {
+                    SttTranscribeStatus.NoSpeech => (string)FindResource("L_SetStt_SpeedStatusNoSpeech"),
+                    SttTranscribeStatus.Canceled => (string)FindResource("L_SetStt_SpeedStatusCanceled"),
+                    _ => string.IsNullOrWhiteSpace(m.Error) ? (string)FindResource("L_SetStt_SpeedStatusFailed") : m.Error,
+                };
+                // Код HTTP дописываем, только если движок сам его уже не указал в тексте ошибки.
+                if (m.HttpStatus is int http && !reason.Contains($"HTTP {http}"))
+                    reason += $" (HTTP {http})";
+                // Причина — одна строка статуса: длинное тело ответа сервера подрезаем,
+                // полный текст остаётся в журнале.
+                reason = reason.Replace('\r', ' ').Replace('\n', ' ').Trim();
+                if (reason.Length > 180) reason = reason[..180] + "…";
+                SttSpeedResult.Foreground = (Brush)FindResource(m.Status switch
+                {
+                    SttTranscribeStatus.NoSpeech => "WarnBrush",
+                    SttTranscribeStatus.Canceled => "TextMutedBrush",
+                    _ => "ErrorBrush",
+                });
+                SttSpeedResult.Text = string.Format((string)FindResource("L_SetStt_SpeedFailFmt"), m.EngineName, reason);
+                App.Current.Logger.Warn(
+                    $"STT speed test [{m.EngineName}]: status={m.Status} HTTP={(m.HttpStatus?.ToString() ?? "-")} причина={reason}", "Ai");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            SttSpeedResult.Foreground = (Brush)FindResource("TextMutedBrush");
+            SttSpeedResult.Text = (string)FindResource("L_SetStt_SpeedStatusCanceled");
         }
         catch (Exception ex)
         {
+            SttSpeedResult.Foreground = (Brush)FindResource("ErrorBrush");
             SttSpeedResult.Text = string.Format((string)FindResource("L_Set_ErrorFmt"), ex.Message);
         }
         finally { SttSpeedTestBtn.IsEnabled = true; }
@@ -1636,25 +1732,6 @@ public partial class SettingsWindow : Window
             HwVerdict.Text = string.Format((string)FindResource("L_Set_HwFailFmt"), ex.Message);
             HwVerdict.Visibility = Visibility.Visible;
         }
-    }
-
-    private const int MelFrontendSampleRate = 16000;
-
-    // WAV в памяти: синус 180 Гц, mono 16 бит. Текст не важен — меряем только время прохода.
-    private static byte[] MakeSineWav(double seconds, int sr)
-    {
-        int n = (int)(seconds * sr);
-        var ms = new MemoryStream();
-        using (var w = new WaveFileWriter(new IgnoreDisposeStream(ms), new WaveFormat(sr, 16, 1)))
-        {
-            var buf = new short[n];
-            for (int i = 0; i < n; i++)
-                buf[i] = (short)(Math.Sin(2.0 * Math.PI * 180.0 * i / sr) * 8000);
-            var bytes = new byte[n * 2];
-            Buffer.BlockCopy(buf, 0, bytes, 0, bytes.Length);
-            w.Write(bytes, 0, bytes.Length);
-        }
-        return ms.ToArray();
     }
 
     private void OnSaveProfile(object sender, RoutedEventArgs e)

@@ -10,7 +10,7 @@ public class ConfigLoader
 {
     // Текущая версия схемы конфига. Повышать при смене дефолтов/структуры — тогда
     // старые конфиги пройдут миграцию (чистка dev-остатков, дедуп пресетов и т.п.).
-    public const int CurrentSchemaVersion = 12;
+    public const int CurrentSchemaVersion = 13;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -311,6 +311,33 @@ public class ConfigLoader
             }
         }
 
+        // Схема 13: появился отдельный ключ внешнего STT (Api.SttApiKey) — до этого
+        // STT-запросы уходили с LLM-ключом (ApiKey). Переносим ключ один раз и
+        // ТОЛЬКО когда эффективный адрес STT совпадает с LLM (пустой SttBaseUrl
+        // значит «тот же, что у LLM» — OpenAiClient фолбэкает на BaseUrl): для
+        // другого адреса чужой ключ не копируем, STT идёт без авторизации, пока
+        // юзер не впишет ключ. Пустой/неоднозначный адрес — без копирования
+        // (не гадаем). Ключей в лог не пишем — только факт наличия.
+        if (c.SchemaVersion < 13 && string.IsNullOrEmpty(c.Api.SttApiKey))
+        {
+            var llmUrl = ApiConfig.NormalizeEndpointUrl(c.Api.BaseUrl);
+            var sttUrl = ApiConfig.NormalizeEndpointUrl(
+                string.IsNullOrWhiteSpace(c.Api.SttBaseUrl) ? c.Api.BaseUrl : c.Api.SttBaseUrl);
+            if (llmUrl.Length > 0 && string.Equals(sttUrl, llmUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrEmpty(c.Api.ApiKey))
+                {
+                    c.Api.SttApiKey = c.Api.ApiKey;
+                    _logger.Info("Migration: SttApiKey заполнен из ApiKey (адрес STT совпадает с LLM)", "Config");
+                }
+            }
+            else if (sttUrl.Length > 0 && !string.IsNullOrEmpty(c.Api.ApiKey))
+            {
+                _logger.Warn($"Migration: адрес STT ({c.Api.SttBaseUrl}) отличается от LLM — " +
+                    "SttApiKey оставлен пустым, укажите ключ внешнего STT в настройках", "Config");
+            }
+        }
+
         c.SchemaVersion = CurrentSchemaVersion;
     }
 
@@ -354,6 +381,15 @@ public class ConfigLoader
         {
             _logger.Warn("UserProfile.Summary пуст → подставляю дефолтное резюме", "Config");
             config.MultiAgent.UserProfile = UserProfile.CreateDefault();
+        }
+        // Режим совместимости STT-запроса: неизвестное или пустое значение → «standard»
+        // (строгие OpenAI-поля без beam_size/vad_filter). Старые конфиги без поля
+        // получают безопасный дефолт, выбранный «faster-whisper» сохраняется.
+        var sttCompat = SttCompatModes.Normalize(config.Api.SttCompatMode);
+        if (!string.Equals(sttCompat, config.Api.SttCompatMode, StringComparison.Ordinal))
+        {
+            _logger.Warn($"Unknown SttCompatMode '{config.Api.SttCompatMode}' → '{sttCompat}'", "Config");
+            config.Api.SttCompatMode = sttCompat;
         }
         if (config.Audio.SampleRate <= 0)
         {

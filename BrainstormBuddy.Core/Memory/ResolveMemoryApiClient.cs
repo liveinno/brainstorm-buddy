@@ -57,6 +57,7 @@ public static class ResolveMemoryApiClient
                 ? mem.MemoryModel
                 : (profile.ModelPresets.Count > 0 ? profile.ModelPresets[0] : config.Api.ChatModel),
             SttBaseUrl = config.Api.SttBaseUrl,
+            SttApiKey = config.Api.SttApiKey,
             SttModel = config.Api.SttModel,
             SttLanguage = config.Api.SttLanguage,
             RequestTimeoutSeconds = config.Api.RequestTimeoutSeconds,
@@ -65,6 +66,7 @@ public static class ResolveMemoryApiClient
             SttTemperature = config.Api.SttTemperature,
             SttBeamSize = config.Api.SttBeamSize,
             SttVadFilter = config.Api.SttVadFilter,
+            SttCompatMode = config.Api.SttCompatMode,
             ReasoningEffortOverride = config.Api.ReasoningEffortOverride,
             CustomProviders = config.Api.CustomProviders,
             // refresh_token подписки нужен и отдельному клиенту: без него

@@ -10,6 +10,26 @@ public sealed class FileTranscriptResult
     public TimeSpan Duration { get; init; }
     public string ExtractMethod { get; init; } = "";
 
+    /// <summary>
+    /// True, когда распознаны ВСЕ части файла. Локальные движки всегда завершают
+    /// работу целиком; облачный (<see cref="CloudFileTranscriber"/>) ставит false
+    /// при отмене, сбое сервера или «речи нет» в очередной части — при этом уже
+    /// принятые сегменты остаются в <see cref="Segments"/>.
+    /// </summary>
+    public bool IsComplete { get; set; } = true;
+
+    /// <summary>Незавершённость вызвана отменой вызывающим токеном (а не сбоем сервера).</summary>
+    public bool IsCanceled { get; set; }
+
+    /// <summary>Человекочитаемая причина незавершённости; null при IsComplete.</summary>
+    public string? FailureReason { get; set; }
+
+    /// <summary>Сколько частей уже принято в <see cref="Segments"/> (заполняет облачный транскрайбер).</summary>
+    public int CompletedParts { get; set; }
+
+    /// <summary>Сколько частей запланировано к распознаванию (0 — движок не делит на части).</summary>
+    public int TotalParts { get; set; }
+
     /// <summary>Только текст, без меток — для саммари/копирования.</summary>
     public string PlainText => string.Join(" ", Segments.Select(s => s.Text)).Trim();
 
@@ -76,8 +96,12 @@ public sealed class FileTranscriptionService
         return result;
     }
 
-    /// <summary>Находит локальный минимум энергии рядом с целевым индексом → режем в тишине.</summary>
-    private static int SnapToQuiet(float[] s, int target, int window)
+    /// <summary>
+    /// Находит локальный минимум энергии рядом с целевым индексом → режем в тишине.
+    /// internal: ту же границу использует <see cref="CloudFileTranscriber"/>, чтобы
+    /// облачная порезка совпадала с локальной.
+    /// </summary>
+    internal static int SnapToQuiet(float[] s, int target, int window)
     {
         int lo = Math.Max(0, target - window);
         int hi = Math.Min(s.Length, target + window);

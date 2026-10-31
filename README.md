@@ -193,4 +193,4 @@ MIT: свободное использование, изменение и рас
 
 ## Стек
 
-C# 12 · .NET 8 · WPF · NAudio · ONNX Runtime (GigaAM, multilingual-e5) · whisper.cpp · Nemotron (диаризация) · WinRT/Tesseract OCR · OpenAI-совместимый HTTP.
+C# 12 · .NET 10 · WPF · NAudio · ONNX Runtime (GigaAM, multilingual-e5) · whisper.cpp · Nemotron (диаризация) · WinRT/Tesseract OCR · OpenAI-совместимый HTTP.

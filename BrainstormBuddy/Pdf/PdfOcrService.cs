@@ -14,7 +14,7 @@ namespace BrainstormBuddy.Pdf;
 /// Постраничный OCR PDF для вложений чата: WinRT <see cref="PdfDocument"/> рендерит
 /// страницу (scale 2.0 ≈ 192 dpi) в Bgra32 <see cref="PixelBuffer"/>, дальше штатный
 /// Tesseract (<see cref="RecognizerFactory.Create()"/> — препроцессинг навешивается
-/// всегда, tessdata рядом с exe). Живёт в WPF-проекте: Core (net8.0) WinRT не видит.
+/// всегда, tessdata рядом с exe). Живёт в WPF-проекте: Core (net10.0) WinRT не видит.
 ///
 /// Параллелизм (аудит 2026-10-15 §5.3): <see cref="RecognizePageAsync"/> вызывается
 /// конкурентно из <c>PdfExtractor</c> (планировщик с потолком

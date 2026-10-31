@@ -334,6 +334,22 @@ public class SettingsViewModel : INotifyPropertyChanged
         set { _config.Api.SttBaseUrl = value ?? string.Empty; OnPropertyChanged(); }
     }
 
+    /// <summary>Отдельный ключ внешнего STT (Api.SttApiKey): авторизация
+    /// распознавания независима от LLM ApiKey; пусто — STT без авторизации.</summary>
+    public string SttApiKey
+    {
+        get => _config.Api.SttApiKey;
+        set { _config.Api.SttApiKey = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Режим совместимости STT-запроса: "standard" — строгое OpenAI-подмножество
+    /// (Groq/OpenAI отклоняют beam_size/vad_filter), "faster-whisper" — плюс эти поля.</summary>
+    public string SttCompatMode
+    {
+        get => _config.Api.SttCompatMode;
+        set { _config.Api.SttCompatMode = SttCompatModes.Normalize(value); OnPropertyChanged(); }
+    }
+
     public double RmsThreshold
     {
         get => _config.Audio.RmsThreshold;

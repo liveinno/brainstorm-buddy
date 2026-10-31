@@ -5,7 +5,7 @@
     <!-- windows10.0.19041: WinRT-проекции нужны движку Windows OCR (Windows.Media.Ocr,
          Ocr/WinOcrRecognizer.cs). 19041 = Windows 10 2004 — минимум для стабильного
          Windows.Media.Ocr API. -->
-    <TargetFramework>net8.0-windows10.0.19041</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
@@ -14,7 +14,7 @@
     <ApplicationIcon>Resources\Icons\app.ico</ApplicationIcon>
     <AssemblyName>BrainstormBuddy</AssemblyName>
     <RootNamespace>BrainstormBuddy</RootNamespace>
-    <Version>2.39.2</Version>
+    <Version>2.42.1</Version>
     <Company>BrainstormBuddy</Company>
     <Product>BrainstormBuddy</Product>
     <LangVersion>12</LangVersion>
@@ -22,18 +22,19 @@
     <!-- WFAC010 (WinForms-анализатор «уберите DPI из манифеста») для WPF не применим:
          DPI-awareness WPF читается из манифеста процесса ДО запуска managed-кода,
          ApplicationHighDpiMode влияет только на WinForms-бутстрап, который мы не вызываем.
-         Удаление dpiAwareness из app.manifest сломало бы Per-Monitor DPI. -->
-    <NoWarn>$(NoWarn);WFAC010</NoWarn>
+         Удаление dpiAwareness из app.manifest сломало бы Per-Monitor DPI.
+         WFO0003 — тот же анализ под новым кодом в .NET 10 SDK. -->
+    <NoWarn>$(NoWarn);WFAC010;WFO0003</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="System.Management" Version="10.0.9" />
-    <!-- Явный пиннинг: транзитивные STJ/STE 10.0.2 (через Microsoft.Extensions.AI)
-         при self-contained publish проигрывали runtime-pack и в выход попадала
-         сборка 8.0.0.0 при deps.json=10.0.2 → падение на старте. -->
-    <PackageReference Include="System.Text.Json" Version="10.0.10" />
-    <PackageReference Include="System.Text.Encodings.Web" Version="10.0.10" />
+    <!-- STJ/STE без пиннинга: транзитивные 10.0.x (через Microsoft.Extensions.AI)
+         на .NET 8 SDK при self-contained publish проигрывали runtime-pack →
+         в выход попадала сборка 8.0.0.0. На .NET 10 SDK проверено фактом:
+         publish/app-inno несёт 10.0.x (контроль версий держит
+         packaging/build-installer.sh). -->
   </ItemGroup>
 
   <ItemGroup>
@@ -67,6 +68,12 @@
     <None Update="Resources\test_audio_short.flac">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <!-- Замер скорости STT: эталонный образец русской речи кладём рядом с exe
+         (SttSampleAudio ищет Assets\stt-speed-sample.wav); publish-папку и
+         установщик Inno содержимое publish/app-inno подхватывает целиком. -->
+    <Content Include="Assets\stt-speed-sample.wav">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>
@@ -85,6 +92,11 @@
     <Using Include="System.Windows.Input.MouseEventArgs" Alias="MouseEventArgs" />
     <Using Include="System.Net.Http.HttpRequestException" Alias="HttpRequestException" />
     <Using Include="System.Windows.Threading.DispatcherTimer" Alias="DispatcherTimer" />
+    <!-- .NET 10 SDK расширил implicit usings (System.Windows.Forms виден глобально
+         через UseWindowsForms) — ContextMenu/MenuItem стали неоднозначными.
+         Явные алиасы фиксируют WPF-варианты. -->
+    <Using Include="System.Windows.Controls.ContextMenu" Alias="ContextMenu" />
+    <Using Include="System.Windows.Controls.MenuItem" Alias="MenuItem" />
   </ItemGroup>
 
 </Project>

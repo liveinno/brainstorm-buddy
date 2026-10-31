@@ -128,12 +128,27 @@ public partial class FileTranscriptionWindow : Window
     private void UpdateEngineChip()
     {
         if (EngineText == null) return;
+        bool cloud = EngineChoice() == "cloud";
+        // Внешний сервер не использует локальные GPU/CPU: комбо «Оборудование» остаётся
+        // видимым (компоновка не прыгает), но выбор заблокирован.
+        if (HardwareCombo != null) HardwareCombo.IsEnabled = !_busy && !cloud;
+        if (CloudInfoPanel != null)
+            CloudInfoPanel.Visibility = cloud ? Visibility.Visible : Visibility.Collapsed;
+        if (cloud) UpdateCloudSummary();
+
         string ver = GigaamVersionTag();
         // Подпись в комбо следует за фактической версией — меняем текст айтема, Tag не трогаем.
         if (GigaamItem != null) GigaamItem.Content = string.Format(L("L_FileTr_GigaamItemFmt"), ver);
         bool ff = MediaAudioExtractor.TryFindFfmpeg(out _);
         string ffNote = ff ? "ffmpeg ✓" : L("L_FileTr_FfmpegNeed");
-        if (EngineChoice() == "whisper")
+        if (cloud)
+        {
+            EngineText.Text = (CloudSttConfigured()
+                    ? string.Format(L("L_FileTr_CloudReadyFmt"), CloudSttModel())
+                    : L("L_FileTr_CloudNotConfigured"))
+                + " · " + ffNote;
+        }
+        else if (EngineChoice() == "whisper")
         {
             bool have = App.Current.ResolveWhisperModel() != null;
             EngineText.Text = (have ? L("L_FileTr_WhisperReady") : L("L_FileTr_WhisperNoModel"))
@@ -146,6 +161,56 @@ public partial class FileTranscriptionWindow : Window
                                          : L("L_FileTr_GigaamNoModel"))
                               + $" · {HardwareNote()} · " + ffNote;
         }
+    }
+
+    // ---- Внешний (облачный) STT: конфигурация из настроек ----
+    // Адрес: Api.SttBaseUrl, при пустом — Api.BaseUrl (ровно как в OpenAiClient);
+    // App.ApiClient держит ту же ссылку на ApiConfig, поэтому правки в настройках видны сразу.
+    private static string CloudSttBaseUrl()
+    {
+        var api = App.Current.Config.Api;
+        var raw = string.IsNullOrWhiteSpace(api.SttBaseUrl) ? api.BaseUrl : api.SttBaseUrl;
+        return (raw ?? "").Trim().TrimEnd('/');
+    }
+
+    private static string CloudSttModel() => (App.Current.Config.Api.SttModel ?? "").Trim();
+
+    private static bool LooksLikeHttpUrl(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
+    // Своему серверу ключ не обязателен — пустой ApiKey ошибкой не считаем.
+    private static bool CloudSttConfigured() => LooksLikeHttpUrl(CloudSttBaseUrl()) && CloudSttModel().Length > 0;
+
+    // Сводка ДО старта: адрес, модель и кнопка настроек, если конфигурация неполная.
+    private void UpdateCloudSummary()
+    {
+        if (CloudEndpointText == null || CloudModelText == null || CloudSettingsBtn == null) return;
+        string url = CloudSttBaseUrl();
+        string model = CloudSttModel();
+        bool urlOk = LooksLikeHttpUrl(url);
+        bool modelOk = model.Length > 0;
+        CloudEndpointText.Text = urlOk
+            ? string.Format(L("L_FileTr_CloudEndpointFmt"), url)
+            : (url.Length == 0 ? L("L_FileTr_CloudNoUrl") : string.Format(L("L_FileTr_CloudBadUrl"), url));
+        CloudModelText.Text = modelOk
+            ? string.Format(L("L_FileTr_CloudModelFmt"), model)
+            : L("L_FileTr_CloudNoModel");
+        CloudSettingsBtn.Visibility = urlOk && modelOk ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    // Настройки STT открываются поверх окна; после возврата адрес/модель могли
+    // измениться (вкладка «Локальный STT» → «Внешний STT-сервер») — обновляем сводку.
+    protected override void OnActivated(EventArgs e)
+    {
+        base.OnActivated(e);
+        UpdateEngineChip();
+    }
+
+    private void OnOpenSttSettings(object sender, RoutedEventArgs e)
+    {
+        if (_busy) return;
+        App.Current.OpenSettingsAndHighlight("stt");
     }
 
     private void LoadHistory() => HistoryList.ItemsSource = _history.LoadAll();
@@ -319,27 +384,59 @@ public partial class FileTranscriptionWindow : Window
                             }), ct);
                     }, ct);
 
-                    item.TranscriptText = result.Segments.Count > 0 ? result.TimestampedText : L("L_FileTr_NoSpeech");
-                    item.HasTranscript = result.Segments.Count > 0;
-                    item.Status = QueueFileStatus.Done;
-                    item.ProgressText = string.Format(L("L_FileTr_DoneFmt"), result.Segments.Count, FileTranscriptResult.Fmt(result.Duration));
+                    bool hasText = !string.IsNullOrWhiteSpace(result.PlainText);
+                    item.TranscriptText = hasText ? result.TimestampedText : L("L_FileTr_NoSpeech");
+                    item.HasTranscript = hasText;
 
-                    // Каждый файл — отдельная запись истории (своё саммари потом допишется в неё же).
-                    var rec = new TranscriptionRecord
+                    if (result.IsCanceled)
                     {
-                        SourcePath = path,
-                        FileName = item.FileName,
-                        DurationSeconds = result.Duration.TotalSeconds,
-                        ExtractMethod = result.ExtractMethod,
-                        TimestampedText = result.TimestampedText,
-                        PlainText = result.PlainText,
-                        Summary = ""
-                    };
-                    _history.Save(rec);
-                    item.Record = rec;
-                    item.FromHistory = false;
-                    LoadHistory(); // файл появляется в истории сразу по готовности
-                    done++;
+                        // Отмена текущего HTTP-запроса не превращается в «Готово»:
+                        // уже принятые части остаются на карточке, файл возвращается в очередь.
+                        item.Status = QueueFileStatus.Queued;
+                        item.ProgressText = hasText
+                            ? string.Format(L("L_FileTr_PartialStoppedFmt"), result.FailureReason ?? L("L_FileTr_Stopped"))
+                            : L("L_FileTr_Stopped");
+                        if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
+                    }
+                    else if (!result.IsComplete)
+                    {
+                        // Ошибка/пустой ответ сервера — частичный результат и явная причина,
+                        // но не ложный успех. Карточка остаётся доступна для копирования.
+                        item.Status = QueueFileStatus.Error;
+                        item.ProgressText = string.Format(L("L_FileTr_PartialErrorFmt"),
+                            result.FailureReason ?? L("L_FileTr_EngineUnavailable"));
+                        failed++;
+                    }
+                    else
+                    {
+                        item.Status = QueueFileStatus.Done;
+                        item.ProgressText = string.Format(L("L_FileTr_DoneFmt"), result.Segments.Count, FileTranscriptResult.Fmt(result.Duration));
+                        done++;
+                    }
+
+                    // Сохраняем принятый текст даже при частичном результате. Неполный
+                    // облачный результат остаётся Error/Queued и не маскируется в истории.
+                    if (hasText)
+                    {
+                        var rec = new TranscriptionRecord
+                        {
+                            SourcePath = path,
+                            FileName = item.FileName,
+                            DurationSeconds = result.Duration.TotalSeconds,
+                            ExtractMethod = result.ExtractMethod,
+                            TimestampedText = result.TimestampedText,
+                            PlainText = result.PlainText,
+                            Summary = ""
+                        };
+                        _history.Save(rec);
+                        item.Record = rec;
+                        item.FromHistory = false;
+                        LoadHistory();
+                    }
+
+                    // IsCanceled с уже установленным родительским токеном выброшен выше;
+                    // этот guard покрывает отмену между последним ответом и следующей частью.
+                    ct.ThrowIfCancellationRequested();
                 }
                 catch (OperationCanceledException)
                 {
@@ -649,6 +746,11 @@ public partial class FileTranscriptionWindow : Window
         ResetBtn.IsEnabled = !busy;
         CancelBtn.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         HistoryList.IsEnabled = !busy;
+        // Движок/оборудование/переход в настройки STT нельзя менять на ходу:
+        // очередь уже создана под выбранный движок.
+        EngineCombo.IsEnabled = !busy;
+        CloudSettingsBtn.IsEnabled = !busy;
+        HardwareCombo.IsEnabled = !busy && EngineChoice() != "cloud";
         UpdateStartButton();
     }
 

@@ -90,7 +90,16 @@ public sealed class TwoPanePanel : Panel
         var secondDesired = new Size();
         if (children.Count > 1)
         {
-            double secondWidth = Math.Max(0, freeWidth - firstDesired.Width);
+            // Меряем вторую панель той же шириной, что выдаст Arrange: там первый
+            // ребёнок занимает firstWidth (долю), а не свой DesiredSize. Раньше тут
+            // вычитали firstDesired.Width — панель мерялась шире финальной колонки,
+            // WPF разворачивал её до unclipped DesiredSize и резал правый край
+            // (у редактора промпта пропадали скроллбар и хвосты кнопок).
+            // FirstFraction=NaN (по содержимому): ширина первой = DesiredSize, как в Arrange.
+            double arrangedFirst = double.IsPositiveInfinity(firstWidth)
+                ? firstDesired.Width
+                : firstWidth;
+            double secondWidth = Math.Max(0, freeWidth - arrangedFirst);
             children[1].Measure(new Size(secondWidth, availableSize.Height));
             secondDesired = children[1].DesiredSize;
         }

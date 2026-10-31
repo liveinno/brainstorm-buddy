@@ -81,12 +81,15 @@ def chapters(h):
                 ["Setting", "Options", "What to choose"],
                 [
                     ["Recognition engine",
-                     "“GigaAM · fast (Russian)” or “Whisper turbo · quality, punctuation”",
+                     "“GigaAM v3 · fast (Russian)”, “Whisper turbo · quality, punctuation” "
+                     "or “External STT (server)”",
                      "GigaAM — fast and built in, great for Russian speech; the label shows the "
                      "actual model version (v3 or v2). Whisper turbo — more careful with "
                      "punctuation and mixed speech, but the model (~570 MB) must be downloaded "
                      "in advance: Settings → Speech recognition (STT). The first Whisper start "
-                     "takes ~10 seconds to load the model."],
+                     "takes ~10 seconds to load the model. External STT uses the address, model, "
+                     "key and compatibility mode from the STT settings; audio is sent to the "
+                     "configured server."],
                     ["Hardware",
                      "“Auto (same as settings)”, “CPU” or “GPU: #N <name>”",
                      "Auto is a sensible default. An explicit GPU is usually faster on long "

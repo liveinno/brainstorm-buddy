@@ -18,7 +18,6 @@ using CheckBox = System.Windows.Controls.CheckBox;
 using ComboBox = System.Windows.Controls.ComboBox;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
 using HorizontalAlignment = System.Windows.HorizontalAlignment;
-using MenuItem = System.Windows.Controls.MenuItem;
 using Orientation = System.Windows.Controls.Orientation;
 using TextBox = System.Windows.Controls.TextBox;
 using ToggleButton = System.Windows.Controls.Primitives.ToggleButton;

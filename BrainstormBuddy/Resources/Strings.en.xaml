@@ -795,6 +795,11 @@
     <sys:String x:Key="L_SetStt_AccelDml">GPU · DirectML (pick the graphics card below)</sys:String>
     <sys:String x:Key="L_SetStt_AccelLabel">GigaAM acceleration:</sys:String>
     <sys:String x:Key="L_SetStt_BuildLogTitle">Build / start log</sys:String>
+    <sys:String x:Key="L_SetStt_CompatTitle">STT request compatibility</sys:String>
+    <sys:String x:Key="L_SetStt_CompatLabel">STT request mode:</sys:String>
+    <sys:String x:Key="L_SetStt_CompatStandard">Strict OpenAI (Groq, OpenAI)</sys:String>
+    <sys:String x:Key="L_SetStt_CompatFaster">faster-whisper (+ beam_size, vad_filter)</sys:String>
+    <sys:String x:Key="L_SetStt_CompatHint">Strict mode sends only the file/model/response_format/language/temperature fields — Groq and OpenAI reject beam_size and vad_filter. The faster-whisper mode adds these fields (faster-whisper servers).</sys:String>
     <sys:String x:Key="L_SetStt_DeleteModel">Delete model</sys:String>
     <sys:String x:Key="L_SetStt_DlDoneApply">✅ done — applies after restart</sys:String>
     <sys:String x:Key="L_SetStt_DlDoneRestart">✅ done — restart the app</sys:String>
@@ -842,16 +847,24 @@ You can download it again later.</sys:String>
     <sys:String x:Key="L_LocalStt_Title">Local STT</sys:String>
     <sys:String x:Key="L_LocalStt_NoReply">no reply</sys:String>
     <sys:String x:Key="L_SetStt_RemoteFail">🔴 recognition server not responding — check Docker/STT server or the URL below</sys:String>
+    <sys:String x:Key="L_SetStt_RemoteKeyHint">Key for the STT server only (Bearer/x-api-key), independent of the LLM key. Empty = requests without authorization.</sys:String>
+    <sys:String x:Key="L_SetStt_RemoteKeyLabel">Server API key (optional):</sys:String>
     <sys:String x:Key="L_SetStt_RemoteModelHint">The model the server expects (e.g. gigaam-v2, whisper-1).</sys:String>
     <sys:String x:Key="L_SetStt_RemoteModelLabel">Model name on the server:</sys:String>
-    <sys:String x:Key="L_SetStt_RemoteNote">Recognition runs on your server on the network. Built-in GigaAM/Whisper and local Docker work without this address.</sys:String>
+    <sys:String x:Key="L_SetStt_RemoteNote">Recognition runs on your server on the network. Built-in GigaAM/Whisper and local Docker work without this address. The key above is set separately from the LLM key.</sys:String>
     <sys:String x:Key="L_SetStt_RemoteTitle">External STT server</sys:String>
     <sys:String x:Key="L_SetStt_RemoteUrlHint">E.g. http://192.168.1.50:8000/v1 or your server address. Empty = LLM address.</sys:String>
     <sys:String x:Key="L_SetStt_RemoteUrlLabel">Server address (OpenAI-compatible, .../audio/transcriptions):</sys:String>
     <sys:String x:Key="L_SetStt_RemoveBtn">Remove</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedFailFmt">{0}: measurement failed — {1}</sys:String>
     <sys:String x:Key="L_SetStt_SpeedResultFmt">{0}: {1} ms · RTF={2} · {3}</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedSampleMissing">Speech sample not found: {0}</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedStatusCanceled">cancelled</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedStatusFailed">STT error</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedStatusNoSpeech">no speech recognized (empty response)</sys:String>
     <sys:String x:Key="L_SetStt_SpeedTestBtn">Measure speed</sys:String>
-    <sys:String x:Key="L_SetStt_SpeedTestHint">Runs a 3-sec benchmark through the active engine → shows ms and RTF (fraction of real time; lower = faster).</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedTestHint">Warms up the engine first, then times a single run of the ~2.7 s sample → ms and RTF (fraction of real time; lower = faster) are shown only when speech is recognized.</sys:String>
+    <sys:String x:Key="L_SetStt_SpeedTextFmt">recognized: “{0}”</sys:String>
     <sys:String x:Key="L_SetStt_StartBtn">Start</sys:String>
     <sys:String x:Key="L_SetStt_StatusStopped">Stopped</sys:String>
     <sys:String x:Key="L_SetStt_StopBtn">Stop</sys:String>
@@ -1013,13 +1026,24 @@ You can download it again later.</sys:String>
     <!-- File transcription window (FileTranscriptionWindow) -->
     <sys:String x:Key="L_FileTr_Title">File transcription</sys:String>
     <sys:String x:Key="L_FileTr_Header">File transcription</sys:String>
-    <sys:String x:Key="L_FileTr_Subtitle">Local audio/video recognition — works offline.</sys:String>
+    <sys:String x:Key="L_FileTr_Subtitle">Local and cloud audio/video recognition — cloud uses the selected external STT.</sys:String>
     <sys:String x:Key="L_FileTr_HistoryHeader">HISTORY</sys:String>
     <sys:String x:Key="L_FileTr_DeleteFromHistory">Delete from history</sys:String>
     <sys:String x:Key="L_FileTr_EngineLabel">Recognition engine:</sys:String>
     <sys:String x:Key="L_FileTr_GigaamItem">GigaAM · fast (Russian)</sys:String>
     <sys:String x:Key="L_FileTr_GigaamItemFmt">GigaAM {0} · fast (Russian)</sys:String>
     <sys:String x:Key="L_FileTr_WhisperItem">Whisper turbo · quality, punctuation</sys:String>
+    <sys:String x:Key="L_FileTr_CloudItem">External STT · cloud server</sys:String>
+    <sys:String x:Key="L_FileTr_CloudReadyFmt">External STT ready · model: {0}</sys:String>
+    <sys:String x:Key="L_FileTr_CloudNotConfigured">⚠ external STT is not configured</sys:String>
+    <sys:String x:Key="L_FileTr_CloudEndpointFmt">Server: {0}</sys:String>
+    <sys:String x:Key="L_FileTr_CloudNoUrl">Server: URL is not configured</sys:String>
+    <sys:String x:Key="L_FileTr_CloudBadUrl">Server: invalid URL “{0}”</sys:String>
+    <sys:String x:Key="L_FileTr_CloudModelFmt">Model: {0}</sys:String>
+    <sys:String x:Key="L_FileTr_CloudNoModel">Model: not configured</sys:String>
+    <sys:String x:Key="L_FileTr_CloudWarn">The file is sent only to the external STT; there is no local fallback.</sys:String>
+    <sys:String x:Key="L_FileTr_CloudSettingsBtn">Open STT settings</sys:String>
+    <sys:String x:Key="L_FileTr_CloudSettingsToolTip">Configure the external STT URL, model, and request mode</sys:String>
     <sys:String x:Key="L_FileTr_HardwareLabel">Hardware:</sys:String>
     <sys:String x:Key="L_FileTr_HardwareToolTip">Where to recognize the file. GPU is usually faster on long recordings; this setting does not affect live recognition.</sys:String>
     <sys:String x:Key="L_FileTr_HwAuto">Auto (same as settings)</sys:String>
@@ -1079,6 +1103,8 @@ You can download it again later.</sys:String>
     <sys:String x:Key="L_FileTr_NoSpeech">(no speech recognized)</sys:String>
     <sys:String x:Key="L_FileTr_DoneFmt">Done · segments: {0} · {1}</sys:String>
     <sys:String x:Key="L_FileTr_Stopped">Stopped — the file stayed in the queue</sys:String>
+    <sys:String x:Key="L_FileTr_PartialStoppedFmt">Stopped after a partial result: {0}</sys:String>
+    <sys:String x:Key="L_FileTr_PartialErrorFmt">Error after a partial result: {0}</sys:String>
     <sys:String x:Key="L_FileTr_QueueStoppedFmt">Queue stopped: done {0}, failed {1}, remaining {2}.</sys:String>
     <sys:String x:Key="L_FileTr_QueueDoneFmt">Done: {0} of {1}</sys:String>
     <sys:String x:Key="L_FileTr_ErrorsSuffixFmt"> · errors: {0}</sys:String>

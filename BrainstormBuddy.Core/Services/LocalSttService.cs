@@ -258,14 +258,12 @@ public class LocalSttService : IDisposable
     {
         try
         {
-            while (!reader.EndOfStream && !ct.IsCancellationRequested)
+            while (!ct.IsCancellationRequested)
             {
                 var line = await reader.ReadLineAsync(ct);
-                if (line != null)
-                {
-                    AppendLog(line);
-                    onProgress?.Invoke(line);
-                }
+                if (line == null) break;
+                AppendLog(line);
+                onProgress?.Invoke(line);
             }
         }
         catch (OperationCanceledException) { }

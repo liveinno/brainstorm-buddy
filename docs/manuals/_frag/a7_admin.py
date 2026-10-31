@@ -2,7 +2,7 @@ def chapters(h):
     return [
         ("Установка и развёртывание", "".join([
             h.p("BrainstormBuddy распространяется одним самодостаточным установщиком на Inno Setup 6 — "
-                "BrainstormBuddy-Setup-Lite.exe или BrainstormBuddy-Setup-Full.exe. .NET 8 входит в комплект "
+                "BrainstormBuddy-Setup-Lite.exe или BrainstormBuddy-Setup-Full.exe. .NET 10 входит в комплект "
                 "(self-contained), отдельный рантайм ставить не нужно. Мастер двуязычный (русский/английский), "
                 "требует Windows 10 или новее, только x64."),
             h.grid([

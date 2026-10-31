@@ -139,6 +139,14 @@ public class ApiConfig
     public string CodexRefreshToken { get; set; } = string.Empty;
     public string ChatModel { get; set; } = "deepseek-v4.1-flash";
     public string SttBaseUrl { get; set; } = "https://api.openai.com/v1";
+    /// <summary>
+    /// Отдельный ключ STT-эндпоинта (Api.SttBaseUrl): авторизация внешнего
+    /// распознавания не зависит от LLM-ключа <see cref="ApiKey"/>. Пусто —
+    /// STT-запросы уходят без Authorization/x-api-key (свой сервер без ключа).
+    /// При миграции копируется из ApiKey один раз, только если адреса STT и
+    /// LLM совпадают (ConfigLoader, схема 13); дальше поля живут независимо.
+    /// </summary>
+    public string SttApiKey { get; set; } = string.Empty;
     public string SttModel { get; set; } = "whisper-1";
     public string SttLanguage { get; set; } = string.Empty;
     public int RequestTimeoutSeconds { get; set; } = 30;
@@ -151,6 +159,17 @@ public class ApiConfig
     public double SttTemperature { get; set; } = 0.0;
     public int SttBeamSize { get; set; } = 10;
     public bool SttVadFilter { get; set; } = true;
+    /// <summary>
+    /// Режим совместимости STT-запроса: "standard" — только строгие OpenAI-поля
+    /// (Groq/OpenAI отклоняют beam_size/vad_filter); "faster-whisper" — плюс
+    /// beam_size/vad_filter для faster-whisper серверов.
+    /// </summary>
+    public string SttCompatMode { get; set; } = SttCompatModes.Standard;
+    /// <summary>Каноническая форма адреса для сравнения «тот же эндпоинт или
+    /// нет» (миграция STT-ключа, подбор auth-стиля): trim + срез хвостовых '/'.
+    /// Регистр не трогаем — сравнивать через OrdinalIgnoreCase.</summary>
+    internal static string NormalizeEndpointUrl(string? url)
+        => (url ?? string.Empty).Trim().TrimEnd('/');
 }
 
 public class AudioConfig

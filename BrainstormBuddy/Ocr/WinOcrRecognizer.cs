@@ -13,9 +13,9 @@ namespace BrainstormBuddy.Ocr;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Живёт в WPF-проекте, а не в BrainstormBuddy.Core: Core собирается под <c>net8.0</c>
+/// Живёт в WPF-проекте, а не в BrainstormBuddy.Core: Core собирается под <c>net10.0</c>
 /// без WinRT-проекций, а <c>OcrEngine</c> требует TFM с версией Windows
-/// (<c>net8.0-windows10.0.19041</c> у BrainstormBuddy.csproj).
+/// (<c>net10.0-windows10.0.19041</c> у BrainstormBuddy.csproj).
 /// </para>
 /// <para>
 /// Языки WinRT привязаны к установленным в системе языковым пакетам OCR. Запрошенные

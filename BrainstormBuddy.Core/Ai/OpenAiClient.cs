@@ -14,10 +14,14 @@ using BrainstormBuddy.Services;
 namespace BrainstormBuddy.Ai;
 
 
-public class OpenAiClient : IApiClient, IMcpToolLlm
+public class OpenAiClient : IApiClient, IMcpToolLlm, IDetailedSttEngine
 {
     private readonly ApiConfig _config;
     private readonly HttpClient _http;
+    // Отдельный клиент STT: у него свои DefaultRequestHeaders, поэтому запрос
+    // распознавания не может унаследовать LLM-авторизацию (Bearer/x-api-key),
+    // а параллельный Ask не сможет подменить заголовки STT-запроса и наоборот.
+    private readonly HttpClient _sttHttp;
     private readonly LoggingService _logger;
     private IImageCapabilityService? _imageCapabilities;
     private readonly SemaphoreSlim _rateLimitGate = new(1, 1);
@@ -68,11 +72,54 @@ public class OpenAiClient : IApiClient, IMcpToolLlm
     private void ApplyHeaders()
         => LlmRequestHeaders.Apply(_http, _config, _sessionId);
 
-    // STT-запросы идут к отдельному сервису — только Bearer, без LLM-профильных заголовков.
+    // Базовая авторизация LLM-клиента (Bearer по ApiKey): профильные заголовки
+    // перед каждым LLM-запросом перезаписывает LlmRequestHeaders.Apply. К STT
+    // отношения не имеет — там свой клиент и request-local ключ (ApplySttAuth).
     private void ApplyAuth()
         => _http.DefaultRequestHeaders.Authorization =
             string.IsNullOrEmpty(_config.ApiKey) ? null : new AuthenticationHeaderValue("Bearer", _config.ApiKey);
 
+    // Стиль авторизации STT-эндпоинта из того же реестра, что и LLM: локальные
+    // серверы (auth=none) ничего не получают, неизвестный адрес — Bearer (как
+    // раньше). Если адрес STT совпадает с BaseUrl одного из CustomProviders —
+    // берём его AuthKind (x-api-key и т.п.). Значение ключа — только SttApiKey.
+    private string SttAuthKind()
+    {
+        var baseUrl = string.IsNullOrEmpty(_config.SttBaseUrl) ? _config.BaseUrl : _config.SttBaseUrl;
+        var profile = LlmProviderRegistry.FindById(
+            LlmProviderRegistry.InferProviderId(baseUrl), _config.CustomProviders);
+        if (profile != null && profile.AuthKind == "bearer" && _config.CustomProviders.Count > 0)
+        {
+            // Неизвестный адрес резолвится как «custom → bearer»; но если он
+            // совпадает с URL собственного провайдера юзера — у того может быть
+            // свой способ авторизации (x-api-key), и он точнее дефолта.
+            var sttUrl = ApiConfig.NormalizeEndpointUrl(baseUrl);
+            var custom = _config.CustomProviders.FirstOrDefault(p =>
+                string.Equals(ApiConfig.NormalizeEndpointUrl(p.BaseUrl), sttUrl,
+                    StringComparison.OrdinalIgnoreCase));
+            if (custom != null) profile = custom;
+        }
+        return profile?.AuthKind ?? "bearer";
+    }
+
+    // Авторизация ровно этого STT-запроса — только в его заголовках (никаких
+    // общих DefaultRequestHeaders: параллельный LLM-запрос ключ не смешает).
+    // Пустой SttApiKey → запрос уходит без Authorization и без x-api-key.
+    private void ApplySttAuth(HttpRequestMessage request)
+    {
+        if (string.IsNullOrEmpty(_config.SttApiKey)) return;
+        switch (SttAuthKind())
+        {
+            case "none":
+                break;
+            case "x-api-key":
+                request.Headers.TryAddWithoutValidation("x-api-key", _config.SttApiKey);
+                break;
+            default: // "bearer"
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.SttApiKey);
+                break;
+        }
+    }
     /// <summary>
     /// Обновляет истёкший access_token подписки ChatGPT (Codex) по сохранённому
     /// refresh_token. Токен живёт ~10 дней; без этого шага провайдер отдаёт 401 и
@@ -334,26 +381,60 @@ public class OpenAiClient : IApiClient, IMcpToolLlm
         _http = handler == null
             ? new HttpClient { Timeout = Timeout.InfiniteTimeSpan }
             : new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        // STT — отдельный HttpClient (см. поле _sttHttp): параллельные Ask/STT не
+        // делят DefaultRequestHeaders, ключи не смешиваются. Подставленный
+        // тестами handler используется совместно (disposeHandler: false — он не наш).
+        _sttHttp = handler == null
+            ? new HttpClient { Timeout = Timeout.InfiniteTimeSpan }
+            : new HttpClient(handler, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
 
-        ApplyAuth(); // стартовая авторизация; LLM-заголовки надеваются перед каждым запросом
+        ApplyAuth(); // стартовая LLM-авторизация; профильные заголовки надеваются перед каждым запросом
         if (!string.IsNullOrEmpty(config.ApiKey))
         {
-            _logger.Debug($"OpenAiClient: BaseUrl={config.BaseUrl}, Chat={config.ChatModel}, Stt={config.SttModel}, Key=***{(config.ApiKey.Length > 4 ? config.ApiKey[^4..] : "<short>")}", "Ai");
+            _logger.Debug($"OpenAiClient: BaseUrl={config.BaseUrl}, Chat={config.ChatModel}, Stt={config.SttModel}, Key=***{(config.ApiKey.Length > 4 ? config.ApiKey[^4..] : "<short>")}, SttKey={(string.IsNullOrEmpty(config.SttApiKey) ? "<empty>" : "***set")}", "Ai");
         }
         else if (Profile.AuthKind != "none")
         {
             _logger.Warn("OpenAiClient: ApiKey is empty!", "Ai");
         }
+        if (string.IsNullOrEmpty(config.ApiKey) && !string.IsNullOrEmpty(config.SttApiKey))
+            _logger.Debug($"OpenAiClient: Stt={config.SttModel}, SttKey=***set (LLM key empty)", "Ai");
     }
 
+    /// <summary>
+    /// Совместимый путь (ISttEngine): успех → очищенный текст, любая ошибка → null,
+    /// отмена родительским токеном → лог + повторный выброс OperationCanceledException
+    /// (существующие вызывающие на это рассчитывают). Реализован поверх детального пути.
+    /// </summary>
     public async Task<string?> TranscribeAsync(byte[] wavAudio, CancellationToken ct = default)
     {
-        if (wavAudio == null || wavAudio.Length == 0) return null;
-        ApplyAuth();
+        var result = await TranscribeDetailedAsync(wavAudio, ct);
+        switch (result.Status)
+        {
+            case SttTranscribeStatus.Text:
+                return result.Text;
+            case SttTranscribeStatus.Canceled:
+                _logger.Info("STT cancelled by parent token", "Ai");
+                throw new OperationCanceledException(ct);
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Детальный STT-запрос: тот же контрольный поток, что и раньше (дедлайн попытки
+    /// 300 с через связанный CTS, ретраи по MaxRetries с backoff, ReportHealth, IsRetryable),
+    /// но исходы разведены: текст / нет речи / ошибка / отмена. Истёкший 300-секундный
+    /// дедлайн — это Failed (таймаут сервера), а не отмена вызывающим.
+    /// </summary>
+    public async Task<SttTranscribeResult> TranscribeDetailedAsync(byte[] wavAudio, CancellationToken ct = default)
+    {
+        if (wavAudio == null || wavAudio.Length == 0)
+            return SttTranscribeResult.FailedResult("нет аудиоданных для распознавания");
 
         var baseUrl = string.IsNullOrEmpty(_config.SttBaseUrl) ? _config.BaseUrl : _config.SttBaseUrl;
         var url = $"{baseUrl.TrimEnd('/')}/audio/transcriptions";
-        _logger.Debug($"STT → POST {url} ({wavAudio.Length} bytes, model={_config.SttModel})", "Ai");
+        _logger.Debug($"STT → POST {url} ({wavAudio.Length} bytes, model={_config.SttModel}, compat={SttCompatModes.Normalize(_config.SttCompatMode)})", "Ai");
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(300));
@@ -363,20 +444,17 @@ public class OpenAiClient : IApiClient, IMcpToolLlm
         {
             try
             {
-                using var content = new MultipartFormDataContent();
-                var audioContent = new ByteArrayContent(wavAudio);
-                audioContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
-                content.Add(audioContent, "file", "audio.wav");
-                content.Add(new StringContent(_config.SttModel), "model");
-                content.Add(new StringContent("json"), "response_format");
-                if (!string.IsNullOrWhiteSpace(_config.SttLanguage))
-                    content.Add(new StringContent(_config.SttLanguage), "language");
-                content.Add(new StringContent(_config.SttTemperature.ToString(System.Globalization.CultureInfo.InvariantCulture)), "temperature");
-                content.Add(new StringContent(_config.SttBeamSize.ToString()), "beam_size");
-                content.Add(new StringContent(_config.SttVadFilter ? "true" : "false"), "vad_filter");
+                // Запрос и тело пересобираем на каждую попытку (HttpRequestMessage
+                // одноразовый). Авторизация — только request-local (ApplySttAuth):
+                // SttApiKey, а не LLM ApiKey; _sttHttp не наследует LLM-заголовков.
+                using var request = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = BuildSttMultipart(wavAudio)
+                };
+                ApplySttAuth(request);
 
                 var sw = Stopwatch.StartNew();
-                using var response = await _http.PostAsync(url, content, token);
+                using var response = await _sttHttp.SendAsync(request, token);
                 var body = await response.Content.ReadAsStringAsync(token);
                 sw.Stop();
 
@@ -390,7 +468,7 @@ public class OpenAiClient : IApiClient, IMcpToolLlm
                         continue;
                     }
                     ReportHealth(ApiComponent.Stt, false, $"STT-сервер ответил ошибкой {(int)response.StatusCode}", (int)response.StatusCode, SttHealthReason.ServerError);
-                    return null;
+                    return SttTranscribeResult.FailedResult($"HTTP {(int)response.StatusCode}: {Truncate(body, 200)}", (int)response.StatusCode);
                 }
 
                 // Дошёл ответ 200 — сервер распознавания жив.
@@ -401,16 +479,18 @@ public class OpenAiClient : IApiClient, IMcpToolLlm
                 if (doc.RootElement.TryGetProperty("text", out var textEl))
                 {
                     var text = textEl.GetString();
-                    if (string.IsNullOrWhiteSpace(text)) return null;
-                    return text.Trim();
+                    if (!string.IsNullOrWhiteSpace(text))
+                        return SttTranscribeResult.Recognized(text.Trim());
+                    // 200 при пустом тексте: сервер жив, но текст не распознан — не ошибка запроса.
+                    return SttTranscribeResult.NoSpeechResult("пустой ответ сервера");
                 }
                 _logger.Warn("STT response has no 'text' field", "Ai");
-                return null;
+                return SttTranscribeResult.FailedResult("в ответе нет поля 'text'", 200);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                _logger.Info("STT cancelled by parent token", "Ai");
-                throw;
+                // Отмена пришла от родительского токена — не таймаут и не ошибка.
+                return SttTranscribeResult.CanceledResult("отменено вызывающим");
             }
             catch (TaskCanceledException ex)
             {
@@ -419,14 +499,14 @@ public class OpenAiClient : IApiClient, IMcpToolLlm
                 // PostAsync всё равно получит уже отменённый token).
                 _logger.Warn($"STT timeout attempt {attempt + 1}: {ex.Message}", "Ai");
                 ReportHealth(ApiComponent.Stt, false, "STT-сервер не отвечает (таймаут)", reason: SttHealthReason.Timeout);
-                return null;
+                return SttTranscribeResult.FailedResult("таймаут STT-сервера (300 с)");
             }
             catch (HttpRequestException ex)
             {
                 if (IsConnectivityError(ex, attempt))
                 {
                     ReportHealth(ApiComponent.Stt, false, "STT-сервер недоступен (нет соединения)", reason: SttHealthReason.Unreachable);
-                    return null;
+                    return SttTranscribeResult.FailedResult("сервер недоступен: " + ex.Message);
                 }
                 _logger.Warn($"STT HTTP error attempt {attempt + 1}: {ex.Message}", "Ai");
                 if (attempt < _config.MaxRetries)
@@ -435,10 +515,35 @@ public class OpenAiClient : IApiClient, IMcpToolLlm
                     continue;
                 }
                 ReportHealth(ApiComponent.Stt, false, "STT-сервер недоступен (нет соединения)", reason: SttHealthReason.Unreachable);
-                return null;
+                return SttTranscribeResult.FailedResult("сервер недоступен: " + ex.Message);
             }
         }
-        return null;
+        // Каждая попытка заканчивается return либо continue — строка ниже только для компилятора.
+        return SttTranscribeResult.FailedResult("исчерпаны попытки обращения к STT-серверу");
+    }
+
+    /// <summary>
+    /// Тело multipart-запроса /audio/transcriptions. В режиме "standard" уезжают только
+    /// строгие поля OpenAI — Groq/OpenAI считают неизвестные поля ошибкой; расширения
+    /// faster-whisper (beam_size/vad_filter) добавляются только в режиме "faster-whisper".
+    /// </summary>
+    private MultipartFormDataContent BuildSttMultipart(byte[] wavAudio)
+    {
+        var content = new MultipartFormDataContent();
+        var audioContent = new ByteArrayContent(wavAudio);
+        audioContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+        content.Add(audioContent, "file", "audio.wav");
+        content.Add(new StringContent(_config.SttModel), "model");
+        content.Add(new StringContent("json"), "response_format");
+        if (!string.IsNullOrWhiteSpace(_config.SttLanguage))
+            content.Add(new StringContent(_config.SttLanguage), "language");
+        content.Add(new StringContent(_config.SttTemperature.ToString(System.Globalization.CultureInfo.InvariantCulture)), "temperature");
+        if (SttCompatModes.SupportsExtensions(_config.SttCompatMode))
+        {
+            content.Add(new StringContent(_config.SttBeamSize.ToString()), "beam_size");
+            content.Add(new StringContent(_config.SttVadFilter ? "true" : "false"), "vad_filter");
+        }
+        return content;
     }
 
     public Task<AskResult> AskAsync(string userText, string systemPrompt, int maxTokens, List<ChatMessage> history, CancellationToken ct = default, Action<string>? onDelta = null, bool background = false, TimeSpan? requestTimeout = null, string? attachmentsContext = null, IReadOnlyList<ChatImagePayload>? images = null, Func<ChatImageRef, ChatImagePayload?>? imageResolver = null)

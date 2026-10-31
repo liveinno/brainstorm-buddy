@@ -45,11 +45,12 @@ if [ -f "$DML_ORT" ] && [ -f publish/app-inno/onnxruntime.dll ]; then
   fi
 fi
 
-# Проверяем System.Text.Json/Encodings.Web: транзитивные 10.0.2 (через
-# Microsoft.Extensions.AI) при self-contained publish могли проиграть
-# runtime-pack → в выходе лежала сборка 8.0.0.0 при deps.json=10.0.2 и
-# приложение падало на старте. Пиннинг в csproj чинит, но проверку держим:
-# файл должен быть версии 10.0.x, не 8.0.x.
+# Проверяем System.Text.Json/Encodings.Web: на .NET 8 SDK транзитивные 10.0.x
+# (через Microsoft.Extensions.AI) при self-contained publish проигрывали
+# runtime-pack → в выходе лежала сборка 8.0.0.0 и приложение падало на старте.
+# На .NET 10 SDK пиннинг в csproj снят — транзитивные версии совпадают с
+# runtime-pack и файлы приходят оттуда; проверку держим: файл должен быть
+# версии 10.0.x, не 8.0.x.
 for asm in System.Text.Json System.Text.Encodings.Web; do
   f="publish/app-inno/$asm.dll"
   if [ -f "$f" ]; then
@@ -57,7 +58,7 @@ for asm in System.Text.Json System.Text.Encodings.Web; do
     case "$ver" in
       10.0.*) ;;
       *) echo "ОШИБКА: $f версии $ver, ожидалась 10.0.x." >&2
-         echo "  deps.json требует 10.0.2 — приложение упадёт на старте." >&2
+         echo "  Сборка должна прийти из runtime-pack 10.0.x — иначе приложение упадёт на старте." >&2
          exit 4 ;;
     esac
   fi

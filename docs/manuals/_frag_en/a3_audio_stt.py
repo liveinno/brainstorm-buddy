@@ -101,7 +101,7 @@ def chapters(h):
                     ["Built-in GigaAM v2", "The previous v2_ctc.onnx model (~930 MB), char-CTC. Kept for compatibility; if the v3 files are missing, the app falls back to it automatically.", "A fallback / older installations."],
                     ["Whisper large-v3-turbo", "The ggml-large-v3-turbo-q5_0 model (~547 MB) via whisper.cpp. Adds punctuation, capitalization, English and honest timestamps.", "When quality matters more than speed. Too heavy for live work — better on a GPU."],
                     ["Local server in Docker (GigaAM)", "The app brings up the brainstorm-local-stt container on localhost:8765 itself — no address to enter. Requires Docker Desktop; the first run downloads the model (~450 MB), which can take up to 5 minutes.", "If you need an isolated local server and Docker is already installed."],
-                    ["External server (custom address)", "Any [OI]-compatible server with the …/audio/transcriptions method (for example, a faster-whisper server on your network). Enter the “Server address” and the “Model name on the server” (for example, gigaam-v2 or whisper-1). An empty address = the LLM address is used.", "When recognition already runs on your own server."],
+                    ["External server (custom address)", "Any [OI]-compatible server with the …/audio/transcriptions method (for example, a faster-whisper server on your network). Enter the “Server address” and the “Model name on the server” (for example, gigaam-v2 or whisper-1). An empty address = the LLM address is used. The “STT API key” field sends its own key for recognition: a separate secret, not the LLM key; leave it empty for a keyless server (requests go without Authorization/x-api-key).", "When recognition already runs on your own server."],
                 ]),
             h.p("An engine switch applies right after “Save”: the new engine loads in the "
                 "background in a couple of seconds, no restart needed. For the Docker option "
@@ -128,11 +128,25 @@ def chapters(h):
                       "The model is loaded into memory at startup. The app warms the engine up in the background at start and after settings changes, so the first real utterance usually does not pay the “cold start”."),
 
             h.h2("Measure speed"),
-            h.p("The “Measure speed” button runs a three-second reference fragment through the "
-                "active engine and shows the time in milliseconds and the RTF — the real-time "
-                "factor (RTF 0.3 means a minute of speech is recognized in ~18 seconds; lower "
-                "is faster). This is an honest way to compare CPU and GPU, or GigaAM and "
-                "Whisper, on your hardware."),
+            h.p("The “Measure speed” button first warms the engine up (that run does not count "
+                "— a cold server must not inflate the result), then runs a reference sample of "
+                "Russian speech (~2.7 seconds) in a single measurement and shows the time in "
+                "milliseconds and the RTF — the real-time factor (RTF 0.3 means a minute of "
+                "speech is recognized in ~18 seconds; lower is faster) — plus what exactly was "
+                "recognized, so the speed figure is backed by real output, not by silence. "
+                "This is an honest way to compare CPU and GPU, or GigaAM and Whisper, on your "
+                "hardware. If the run cannot complete (no model, server unreachable), the panel "
+                "says so directly instead of showing a fake number."),
+            h.h2("External STT server compatibility"),
+            h.p("The external engines (“External server” and “Local Docker”) send requests in "
+                "the OpenAI format. Strict APIs (Groq, OpenAI) reject unknown fields, so the "
+                "external engines have a “STT server request mode” switch:"),
+            h.ul([
+                "“Strict OpenAI (Groq, OpenAI)” — only file, model, response_format, language, temperature are sent.",
+                "“faster-whisper (+ beam_size, vad_filter)” — adds beam_size and vad_filter for faster-whisper servers.",
+            ]),
+            h.p("The switch applies at once, no restart needed. If the external server replies "
+                "with an unknown-parameter error — switch the mode."),
 
             h.h2("Speakers (diarization)"),
             h.p("The “Speakers” group at the bottom of the tab enables identifying who is "

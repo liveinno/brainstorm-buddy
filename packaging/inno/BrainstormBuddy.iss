@@ -7,7 +7,7 @@
 ; ============================================================================
 
 #define MyAppName "BrainstormBuddy"
-#define MyAppVersion "2.39.2"
+#define MyAppVersion "2.42.1"
 #define MyAppPublisher "BrainstormBuddy"
 #define MyAppExeName "BrainstormBuddy.exe"
 ; MCP-хост — отдельный stdio-процесс, который запускают внешние ИИ-агенты

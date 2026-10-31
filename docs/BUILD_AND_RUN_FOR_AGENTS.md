@@ -10,15 +10,15 @@
 | Компонент | Версия / примечание |
 |---|---|
 | **OS** | **Только Windows** (10 2004+ / 11). Приложение на **WPF + WinForms** — на Linux/macOS не собирается и не запускается. |
-| **.NET SDK** | **8.0.x** (проверено на `8.0.422`). Ставить .NET 8 SDK, не только Runtime. |
+| **.NET SDK** | **10.0.x** (проверено на `10.0.403`). Ставить .NET 10 SDK, не только Runtime. |
 | Архитектура | x64 |
 
 Проверка SDK:
 ```bash
-dotnet --version    # ожидается 8.0.x
+dotnet --version    # ожидается 10.0.x
 ```
 
-Целевой фреймворк: `net8.0-windows` (десктоп), `net8.0` (Core-библиотека).
+Целевой фреймворк: `net10.0-windows10.0.19041` (десктоп и Headless), `net10.0` (Core-библиотека).
 `LangVersion=12`, `Nullable=enable`, `UseWPF=true`, `UseWindowsForms=true`.
 
 ---
@@ -64,7 +64,7 @@ single‑file publish).
 ## 4. Запуск
 
 ```bash
-BrainstormBuddy/bin/Debug/net8.0-windows/BrainstormBuddy.exe
+BrainstormBuddy/bin/Debug/net10.0-windows10.0.19041/BrainstormBuddy.exe
 ```
 
 - Окно‑оверлей появляется в **правом верхнем углу**, поверх всех окон.
@@ -127,7 +127,7 @@ BrainstormBuddy/bin/Debug/net8.0-windows/BrainstormBuddy.exe
 
 ```text
 [ ] Windows 10 2004+ / 11
-[ ] .NET 8 SDK        → dotnet --version = 8.0.x
+[ ] .NET 10 SDK       → dotnet --version = 10.0.x
 [ ] (для работы) API-ключ OpenCode Go (или локальный OpenAI-совместимый сервер) + STT‑движок
 [ ] (для работы) STT‑сервер на :8001 (или Docker LocalSttBridge)
 [ ] dotnet build BrainstormBuddy/BrainstormBuddy.csproj -c Debug  → «успешно»

@@ -1,18 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>12</LangVersion>
     <RootNamespace>BrainstormBuddy</RootNamespace>
     <AssemblyName>BrainstormBuddy.Core</AssemblyName>
-    <Version>2.36.5</Version>
+    <Version>2.42.1</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
     <!-- Разбор ответов LLM как Markdown (жирный/курсив/заголовки/списки/таблицы/код):
          CommonMark + pipe-таблицы + зачёркивание, без автоссылок и «advanced extensions». -->
     <PackageReference Include="Markdig" Version="1.4.2" />
